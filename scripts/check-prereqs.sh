@@ -58,21 +58,6 @@ fi
 
 echo ""
 
-# Check bcrypt
-progress "Python bcrypt module"
-if python3 -c "import bcrypt" 2>/dev/null; then
-    bcrypt_version=$(python3 -c "import bcrypt; print(bcrypt.__version__ if hasattr(bcrypt, '__version__') else 'Unknown')")
-    echo -e "  ${GREEN}${SUCCESS} Python bcrypt module loaded (version ${BOLD}${bcrypt_version}${NC}${GREEN})${NC}"
-    
-    if [[ "$bcrypt_version" == "4."* ]]; then
-        echo -e "  ${YELLOW}${WARNING} bcrypt 4.x detected - You might need to run ${BOLD}scripts/bcrypt_patch.py${NC}${YELLOW} for compatibility${NC}"
-    fi
-else
-    echo -e "  ${RED}${ERROR} Python bcrypt module not found. Install it with ${BOLD}pip install bcrypt${NC}${RED} to proceed${NC}"
-fi
-
-echo ""
-
 # Check Docker (optional)
 progress "Docker installation"
 if command -v docker >/dev/null 2>&1; then
@@ -111,9 +96,6 @@ echo -e "${BOLD}${PURPLE}======================================${NC}\n"
 # Count issues
 issues=0
 if ! command -v ansible >/dev/null 2>&1; then
-    issues=$((issues+1))
-fi
-if ! python3 -c "import bcrypt" 2>/dev/null; then
     issues=$((issues+1))
 fi
 if [ ! -f "inventory.ini" ]; then

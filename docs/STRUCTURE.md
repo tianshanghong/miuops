@@ -18,7 +18,6 @@
 │   ├── check-prereqs.sh       # Prerequisite checker
 │   ├── create-tunnel.sh       # Cloudflare Tunnel creation
 │   ├── delete-tunnel.sh       # Cloudflare Tunnel deletion
-│   └── bcrypt_patch.py        # bcrypt compatibility fix
 └── docs/                      # Documentation
 ```
 

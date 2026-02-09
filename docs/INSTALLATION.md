@@ -7,7 +7,6 @@
 3. Cloudflare Tunnel created and credentials downloaded
 4. Bare metal server with SSH access (Debian/Ubuntu)
 5. Ansible >= 2.10 on your control machine
-6. Compatible bcrypt Python package (see Compatibility Notes in README)
 
 ## Setup Instructions
 
@@ -86,10 +85,3 @@ Test that your infrastructure is working:
 - Services are reachable via `https://<subdomain>.<your-domain>`
 - Traefik dashboard at `https://traefik.<your-domain>` (if enabled)
 
-## Troubleshooting
-
-If you encounter bcrypt compatibility issues:
-
-```bash
-python3 scripts/bcrypt_patch.py
-```

@@ -140,14 +140,3 @@ ansible-playbook playbook.yml --tags docker
 - Docker daemon hardened (ICC disabled, userland proxy disabled)
 - Sensitive files excluded from version control (`.gitignore`)
 
-## Compatibility Notes
-
-### bcrypt Python Module
-
-If you encounter `AttributeError: module 'bcrypt' has no attribute '__about__'`:
-
-```bash
-python3 scripts/bcrypt_patch.py
-```
-
-See `python3 scripts/bcrypt_patch.py --help` for options.
