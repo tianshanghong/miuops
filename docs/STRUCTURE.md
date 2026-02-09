@@ -25,5 +25,5 @@
 
 - **firewall** — Configures iptables with nft backend. INPUT chain (rate-limited SSH, management networks, whitelisted ports) and DOCKER-USER chain (blocks all direct container access, allows only loopback for cloudflared).
 - **docker** — Installs Docker CE + Compose plugin from official repos. Hardens daemon (ICC disabled, userland proxy disabled).
-- **traefik** — Sets up Traefik as reverse proxy with automatic TLS via Cloudflare DNS challenge. Creates Docker network, directories, and htpasswd auth.
+- **traefik** — Bootstraps Traefik directories and Docker network. Pulls latest image when stack is deployed.
 - **cloudflared** — Installs cloudflared binary, deploys tunnel credentials and config, creates wildcard + root CNAME DNS records, runs as systemd service.

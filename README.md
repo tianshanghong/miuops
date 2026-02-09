@@ -102,7 +102,7 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.myapp.rule=Host(`myapp.example.com`)"
       - "traefik.http.routers.myapp.entrypoints=websecure"
-      - "traefik.http.routers.myapp.tls.certresolver=le"
+      - "traefik.http.routers.myapp.tls=true"
       - "traefik.http.services.myapp.loadbalancer.server.port=8080"
 
 networks:

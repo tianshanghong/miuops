@@ -1,102 +1,33 @@
 ---
-# Deploy Traefik with Docker Compose
+# Traefik role: bootstrap server directories and upgrade Traefik image
+# Compose deployment is handled by the user's GitOps stack repo
 
-- name: Ensure apache2-utils (for htpasswd) is installed
-  become: true
-  package:
-    name: "{{ item }}"
-    state: present
-  with_items:
-    - apache2-utils  # Debian/Ubuntu
-  ignore_errors: true  # Allow to continue if one package manager fails
-  
+# ========== Bootstrap tasks (run on first setup) =============================
+
 - name: Create Traefik directory
   file:
     path: "{{ traefik_dir }}"
     state: directory
     mode: '0755'
-
-- name: Create Traefik auth directory
-  file:
-    path: "{{ traefik_dir }}/auth"
-    state: directory
-    mode: '0755'
-
-- name: Check if Traefik users file exists
-  ansible.builtin.stat:
-    path: "{{ traefik_dir }}/auth/users"
-  register: traefik_users_file
-
-- name: Check if Traefik dashboard password is needed
-  pause:
-    prompt: "Enter a password for the Traefik dashboard user '{{ traefik_dashboard_username }}'"
-  register: traefik_password_prompt
-  no_log: true
-  when: 
-    - traefik_dashboard_auth_enabled 
-    - not traefik_users_file.stat is defined or not traefik_users_file.stat.exists
-
-- name: Generate Traefik users file with htpasswd
-  shell: "htpasswd -cb {{ traefik_dir }}/auth/users {{ traefik_dashboard_username }} {{ traefik_password_prompt.user_input }}"
-  when: 
-    - traefik_dashboard_auth_enabled 
-    - traefik_password_prompt.user_input is defined
-    - not traefik_users_file.stat is defined or not traefik_users_file.stat.exists
-  no_log: true
-  changed_when: true
-
-- name: Ensure users file has correct permissions
-  file:
-    path: "{{ traefik_dir }}/auth/users"
-    mode: '0600'
-  when: traefik_dashboard_auth_enabled
+  tags: ['traefik']
 
 - name: Create Traefik network
   community.docker.docker_network:
     name: traefik_network
     driver: bridge
+  tags: ['traefik']
 
-- name: Ensure acme.json exists with correct permissions
-  file:
-    path: "{{ traefik_dir }}/{{ traefik_acme_file }}"
-    state: touch
-    mode: '0600'
+# ========== Upgrade tasks (idempotent — skipped if stack not yet deployed) ====
 
-- name: Deploy Traefik compose file
-  template:
-    src: traefik-compose.yml.j2
-    dest: "{{ traefik_dir }}/docker-compose.yml"
-    mode: '0644'
+- name: Check if Traefik stack is deployed
+  ansible.builtin.stat:
+    path: /opt/stacks/traefik/docker-compose.yml
+  register: traefik_stack_compose
+  tags: ['traefik']
 
-- name: Create hello world demo content
-  file:
-    path: "{{ traefik_dir }}/hello"
-    state: directory
-    mode: '0755'
-
-- name: Create hello world index.html
-  copy:
-    content: |
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Hello from Traefik!</title>
-        <style>
-          body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
-          h1 { color: #336699; }
-        </style>
-      </head>
-      <body>
-        <h1>Hello World!</h1>
-        <p>Your Traefik reverse proxy is working correctly.</p>
-        <p>Domain: hello.{{ domains[0].domain }}</p>
-      </body>
-      </html>
-    dest: "{{ traefik_dir }}/hello/index.html"
-    mode: '0644'
-
-- name: Launch Traefik stack
-  community.docker.docker_compose_v2:
-    project_src: "{{ traefik_dir }}"
-    state: present
-    pull: "always" 
+- name: Pull latest Traefik image and recreate container
+  shell: >
+    docker compose -f /opt/stacks/traefik/docker-compose.yml pull &&
+    docker compose -f /opt/stacks/traefik/docker-compose.yml up -d
+  when: traefik_stack_compose.stat.exists
+  tags: ['traefik']

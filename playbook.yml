@@ -36,17 +36,6 @@
       no_log: true
       when: (cf_api_token is not defined or cf_api_token == "") and cf_token_prompt.user_input is defined
     
-    - name: Check for Cloudflare email
-      pause:
-        prompt: "Enter your email address for Let's Encrypt notifications"
-      register: cf_email_prompt
-      when: cf_email is not defined or cf_email == ""
-    
-    - name: Set Cloudflare email
-      set_fact:
-        cf_email: "{{ cf_email_prompt.user_input }}"
-      when: (cf_email is not defined or cf_email == "") and cf_email_prompt.user_input is defined
-    
     - name: Check for Tunnel ID
       pause:
         prompt: "Enter your Cloudflare Tunnel UUID"

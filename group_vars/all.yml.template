@@ -16,15 +16,12 @@ domains:
 
 # Cloudflare credentials and settings
 cf_api_token: ""  # Cloudflare API Token with DNS edit permissions
-cf_email: ""      # Email for Let's Encrypt notifications
 
 # Cloudflare Tunnel settings
 tunnel_id: ""     # UUID of your Cloudflare Tunnel
 credentials_file: "/opt/cloudflared/{{ tunnel_id }}.json"
 
 # Traefik configuration
-traefik_dashboard_enabled: true  # Set to false to disable the dashboard completely
-
 # Directories
 traefik_dir: /opt/traefik
 cloudflared_dir: /opt/cloudflared
