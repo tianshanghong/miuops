@@ -1,0 +1,28 @@
+---
+# Defaults for dev_box role
+dev_box_enabled: false
+
+# Packages to install for a ready-to-code shell environment
+dev_box_packages:
+  - build-essential
+  - curl
+  - git
+  - mosh
+  - tmux
+  - unzip
+  - zsh
+
+# Shell preferences
+dev_box_shell: "/usr/bin/zsh"
+dev_box_auto_tmux: true
+
+# NVM/Node configuration
+dev_box_nvm_version: "v0.39.7"
+dev_box_node_version: "lts"
+
+# Codex CLI install toggle and package
+dev_box_install_codex_cli: true
+dev_box_codex_npm_package: "@openai/codex"
+
+# Convenience paths
+dev_box_user_home: "{{ ansible_env.HOME }}"

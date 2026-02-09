@@ -18,4 +18,12 @@ ssh_port: "22"    # SSH port to allow through UFW (change if you're using a non-
 # Directories
 traefik_dir: /opt/traefik
 cloudflared_dir: /opt/cloudflared
-portainer_dir: /opt/portainer 
+portainer_dir: /opt/portainer
+
+# Optional remote developer box configuration
+dev_box_enabled: false
+dev_box_node_version: "lts"
+dev_box_install_codex_cli: true
+dev_box_auto_tmux: true
+dev_box_mosh_port_start: 60000
+dev_box_mosh_port_end: 61000

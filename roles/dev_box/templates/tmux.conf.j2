@@ -1,0 +1,9 @@
+# Managed by Ansible (dev_box role)
+set -g mouse on
+set -g history-limit 100000
+set -g status-style fg=white,bg=#44475a
+set -g status-interval 5
+set -g default-terminal "screen-256color"
+setw -g mode-keys vi
+
+bind r source-file ~/.tmux.conf \; display-message "tmux conf reloaded"

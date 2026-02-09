@@ -22,4 +22,6 @@
     name: docker
     state: restarted
   become: true
-  when: "'docker.service' in ansible_facts.services"
+  when:
+    - ansible_facts.services is defined
+    - "'docker.service' in ansible_facts.services"

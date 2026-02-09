@@ -1,0 +1,95 @@
+---
+- name: Verify supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+    fail_msg: "dev_box role currently supports Debian/Ubuntu hosts only."
+
+- name: Install base developer packages
+  become: true
+  ansible.builtin.apt:
+    name: "{{ dev_box_packages }}"
+    state: present
+    update_cache: true
+
+- name: Ensure zsh configuration directory exists
+  become: true
+  ansible.builtin.file:
+    path: "{{ dev_box_user_home }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+
+- name: Deploy .zshrc for remote development
+  become: true
+  ansible.builtin.template:
+    src: zshrc.j2
+    dest: "{{ dev_box_user_home }}/.zshrc"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Deploy .tmux.conf
+  become: true
+  ansible.builtin.template:
+    src: tmux.conf.j2
+    dest: "{{ dev_box_user_home }}/.tmux.conf"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Ensure default shell is zsh
+  become: true
+  ansible.builtin.user:
+    name: "{{ ansible_user }}"
+    shell: "{{ dev_box_shell }}"
+  when: dev_box_shell is defined and dev_box_shell != ""
+
+- name: Check if NVM is already installed
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.stat:
+    path: "{{ dev_box_user_home }}/.nvm/nvm.sh"
+  register: dev_box_nvm_stat
+
+- name: Install NVM
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export PROFILE="/dev/null"
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/{{ dev_box_nvm_version }}/install.sh | bash
+  args:
+    executable: /bin/bash
+  when: not dev_box_nvm_stat.stat.exists
+
+- name: Install Node.js with NVM
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="{{ dev_box_user_home }}/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    if [ "{{ dev_box_node_version }}" = "lts" ]; then
+      nvm install --lts
+      nvm alias default 'lts/*'
+    else
+      nvm install {{ dev_box_node_version }}
+      nvm alias default {{ dev_box_node_version }}
+    fi
+  args:
+    executable: /bin/bash
+
+- name: Install Codex CLI via npm
+  become: true
+  become_user: "{{ ansible_user }}"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    export NVM_DIR="{{ dev_box_user_home }}/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    nvm use default >/dev/null
+    npm install -g {{ dev_box_codex_npm_package }}
+  args:
+    executable: /bin/bash
+  when: dev_box_install_codex_cli

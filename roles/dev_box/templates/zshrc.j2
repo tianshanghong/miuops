@@ -1,0 +1,28 @@
+# Managed by Ansible (dev_box role)
+
+autoload -U colors && colors
+setopt HIST_IGNORE_DUPS SHARE_HISTORY
+
+export EDITOR="vim"
+export LANG="en_US.UTF-8"
+export LC_ALL="en_US.UTF-8"
+export PATH="$HOME/.local/bin:$PATH"
+
+# NVM setup
+export NVM_DIR="$HOME/.nvm"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  . "$NVM_DIR/nvm.sh"
+fi
+
+alias ll='ls -lah'
+alias gs='git status'
+alias k='kubectl'
+
+{% if dev_box_auto_tmux %}
+# Auto-attach tmux session on SSH/mosh login
+if command -v tmux >/dev/null 2>&1; then
+  if [ -z "$TMUX" ] && [ -n "$SSH_CONNECTION" ]; then
+    tmux attach -t default || tmux new -s default
+  fi
+fi
+{% endif %}

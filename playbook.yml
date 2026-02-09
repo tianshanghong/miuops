@@ -64,8 +64,12 @@
       when: ssh_port is not defined
   
   roles:
-    - firewall
+    - role: firewall
+      tags: ['firewall']
     - docker
     - traefik
     - cloudflared
     - portainer
+    - role: dev_box
+      when: dev_box_enabled | default(false)
+      tags: ['dev_box']

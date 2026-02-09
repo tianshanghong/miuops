@@ -172,6 +172,10 @@ The `networks` section is required to connect your service to the existing Traef
 
 Remember that each router name (e.g., `myapp`, `myapp2`) must be unique across all your services.
 
+## Optional Remote Dev Box
+
+Need a persistent coding environment on the same host? Enable the `dev_box` role to install tmux, mosh, zsh, NVM/Node, and the Codex CLI for the Ansible SSH user. Flip `dev_box_enabled: true` in your vars (see `docs/DEV_BOX.md`) and re-run the playbook—the host becomes a ready-to-code remote workstation you can reach via SSH or mosh.
+
 ## Tunnel Management
 
 This project separates concerns between tunnel management (scripts) and DNS management (Ansible):
