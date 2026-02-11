@@ -114,6 +114,13 @@ ansible-playbook playbook.yml --tags docker
 - `scripts/delete-tunnel.sh` — Delete a tunnel and clean up credentials
 - DNS records are managed by Ansible during bootstrap
 
+## Backup Setup
+
+- `scripts/setup-s3-backup.sh` — Create an S3 bucket (Object Lock + lifecycle) and IAM user for backups
+- `images/postgres-walg/` — Custom PostgreSQL 17 + WAL-G image for continuous WAL archiving to S3
+
+The setup script creates a single `{project}-backup` bucket used by both offen (volume tarballs under `vol/`) and WAL-G (database backups under `db/`). Object Lock (Compliance, 30 days) prevents deletion; S3 lifecycle transitions to Glacier at 30 days and expires at 90 days.
+
 ## Security
 
 - Zero exposed ports — all traffic flows through Cloudflare Tunnel
