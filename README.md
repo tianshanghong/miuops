@@ -129,3 +129,10 @@ The setup script creates a single `{project}-backup` bucket used by both offen (
 - Docker daemon hardened (ICC disabled, userland proxy disabled)
 - Sensitive files excluded from version control (`.gitignore`)
 
+## Documentation
+
+- [Installation Guide](docs/INSTALLATION.md) — Full end-to-end setup walkthrough
+- [Repository Structure](docs/STRUCTURE.md) — Directory layout and role descriptions
+- [Disaster Recovery](docs/DISASTER_RECOVERY.md) — Backup restore procedures for all failure scenarios
+- [Daily Operations](docs/DAILY_OPS.md) — Quick reference for day-to-day server management
+
