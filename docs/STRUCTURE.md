@@ -14,10 +14,13 @@
 │   ├── traefik/               # Traefik reverse proxy setup
 │   └── cloudflared/           # Cloudflare Tunnel + DNS records
 ├── files/                     # Tunnel credentials (gitignored)
+├── images/
+│   └── postgres-walg/         # PostgreSQL 17 + WAL-G Docker image
 ├── scripts/
 │   ├── check-prereqs.sh       # Prerequisite checker
 │   ├── create-tunnel.sh       # Cloudflare Tunnel creation
 │   ├── delete-tunnel.sh       # Cloudflare Tunnel deletion
+│   └── setup-s3-backup.sh     # S3 backup bucket + IAM user creation
 └── docs/                      # Documentation
 ```
 
@@ -27,3 +30,7 @@
 - **docker** — Installs Docker CE + Compose plugin via signed apt repo. Hardens daemon (ICC disabled, userland proxy disabled).
 - **traefik** — Bootstraps Traefik directories and Docker network. Pulls latest image when stack is deployed.
 - **cloudflared** — Installs cloudflared via apt repo, deploys tunnel credentials and config, creates wildcard + root CNAME DNS records, runs as systemd service.
+
+## Images
+
+- **postgres-walg** — Custom PostgreSQL 17 image with WAL-G baked in. Provides continuous WAL archiving to S3 and a `walg-backup.sh` helper for daily base backups.
