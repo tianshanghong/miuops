@@ -26,7 +26,7 @@ Options:
   --dry-run    Show what would happen without making changes
 
 Environment:
-  CF_API_TOKEN   Cloudflare API token with Zone:DNS:Edit permissions
+  CF_API_TOKEN   Cloudflare API token (use 'Edit zone DNS' template)
 
 Example:
   CF_API_TOKEN=xxx ./miuops up root@203.0.113.10 example.com
@@ -178,10 +178,22 @@ cmd_up() {
         tunnel_output=$(cloudflared tunnel create "${tunnel_name}" 2>&1) || true
         tunnel_id=$(echo "$tunnel_output" | \
             grep -o '[a-f0-9]\{8\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{4\}-[a-f0-9]\{12\}' | head -1)
-        [[ -n "$tunnel_id" ]] || die "Failed to create tunnel
+
+        if [[ -n "$tunnel_id" ]]; then
+            info "Created tunnel: ${tunnel_id}"
+        else
+            # Creation failed (likely "already exists") — try to find it
+            warn "Tunnel creation returned no ID, looking up existing tunnel..."
+            local retry
+            retry=$(cloudflared tunnel list -o json 2>/dev/null || echo "[]")
+            tunnel_id=$(echo "$retry" | jq -r --arg name "$tunnel_name" \
+                '.[] | select(.name == $name and (.deleted_at == null or .deleted_at == "")) | .id' \
+                2>/dev/null | head -1) || true
+            [[ -n "$tunnel_id" ]] || die "Failed to create or find tunnel '${tunnel_name}'
   - Is cloudflared logged in? (cloudflared login)
-  - Does a deleted tunnel with name '${tunnel_name}' exist? (cloudflared tunnel list)"
-        info "Created tunnel: ${tunnel_id}"
+  - Run 'cloudflared tunnel list' to check"
+            info "Found existing tunnel: ${tunnel_id}"
+        fi
     fi
 
     # Copy credentials
