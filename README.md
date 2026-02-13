@@ -122,6 +122,7 @@ The setup script creates a single `{project}-backup` bucket used by both offen (
 
 ## Documentation
 
+- [Architecture](docs/ARCHITECTURE.md) — Design decisions, network model, and system diagram
 - [Installation Guide](docs/INSTALLATION.md) — Full end-to-end setup walkthrough
 - [Repository Structure](docs/STRUCTURE.md) — Directory layout and role descriptions
 - [Disaster Recovery](docs/DISASTER_RECOVERY.md) — Backup restore procedures for all failure scenarios
