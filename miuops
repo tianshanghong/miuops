@@ -66,8 +66,10 @@ cmd_up() {
     fi
 
     [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required
-  Create one at: https://dash.cloudflare.com/profile/api-tokens
-  Permissions needed: Zone > DNS > Edit
+  1. Go to https://dash.cloudflare.com/profile/api-tokens
+  2. Click 'Create Token'
+  3. Use the 'Edit zone DNS' template
+  4. Select your zone, then create
   Then run: CF_API_TOKEN=your_token ./miuops up ..."
 
     # ── Step 1: Prerequisites ──────────────────────────────────────
@@ -86,8 +88,7 @@ cmd_up() {
     command -v ansible-playbook >/dev/null 2>&1 \
         || die "ansible not found
   macOS:  brew install ansible
-  Linux:  pip install ansible
-  Docs:   https://docs.ansible.com/ansible/latest/installation_guide/"
+  Linux:  sudo apt install ansible"
     command -v cloudflared >/dev/null 2>&1 \
         || die "cloudflared not found
   macOS:  brew install cloudflare/cloudflare/cloudflared
@@ -132,7 +133,7 @@ cmd_up() {
         200) ;;
         401|403) die "Cloudflare API returned ${http_code} (unauthorized)
   - Is your CF_API_TOKEN valid?
-  - Does it have Zone:DNS:Edit permissions?" ;;
+  - Does it have Zone:Zone:Read and Zone:DNS:Edit permissions?" ;;
         *)  die "Cloudflare API returned HTTP ${http_code}
   Response: $(echo "$zone_response" | jq -r '.errors[0].message // empty' 2>/dev/null || echo 'unknown')" ;;
     esac
@@ -212,7 +213,7 @@ cmd_up() {
     fi
 
     local inventory_content="[bare_metal]
-metal ansible_host=${ssh_host} ansible_user=${ssh_user}"
+${ssh_host} ansible_user=${ssh_user}"
 
     local groupvars_content="---
 domains:

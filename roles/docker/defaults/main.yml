@@ -1,4 +1,4 @@
 ---
 # Docker role default variables
 docker_gpg_key_url: "https://download.docker.com/linux/{{ 'debian' if ansible_facts['distribution'] == 'Debian' else 'ubuntu' }}/gpg"
-docker_apt_repository: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ 'debian' if ansible_facts['distribution'] == 'Debian' else 'ubuntu' }} {{ ansible_facts['distribution_release'] }} stable"
+docker_apt_repository: "deb [arch={{ ansible_facts['architecture'] | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/{{ 'debian' if ansible_facts['distribution'] == 'Debian' else 'ubuntu' }} {{ ansible_facts['distribution_release'] }} stable"
