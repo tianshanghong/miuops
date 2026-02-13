@@ -25,3 +25,4 @@
   when:
     - ansible_facts.services is defined
     - "'docker.service' in ansible_facts.services"
+    - ansible_facts.services['docker.service'].state == 'running'
