@@ -55,7 +55,7 @@ echo ""
 echo "This will create:"
 echo "  - S3 bucket:  $BUCKET_NAME (region: $AWS_REGION)"
 echo "  - IAM user:   $IAM_USER (Put/Get/List only — no Delete)"
-echo "  - Object Lock: Compliance mode, 30-day retention"
+echo "  - Object Lock: Governance mode, 30-day retention"
 echo "  - Lifecycle:   Glacier after 30 days, expire after 90 days"
 echo ""
 read -rp "Continue? (y/N): " CONFIRM
@@ -123,7 +123,7 @@ echo "Public access blocked."
 # -- Object Lock default retention --------------------------------------------
 
 echo ""
-echo "--- Configuring Object Lock (Compliance, 30 days) ---"
+echo "--- Configuring Object Lock (Governance, 30 days) ---"
 
 aws s3api put-object-lock-configuration \
     --bucket "$BUCKET_NAME" \
@@ -131,7 +131,7 @@ aws s3api put-object-lock-configuration \
         "ObjectLockEnabled": "Enabled",
         "Rule": {
             "DefaultRetention": {
-                "Mode": "COMPLIANCE",
+                "Mode": "GOVERNANCE",
                 "Days": 30
             }
         }
