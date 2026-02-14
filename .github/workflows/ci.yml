@@ -1,0 +1,85 @@
+name: CI — Ansible idempotency
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ansible-dev
+  cancel-in-progress: true
+
+jobs:
+  ansible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Install Galaxy dependencies
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Write SSH key
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Write inventory
+        run: |
+          cat <<EOF > inventory.ini
+          [bare_metal]
+          dev ansible_host=${{ secrets.DEV_SERVER_HOST }} ansible_user=${{ secrets.DEV_SERVER_USER }} ansible_ssh_private_key_file=~/.ssh/id_ed25519
+          EOF
+
+      - name: Write group_vars
+        env:
+          GROUP_VARS: ${{ secrets.GROUP_VARS_ALL }}
+        run: printf '%s\n' "$GROUP_VARS" > group_vars/all.yml
+
+      - name: Write tunnel credentials
+        env:
+          TUNNEL_CREDS: ${{ secrets.TUNNEL_CREDENTIALS_JSON }}
+        run: |
+          mkdir -p files
+          printf '%s\n' "$TUNNEL_CREDS" > "files/${{ secrets.TUNNEL_ID }}.json"
+
+      - name: Run playbook (apply)
+        run: ansible-playbook playbook.yml
+
+      - name: Run playbook (idempotency check)
+        run: |
+          output=$(ansible-playbook playbook.yml 2>&1)
+          echo "$output"
+          changed=$(echo "$output" | grep -oP 'changed=\K[0-9]+' | tail -1)
+          if [ "$changed" != "0" ]; then
+            echo "::warning::Idempotency check: $changed task(s) reported changed on second run"
+          fi
+
+      - name: Verify Docker is active
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
+            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
+            'systemctl is-active docker'
+
+      - name: Verify traefik_network exists
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
+            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
+            'docker network inspect traefik_network > /dev/null'
+
+      - name: Verify cloudflared is active
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
+            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
+            'systemctl is-active cloudflared'
+
+      - name: Verify firewall rules
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
+            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
+            'iptables -L DOCKER-USER -n'
