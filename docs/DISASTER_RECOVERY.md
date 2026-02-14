@@ -13,7 +13,7 @@ S3 bucket: {project}-backup
     └── backup-YYYYMMDDTHHMMSS.tar.gz
 ```
 
-- **Object Lock** (Compliance, 30 days) prevents deletion of any backup
+- **Object Lock** (Governance, 30 days) prevents deletion of any backup
 - **Lifecycle**: transition to Glacier at 30 days, expire at 90 days
 - **IAM policy**: PutObject + GetObject + ListBucket only (no DeleteObject)
 
@@ -154,7 +154,7 @@ docker compose exec postgres psql -U postgres -c "SELECT pg_is_in_recovery();"
 
 ## Scenario 3: Volume data restore
 
-Restore Docker volume data from offen backup tarballs stored in S3.
+Restore Docker volume data from offen backup tarballs stored in S3. Run all commands **on the server** — download directly from S3 to avoid double-transferring large backups through your laptop.
 
 **1. List available backups:**
 
@@ -162,20 +162,43 @@ Restore Docker volume data from offen backup tarballs stored in S3.
 aws s3 ls s3://PROJECT-backup/vol/ --region REGION
 ```
 
+If encrypted, files will have a `.gpg` or `.age` extension (e.g. `backup-YYYYMMDDTHHMMSS.tar.gz.gpg`).
+
 **2. Download the backup:**
 
 ```bash
+# Unencrypted
 aws s3 cp s3://PROJECT-backup/vol/backup-YYYYMMDDTHHMMSS.tar.gz . --region REGION
+
+# Encrypted (include the .gpg or .age extension)
+aws s3 cp s3://PROJECT-backup/vol/backup-YYYYMMDDTHHMMSS.tar.gz.gpg . --region REGION
 ```
 
-**3. Stop the affected services:**
+**3. Decrypt the backup (if encrypted):**
+
+```bash
+# GPG (symmetric or asymmetric)
+gpg --decrypt backup-YYYYMMDDTHHMMSS.tar.gz.gpg > backup-YYYYMMDDTHHMMSS.tar.gz
+
+# Age (symmetric — passphrase)
+age --decrypt -o backup-YYYYMMDDTHHMMSS.tar.gz backup-YYYYMMDDTHHMMSS.tar.gz.age
+
+# Age (asymmetric — identity file)
+age --decrypt -i key.txt -o backup-YYYYMMDDTHHMMSS.tar.gz backup-YYYYMMDDTHHMMSS.tar.gz.age
+```
+
+If using Age: `apt install age` (Debian/Ubuntu) or download from [github.com/FiloSottile/age](https://github.com/FiloSottile/age). GPG is pre-installed on most systems. For asymmetric methods, you'll need the private key or identity file — transfer it to the server temporarily and remove it after decryption.
+
+See [Backup Encryption](BACKUP_ENCRYPTION.md) for details on each method.
+
+**4. Stop the affected services:**
 
 ```bash
 cd /path/to/stack
 docker compose stop
 ```
 
-**4. Extract to the target volume:**
+**5. Extract to the target volume:**
 
 ```bash
 docker run --rm \
@@ -184,10 +207,16 @@ docker run --rm \
   alpine sh -c "cd /restore && tar xzf /backup.tar.gz"
 ```
 
-**5. Restart services:**
+**6. Restart services:**
 
 ```bash
 docker compose up -d
+```
+
+**Note:** The `.env` file (containing all secrets) is included in the backup tarball under `dotenv/.env`. If you need to recover it, extract it from the tarball:
+
+```bash
+tar xzf backup-YYYYMMDDTHHMMSS.tar.gz dotenv/.env
 ```
 
 ## Scenario 4: Credential rotation

@@ -145,7 +145,7 @@ s3://{project}-backup/
 
 **Why one bucket?** All credentials live on the same server — separate buckets with separate IAM users don't improve security if the server is compromised (the attacker gets all credentials). One lifecycle policy, one Object Lock config, one bucket to manage. Adding a database means picking a new `WALG_S3_PREFIX`, no AWS operations needed.
 
-**Why one IAM user?** Same reasoning. The IAM user gets Put, Get, List permissions only — no Delete. Object Lock (Compliance, 30 days) prevents deletion by anyone, including the AWS root account.
+**Why one IAM user?** Same reasoning. The IAM user gets Put, Get, List permissions only — no Delete. Object Lock (Governance, 30 days) prevents deletion by anyone without the `s3:BypassGovernanceRetention` permission. Backups can optionally be encrypted client-side (GPG or Age) before upload — see [Backup Encryption](BACKUP_ENCRYPTION.md).
 
 For restore procedures, see [Disaster Recovery](DISASTER_RECOVERY.md).
 

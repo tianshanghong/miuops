@@ -109,7 +109,7 @@ ansible-playbook playbook.yml
 ```
 
 The script prompts for a project name and AWS region (default: `us-west-2`), then creates:
-- S3 bucket `{project}-backup` with Object Lock (Compliance, 30 days)
+- S3 bucket `{project}-backup` with Object Lock (Governance, 30 days)
 - Lifecycle rules: transition to Glacier at 30 days, expire at 90 days
 - IAM user `{project}-backup` with PutObject/GetObject/ListBucket only (no Delete)
 - Access key credentials
