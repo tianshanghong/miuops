@@ -3,7 +3,6 @@ name: CI — Ansible idempotency
 on:
   push:
     branches: [main]
-  pull_request:
 
 concurrency:
   group: ansible-dev
