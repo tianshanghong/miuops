@@ -81,3 +81,9 @@
     state: started
     enabled: yes
   tags: ['docker']
+
+- name: Install QEMU user-mode emulation for cross-architecture containers
+  apt:
+    name: qemu-user-static
+    state: present
+  tags: ['docker']
