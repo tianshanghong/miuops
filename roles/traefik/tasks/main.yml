@@ -26,12 +26,6 @@
     force: no
   tags: ['traefik']
 
-- name: Create Traefik network
-  community.docker.docker_network:
-    name: traefik_network
-    driver: bridge
-  tags: ['traefik']
-
 # ========== Upgrade tasks (idempotent — skipped if stack not yet deployed) ====
 
 - name: Check if Traefik stack is deployed
@@ -44,5 +38,15 @@
   shell: >
     docker compose -f /opt/stacks/traefik/docker-compose.yml pull &&
     docker compose -f /opt/stacks/traefik/docker-compose.yml up -d
+  when: traefik_stack_compose.stat.exists
+  tags: ['traefik']
+
+- name: Reconnect Traefik to per-stack ingress networks
+  shell: |
+    for stack in /opt/stacks/*/; do
+      stack="$(basename "$stack")"
+      [ "$stack" = "traefik" ] && continue
+      docker network connect "${stack}_ingress" traefik 2>/dev/null || true
+    done
   when: traefik_stack_compose.stat.exists
   tags: ['traefik']

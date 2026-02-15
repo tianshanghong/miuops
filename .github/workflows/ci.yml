@@ -78,12 +78,6 @@ jobs:
             ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
             'systemctl is-active docker'
 
-      - name: Verify traefik_network exists
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
-            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
-            'docker network inspect traefik_network > /dev/null'
-
       - name: Verify cloudflared is active
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
