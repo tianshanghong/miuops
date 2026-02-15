@@ -127,17 +127,14 @@ Save the output — you'll need `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `A
    | `SSH_HOST` | Your server IP or hostname |
    | `SSH_USER` | SSH user (same as `ansible_user`) |
    | `SSH_PRIVATE_KEY` | Contents of your SSH private key |
-   | `ENV_FILE` | Contents of your `.env` file (see below) |
 
-3. Clone your stack repo and fill in `.env` from `.env.example`:
+3. SSH into the server and fill in `/opt/stacks/.env` (pre-created by the Ansible bootstrap with secure permissions):
 
    ```bash
-   git clone https://github.com/yourorg/yourstack
-   cd yourstack
-   cp .env.example .env
+   ssh root@your-server nano /opt/stacks/.env
    ```
 
-   The `.env` file includes domains, backup credentials (from Step 2), and service-specific variables. See the stack template README for the full variable reference.
+   Copy variables from `.env.example` and fill in real values — domains, backup credentials (from Step 2), and service-specific variables.
 
 ## Step 4: Deploy
 

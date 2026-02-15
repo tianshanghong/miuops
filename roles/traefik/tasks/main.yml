@@ -11,6 +11,21 @@
     mode: '0755'
   tags: ['traefik']
 
+- name: Create stacks directory
+  file:
+    path: /opt/stacks
+    state: directory
+    mode: '0755'
+  tags: ['traefik']
+
+- name: Create stacks .env file
+  copy:
+    content: ""
+    dest: /opt/stacks/.env
+    mode: '0600'
+    force: no
+  tags: ['traefik']
+
 - name: Create Traefik network
   community.docker.docker_network:
     name: traefik_network
