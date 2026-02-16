@@ -6,29 +6,32 @@
 :DOCKER-USER -  [0:0]
 
 ############ INPUT ############
-# 1. EST/REL
+# 1. drop invalid
+-A INPUT -m conntrack --ctstate INVALID -j DROP
+
+# 2. EST/REL
 -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 
-# 2. loopback
+# 3. loopback
 -A INPUT -i lo -j ACCEPT
 
-# 3. SSH rate-limit
+# 4. SSH rate-limit
 # -- UPDATE / DROP
 -A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --update --seconds 60 --hitcount 6 -j DROP
 # -- SET / ACCEPT
 -A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --set -j ACCEPT
 
-# 4. management nets
+# 5. management nets
 {% for cidr in firewall_management_networks_v4|default([]) %}
 -A INPUT -s {{ cidr }} -j ACCEPT
 {% endfor %}
 
-# 5. whitelisted ports
+# 6. whitelisted ports
 {% for port in firewall_whitelist_ports_v4|default([]) %}
 -A INPUT -p tcp --dport {{ port }} -j ACCEPT
 {% endfor %}
 
-# 6. drop all other traffic
+# 7. drop all other traffic
 -A INPUT -j DROP
 
 ############ DOCKER-USER ############
