@@ -34,7 +34,7 @@ jobs:
         with:
           context: images/postgres-walg
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/postgres-walg:17
             ghcr.io/${{ github.repository_owner }}/postgres-walg:latest
