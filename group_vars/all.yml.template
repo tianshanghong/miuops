@@ -22,5 +22,4 @@ tunnel_id: ""     # UUID of your Cloudflare Tunnel
 credentials_file: "/opt/cloudflared/{{ tunnel_id }}.json"
 
 # Directories (override role defaults if needed)
-# traefik_dir: /opt/traefik
 # cloudflared_dir: /opt/cloudflared
