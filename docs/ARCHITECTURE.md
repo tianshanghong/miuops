@@ -13,6 +13,7 @@ Design rationale and internal architecture of miuOps.
 | WAL-G | PostgreSQL backup | Physical backup + continuous WAL archiving to S3, baked into a custom PG image. |
 | Single S3 bucket | Backup storage | One bucket, one IAM user, prefixes separate data types. Simplifies lifecycle and Object Lock config. |
 | Two repos | Public tool + private config | miuOps is open-source; user infrastructure is private. Different lifecycles, different audiences. |
+| Registry auth | Stack repo deploy workflow, not Ansible | Registry credentials are deployment-specific (which registries, which tokens). The bootstrap layer shouldn't know about private image registries. Credentials live in `.env` on the server. |
 | No backward compat | Clean break | No migration paths, shims, or old-structure support. |
 
 ## Two-Repo Architecture
