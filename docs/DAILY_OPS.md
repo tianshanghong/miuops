@@ -117,6 +117,48 @@ Then **add Traefik labels** in your stack repo's compose file with ``Host(`sub.n
 
 The Cloudflare API token must have DNS edit permissions for all zones in the list (set this when [creating the token](INSTALLATION.md#create-a-cloudflare-api-token)).
 
+## Removing a domain from the tunnel
+
+Re-run `./miuops up` with only the domains you want to keep:
+
+```bash
+# Was: ./miuops up root@your-server example.com example.org
+# Now remove example.org:
+CF_API_TOKEN=your_token ./miuops up root@your-server example.com
+```
+
+This updates the ingress config (traffic to the removed domain hits 404). Then clean up the orphaned DNS records:
+
+1. Go to the [Cloudflare dashboard](https://dash.cloudflare.com) → DNS for the removed domain
+2. Delete the two CNAME records pointing to `<tunnel-id>.cfargotunnel.com`
+
+## Deleting a tunnel
+
+To fully remove a Cloudflare Tunnel and decommission:
+
+**1. Delete the tunnel** (from your local machine where `cert.pem` exists):
+
+```bash
+cloudflared tunnel list                    # find the tunnel name/ID
+cloudflared tunnel delete <tunnel-name>    # e.g. miuops-203-0-113-10
+```
+
+**2. Remove DNS CNAME records** from the [Cloudflare dashboard](https://dash.cloudflare.com):
+
+For each domain, delete the two CNAME records pointing to `<tunnel-id>.cfargotunnel.com`:
+- `example.com` → `<tunnel-id>.cfargotunnel.com`
+- `*.example.com` → `<tunnel-id>.cfargotunnel.com`
+
+**3. Clean up local files:**
+
+```bash
+rm -f files/<tunnel-id>.json
+rm -f group_vars/all.yml
+rm -f inventory.ini
+```
+
+The next `./miuops up` will create a fresh tunnel.
+
 ## Infrastructure upgrades
 
 Run from your local machine (where Ansible is installed):

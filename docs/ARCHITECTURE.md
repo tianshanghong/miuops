@@ -36,7 +36,6 @@ miuOps/
 │   └── traefik/              #   Bootstrap (dirs, network) + upgrades
 ├── playbook.yml
 ├── scripts/
-│   ├── delete-tunnel.sh
 │   └── setup-s3-backup.sh
 ├── images/
 │   └── postgres-walg/        # Custom PG image with WAL-G

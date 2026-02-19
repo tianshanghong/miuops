@@ -102,9 +102,9 @@ ansible-playbook playbook.yml --tags docker
 ## Tunnel Management
 
 - `./miuops up` automatically creates and configures a Cloudflare Tunnel
-- `scripts/delete-tunnel.sh` — Delete a tunnel and clean up credentials
 - DNS CNAME records are created by the CLI via Cloudflare API
 - Re-running `./miuops up` with additional domains adds them to the existing tunnel
+- To delete a tunnel, see [Deleting a tunnel](docs/DAILY_OPS.md#deleting-a-tunnel)
 
 ## Backup Setup
 

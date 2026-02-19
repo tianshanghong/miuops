@@ -18,7 +18,6 @@
 │   └── postgres-walg/         # PostgreSQL 17 + WAL-G Docker image
 ├── miuops                     # CLI entry point (./miuops up)
 ├── scripts/
-│   ├── delete-tunnel.sh       # Cloudflare Tunnel deletion
 │   └── setup-s3-backup.sh     # S3 backup bucket + IAM user creation
 └── docs/                      # Documentation
 ```
