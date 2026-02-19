@@ -6,8 +6,8 @@ End-to-end walkthrough: from bare server to running services. For a condensed ve
 
 | Requirement | Purpose |
 |---|---|
-| Cloudflare account with your domain | DNS, CDN, WAF |
-| Cloudflare API token | Tunnel creation and DNS records |
+| Cloudflare account with your domain(s) | DNS, CDN, WAF |
+| Cloudflare API token | Tunnel creation and DNS records (scope to all zones you'll use) |
 | Server with SSH access (Debian/Ubuntu) | Target machine |
 | Local tools: `ansible`, `cloudflared`, `jq`, `curl`, `ssh` | The CLI checks these and guides you |
 | aws CLI (configured with admin credentials) | Backup bucket setup (Step 2) |
@@ -65,7 +65,7 @@ The playbook provisions the server with:
 - **iptables firewall** — default-DROP on INPUT and DOCKER-USER chains, rate-limited SSH
 - **Docker CE + Compose** — hardened daemon (ICC disabled, userland proxy disabled)
 - **Traefik directories + Docker network** — ready for compose deployment
-- **cloudflared** — systemd service, wildcard + root CNAME DNS records
+- **cloudflared** — systemd service, wildcard + root CNAME DNS records (supports [multiple domains](DAILY_OPS.md#adding-a-domain-to-the-tunnel))
 
 ### Dry run
 

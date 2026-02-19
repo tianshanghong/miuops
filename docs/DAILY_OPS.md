@@ -103,6 +103,34 @@ To manually re-run a deploy without changes:
 git commit --allow-empty -m "Redeploy" && git push
 ```
 
+## Adding a domain to the tunnel
+
+A single Cloudflare Tunnel can serve multiple domains. Each domain gets a wildcard and root CNAME record pointing to the tunnel, so any subdomain is automatically routed.
+
+1. **Get the Zone ID** from [Cloudflare Dashboard](https://dash.cloudflare.com) > your domain > Overview (right sidebar).
+
+2. **Add the domain** to `group_vars/all.yml`:
+
+   ```yaml
+   domains:
+     - domain: "example.com"
+       zone_id: "abc123"
+     - domain: "anotherdomain.com"
+       zone_id: "def456"
+   ```
+
+3. **Re-run the cloudflared role**:
+
+   ```bash
+   ansible-playbook playbook.yml --tags cloudflared
+   ```
+
+   This idempotently creates the DNS records, updates the tunnel ingress config, and restarts cloudflared.
+
+4. **Add Traefik labels** in your stack repo's compose file with ``Host(`sub.anotherdomain.com`)`` and deploy.
+
+The Cloudflare API token must have DNS edit permissions for all zones in the list (set this when [creating the token](INSTALLATION.md#create-a-cloudflare-api-token)).
+
 ## Infrastructure upgrades
 
 Run from your local machine (where Ansible is installed):
