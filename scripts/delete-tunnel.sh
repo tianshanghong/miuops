@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Helper script to delete a Cloudflare Tunnel and clean up related files
-# This script ONLY deletes tunnels - DNS records are managed by Ansible
+# This script ONLY deletes tunnels — DNS CNAME records must be removed manually from Cloudflare dashboard
 
 set -e
 
@@ -31,7 +31,7 @@ echo "=============================================="
 echo "        Cloudflare Tunnel Deletion Tool       "
 echo "=============================================="
 echo "NOTE: This script only deletes the tunnel itself."
-echo "      DNS records must be managed by Ansible."
+echo "      DNS CNAME records must be removed manually from Cloudflare dashboard."
 echo "=============================================="
 
 # List all available tunnels
@@ -112,8 +112,7 @@ echo "ID:   $TUNNEL_ID"
 echo "Name: $TUNNEL_NAME"
 echo ""
 echo "NOTE: This script will NOT modify any DNS records."
-echo "      To update DNS records, you'll need to run Ansible after removing"
-echo "      this tunnel from your configuration."
+echo "      You'll need to remove CNAME records manually from Cloudflare dashboard."
 echo ""
 
 read -p "Are you sure you want to delete this tunnel? (y/N): " CONFIRM
@@ -156,7 +155,6 @@ echo "========================================================="
 echo "Tunnel '$TUNNEL_NAME' ($TUNNEL_ID) has been deleted."
 echo ""
 echo "IMPORTANT NEXT STEPS:"
-echo "1. Remove this tunnel from your group_vars/all.yml"
-echo "2. Run ansible-playbook playbook.yml to clean up DNS records"
-echo "   and deploy with the updated configuration"
+echo "1. Remove CNAME records for this tunnel from Cloudflare dashboard"
+echo "2. Delete group_vars/all.yml so the next './miuops up' creates a fresh tunnel"
 echo "=========================================================" 

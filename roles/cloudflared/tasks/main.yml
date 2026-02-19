@@ -1,5 +1,6 @@
 ---
-# Install cloudflared, deploy tunnel credentials and config, create DNS records
+# Install cloudflared, deploy tunnel credentials and config
+# DNS CNAME records are created by the miuops CLI via Cloudflare API
 
 - name: Create cloudflared directory
   file:
@@ -52,49 +53,6 @@
       You need to run 'cloudflared tunnel login' and 'cloudflared tunnel create <name>'
       manually on this server, then copy the JSON credentials to {{ credentials_file }}.
   when: not cf_credentials.stat.exists and (credentials_copy is failed or credentials_copy is skipped)
-  tags: ['cloudflared']
-
-# DNS records — 400 means record already exists (idempotent)
-- name: Set up wildcard CNAME records for all domains
-  uri:
-    url: "https://api.cloudflare.com/client/v4/zones/{{ item.zone_id }}/dns_records"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ cf_api_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      type: "CNAME"
-      name: "*.{{ item.domain }}"
-      content: "{{ tunnel_id }}.cfargotunnel.com"
-      ttl: 1
-      proxied: true
-    status_code: [200, 201, 400]
-  loop: "{{ domains }}"
-  when: cf_api_token != "" and item.zone_id is defined and item.zone_id != ""
-  register: dns_result_wildcard
-  ignore_errors: true
-  tags: ['cloudflared']
-
-- name: Set up root domain CNAME records for all domains
-  uri:
-    url: "https://api.cloudflare.com/client/v4/zones/{{ item.zone_id }}/dns_records"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ cf_api_token }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      type: "CNAME"
-      name: "{{ item.domain }}"
-      content: "{{ tunnel_id }}.cfargotunnel.com"
-      ttl: 1
-      proxied: true
-    status_code: [200, 201, 400]
-  loop: "{{ domains }}"
-  when: cf_api_token != "" and item.zone_id is defined and item.zone_id != ""
-  register: dns_result_root
-  ignore_errors: true
   tags: ['cloudflared']
 
 - name: Deploy cloudflared config

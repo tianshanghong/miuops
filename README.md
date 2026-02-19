@@ -39,10 +39,10 @@ miuOps provisions a server with Docker, Traefik, Cloudflare Tunnel, and an iptab
 ```bash
 git clone https://github.com/tianshanghong/miuops
 cd miuops
-CF_API_TOKEN=your_token ./miuops up root@203.0.113.10 example.com
+CF_API_TOKEN=your_token ./miuops up root@203.0.113.10 example.com example.org
 ```
 
-That's it. The CLI handles Cloudflare Tunnel creation, config generation, Ansible Galaxy dependencies, and runs the playbook — all in one command.
+That's it. Pass one or more domains — the CLI handles Cloudflare Tunnel creation, DNS route registration, config generation, and runs the playbook.
 
 ### Prerequisites
 
@@ -64,7 +64,7 @@ You also need:
 
 ```bash
 # Preview what would happen without making changes
-CF_API_TOKEN=your_token ./miuops up --dry-run root@203.0.113.10 example.com
+CF_API_TOKEN=your_token ./miuops up --dry-run root@203.0.113.10 example.com example.org
 
 # SSH user defaults to root if omitted
 CF_API_TOKEN=your_token ./miuops up 203.0.113.10 example.com
@@ -103,7 +103,8 @@ ansible-playbook playbook.yml --tags docker
 
 - `./miuops up` automatically creates and configures a Cloudflare Tunnel
 - `scripts/delete-tunnel.sh` — Delete a tunnel and clean up credentials
-- DNS records are managed by Ansible during bootstrap
+- DNS CNAME records are created by the CLI via Cloudflare API
+- Re-running `./miuops up` with additional domains adds them to the existing tunnel
 
 ## Backup Setup
 

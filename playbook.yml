@@ -21,20 +21,7 @@
     - name: Check for required variables
       fail:
         msg: "Please configure at least one domain in group_vars/all.yml"
-      when: domains is not defined or domains | length == 0 or domains[0].domain is not defined or domains[0].domain == ""
-    
-    - name: Check for Cloudflare API token
-      pause:
-        prompt: "Enter your Cloudflare API token with Zone:DNS:Edit permissions"
-      register: cf_token_prompt
-      no_log: true
-      when: cf_api_token is not defined or cf_api_token == ""
-    
-    - name: Set Cloudflare API token
-      set_fact:
-        cf_api_token: "{{ cf_token_prompt.user_input }}"
-      no_log: true
-      when: (cf_api_token is not defined or cf_api_token == "") and cf_token_prompt.user_input is defined
+      when: domains is not defined or domains | length == 0 or domains[0] == ""
     
     - name: Check for Tunnel ID
       pause:

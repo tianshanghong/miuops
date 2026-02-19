@@ -46,9 +46,8 @@ jobs:
           with open('group_vars/all.yml') as f:
               data = yaml.safe_load(f)
           for d in data.get('domains', []):
-              print(f'::add-mask::{d[\"domain\"]}')
-              print(f'::add-mask::{d[\"zone_id\"]}')
-          for key in ('cf_api_token', 'tunnel_id'):
+              print(f'::add-mask::{d}')
+          for key in ('tunnel_id',):
               if data.get(key):
                   print(f'::add-mask::{data[key]}')
           "

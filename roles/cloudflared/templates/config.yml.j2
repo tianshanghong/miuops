@@ -4,19 +4,16 @@ credentials-file: {{ credentials_file }}
 
 # Ingress rules
 ingress:
-  {% for domain_config in domains %}
-  # Domain: {{ domain_config.domain }} (root domain)
-  - hostname: "{{ domain_config.domain }}"
+{% for domain in domains %}
+  - hostname: "{{ domain }}"
     service: https://127.0.0.1:443
     originRequest:
       noTLSVerify: true
-  # Domain: {{ domain_config.domain }} (subdomains)
-  - hostname: "*.{{ domain_config.domain }}"
+  - hostname: "*.{{ domain }}"
     service: https://127.0.0.1:443
     originRequest:
       noTLSVerify: true
-  {% endfor %}
-  
+{% endfor %}
   # Catch-all rule (required)
   - service: http_status:404
 

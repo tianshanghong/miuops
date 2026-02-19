@@ -5,17 +5,10 @@
 ssh_port: 22  # Default SSH port, can be changed if needed
 
 # Domain configuration
-# List of all domains to be configured with Cloudflare Tunnel
-# First domain will be used as default for services without explicit domain
+# List of domains to be configured with Cloudflare Tunnel
 domains:
-  - domain: "example.com"
-    zone_id: ""  # Cloudflare Zone ID (found in Cloudflare dashboard)
-  # Add more domains as needed:
-  # - domain: "anotherdomain.com"
-  #   zone_id: ""  # Cloudflare Zone ID for this domain
-
-# Cloudflare credentials and settings
-cf_api_token: ""  # Cloudflare API Token with DNS edit permissions
+  - "example.com"
+  # - "anotherdomain.com"
 
 # Cloudflare Tunnel settings
 tunnel_id: ""     # UUID of your Cloudflare Tunnel

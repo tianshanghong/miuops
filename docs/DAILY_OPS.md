@@ -103,6 +103,20 @@ To manually re-run a deploy without changes:
 git commit --allow-empty -m "Redeploy" && git push
 ```
 
+## Adding a domain to the tunnel
+
+A single Cloudflare Tunnel can serve multiple domains. Re-run `./miuops up` with all domains — it's idempotent:
+
+```bash
+CF_API_TOKEN=your_token ./miuops up root@your-server existing.com newdomain.com
+```
+
+This registers DNS routes, updates the tunnel config, and re-runs the playbook. Existing domains are unaffected.
+
+Then **add Traefik labels** in your stack repo's compose file with ``Host(`sub.newdomain.com`)`` and deploy.
+
+The Cloudflare API token must have DNS edit permissions for all zones in the list (set this when [creating the token](INSTALLATION.md#create-a-cloudflare-api-token)).
+
 ## Infrastructure upgrades
 
 Run from your local machine (where Ansible is installed):

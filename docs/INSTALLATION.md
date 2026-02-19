@@ -6,8 +6,8 @@ End-to-end walkthrough: from bare server to running services. For a condensed ve
 
 | Requirement | Purpose |
 |---|---|
-| Cloudflare account with your domain | DNS, CDN, WAF |
-| Cloudflare API token | Tunnel creation and DNS records |
+| Cloudflare account with your domain(s) | DNS, CDN, WAF |
+| Cloudflare API token | Tunnel creation and DNS records (scope to all zones you'll use) |
 | Server with SSH access (Debian/Ubuntu) | Target machine |
 | Local tools: `ansible`, `cloudflared`, `jq`, `curl`, `ssh` | The CLI checks these and guides you |
 | aws CLI (configured with admin credentials) | Backup bucket setup (Step 2) |
@@ -50,29 +50,35 @@ aws configure
 ```bash
 git clone https://github.com/tianshanghong/miuops
 cd miuops
+
+# Single domain
 CF_API_TOKEN=your_token ./miuops up root@203.0.113.10 example.com
+
+# Multiple domains
+CF_API_TOKEN=your_token ./miuops up root@203.0.113.10 example.com example.org
 ```
 
 The CLI handles everything:
 1. Checks prerequisites (and tells you how to install any that are missing)
-2. Looks up the Cloudflare Zone ID for your domain
+2. Looks up the Cloudflare Zone ID for each domain
 3. Creates a Cloudflare Tunnel (or reuses an existing one)
-4. Generates `inventory.ini` and `group_vars/all.yml`
-5. Installs Ansible Galaxy dependencies
-6. Runs the playbook
+4. Creates DNS CNAME records for all domains (Cloudflare API)
+5. Generates `inventory.ini` and `group_vars/all.yml`
+6. Installs Ansible Galaxy dependencies
+7. Runs the playbook
 
 The playbook provisions the server with:
 - **iptables firewall** — default-DROP on INPUT and DOCKER-USER chains, rate-limited SSH
 - **Docker CE + Compose** — hardened daemon (ICC disabled, userland proxy disabled)
 - **Traefik directories + Docker network** — ready for compose deployment
-- **cloudflared** — systemd service, wildcard + root CNAME DNS records
+- **cloudflared** — systemd service with tunnel config for all domains
 
 ### Dry run
 
 Preview what would happen without making changes:
 
 ```bash
-CF_API_TOKEN=your_token ./miuops up --dry-run root@203.0.113.10 example.com
+CF_API_TOKEN=your_token ./miuops up --dry-run root@203.0.113.10 example.com example.org
 ```
 
 ### Manual setup (alternative)
@@ -90,11 +96,14 @@ ansible-galaxy collection install -r requirements.yml
 cp inventory.ini.template inventory.ini
 cp group_vars/all.yml.template group_vars/all.yml
 # Edit inventory.ini with your server details
-# Edit group_vars/all.yml with your domain, zone ID, API token
+# Edit group_vars/all.yml with your domains and tunnel ID
 
 # Create Cloudflare Tunnel (handled automatically by ./miuops up)
-cloudflared tunnel create example.com
-# Copy tunnel credentials and ID into group_vars/all.yml
+cloudflared tunnel create miuops-203-0-113-10
+# Create DNS CNAME records in Cloudflare dashboard for each domain:
+#   example.com     -> <tunnel-id>.cfargotunnel.com (Proxied)
+#   *.example.com   -> <tunnel-id>.cfargotunnel.com (Proxied)
+# Copy tunnel credentials JSON into files/
 
 # Bootstrap server
 ansible-playbook playbook.yml
