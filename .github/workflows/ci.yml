@@ -83,8 +83,54 @@ jobs:
             ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
             'systemctl is-active cloudflared'
 
-      - name: Verify firewall rules
+      - name: Verify firewall enforcement (security assertions)
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
-            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
-            'iptables -L DOCKER-USER -n'
+            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} '
+            set -e
+            v4=$(iptables -S); v6=$(ip6tables -S)
+            echo "$v4" | grep -q "^-P INPUT DROP"            || { echo "FAIL: IPv4 INPUT policy is not DROP"; exit 1; }
+            echo "$v4" | grep -q "^-P FORWARD DROP"          || { echo "FAIL: IPv4 FORWARD policy is not DROP"; exit 1; }
+            echo "$v4" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on INPUT"; exit 1; }
+            echo "$v4" | grep -q -- "--name ssh"             || { echo "FAIL: SSH protection rule missing"; exit 1; }
+            echo "$v4" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: DOCKER-USER missing final DROP"; exit 1; }
+            echo "$v6" | grep -q "^-P INPUT DROP"            || { echo "FAIL: IPv6 INPUT policy is not DROP"; exit 1; }
+            echo "ALL FIREWALL SECURITY ASSERTIONS PASSED"
+          '
+
+      # Exercises the rule-change path that a normal (no-op) run never hits:
+      # force a real change, then prove the role reconciles it safely.
+      - name: Verify firewall change-path (drift → validate → reload → Docker chains → session survival)
+        run: |
+          set -e
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+
+          echo "::group::Tamper persisted ruleset to force a real change"
+          $SSH 'cp /etc/iptables/rules.v4 /tmp/rules.v4.pre && sed -i "/-A INPUT -i lo -j ACCEPT/d" /etc/iptables/rules.v4 && echo "drift injected: removed lo-accept from /etc/iptables/rules.v4"'
+          echo "::endgroup::"
+
+          echo "::group::Re-run playbook — must re-render, validate, reload, restart Docker"
+          set +e
+          out="$(ansible-playbook playbook.yml 2>&1)"; rc=$?
+          set -e
+          echo "$out"
+          echo "::endgroup::"
+          # rc=0 ⇒ no failed tasks AND host stayed reachable (the SSH session survived the reload)
+          [ $rc -eq 0 ] || { echo "FAIL: playbook errored or host became unreachable during reload (rc=$rc)"; exit 1; }
+          echo "$out" | grep -q "firewall : Reload IPv4 rules" || { echo "FAIL: reload handler did not fire on a real rule change"; exit 1; }
+
+          echo "::group::Assert kernel reconciled + Docker chains restored"
+          $SSH '
+            set -e
+            iptables -S INPUT | grep -q -- "-A INPUT -i lo -j ACCEPT" || { echo "FAIL: lo-accept not restored in running kernel"; exit 1; }
+            grep -q -- "-A INPUT -i lo -j ACCEPT" /etc/iptables/rules.v4 || { echo "FAIL: persisted ruleset not reconciled"; exit 1; }
+            iptables -S | grep -q "^-N DOCKER$" || { echo "FAIL: Docker filter chains missing after reload (containers left unprotected)"; exit 1; }
+            echo "CHANGE-PATH RECONCILED OK"
+          '
+          echo "::endgroup::"
+
+          echo "::group::Stabilizing run must be idempotent again"
+          ch="$(ansible-playbook playbook.yml 2>&1 | grep -oP 'changed=\K[0-9]+' | tail -1)"
+          echo "changed on stabilizing run: $ch"
+          [ "$ch" = "0" ] || echo "::warning::firewall not idempotent after change-path (changed=$ch)"
+          echo "::endgroup::"
