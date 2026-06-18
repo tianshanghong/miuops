@@ -138,3 +138,34 @@ jobs:
           echo "changed on stabilizing run: $ch"
           [ "$ch" = "0" ] || echo "::warning::firewall not idempotent after change-path (changed=$ch)"
           echo "::endgroup::"
+
+      # A published Docker port bypasses the host INPUT firewall (DNAT/FORWARD), so
+      # DOCKER-USER is what must block external access. Prove it: publish a throwaway
+      # listener and confirm it is NOT reachable from the runner.
+      # IPv4 only — GitHub runners have no IPv6 egress; the IPv6 path was verified
+      # manually (Docker won't bind published ports on the default v6-less network,
+      # and host-bound IPv6 ports are dropped by the INPUT default policy).
+      - name: Verify a published Docker port is not externally reachable (IPv4)
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          HOST="${{ secrets.DEV_SERVER_HOST }}"
+          PORT=54321
+          cleanup() { $SSH "docker rm -f fw-exposure-test >/dev/null 2>&1 || true"; }
+          trap cleanup EXIT
+
+          echo "::group::Deploy throwaway container publishing $PORT"
+          $SSH "docker rm -f fw-exposure-test >/dev/null 2>&1; docker run -d --name fw-exposure-test -p ${PORT}:${PORT} busybox httpd -f -p ${PORT} -h /tmp >/dev/null && sleep 2 && docker ps --filter name=fw-exposure-test --format 'status: {{.Status}}'"
+          echo "::endgroup::"
+
+          echo "::group::Positive control — container is actually listening (server loopback)"
+          code="$($SSH "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${PORT}/")"
+          echo "loopback HTTP code: ${code}"
+          { [ -n "$code" ] && [ "$code" != "000" ]; } || { echo "FAIL: test container not listening — external result would be meaningless"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::External IPv4 probe from the runner — MUST be blocked"
+          if curl -4 -s -o /dev/null --connect-timeout 8 --max-time 12 "http://${HOST}:${PORT}/"; then
+            echo "FAIL: published port ${PORT} is reachable over IPv4 from outside — DOCKER-USER is not blocking it"; exit 1
+          fi
+          echo "external IPv4 access correctly blocked ✅"
+          echo "::endgroup::"
