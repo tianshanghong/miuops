@@ -11,16 +11,21 @@
   become: true
 
 # ========== Force nft backend usage ==========================================
-# 1. Use update-alternatives to set nft as default backend for iptables and ip6tables
-- name: Select nft backend via update-alternatives (IPv4/IPv6)
-  command: >
-    update-alternatives --set {{ item.name }} {{ item.path }}
+# 1. Set nft as the default backend for iptables and ip6tables. The alternatives
+#    module is idempotent: it only invokes update-alternatives when the current
+#    selection differs, so it does not rewrite the *-restore slave links on
+#    no-op runs (which previously made the fallback link task flip every run).
+- name: Select nft backend (IPv4/IPv6)
+  community.general.alternatives:
+    name: "{{ item.name }}"
+    path: "{{ item.path }}"
   loop:
     - { name: iptables,  path: /usr/sbin/iptables-nft }
     - { name: ip6tables, path: /usr/sbin/ip6tables-nft }
   become: true
 
-# 2. Create symlinks for symbolic links to nft backend do not exist
+# 2. Ensure the *-restore links resolve to the nft backend (fallback for
+#    systems where the alternative does not provide the restore slave link)
 - name: Ensure generic restore links exist (fallback)
   file:
     src: "/usr/sbin/{{ item }}-nft-restore"
@@ -40,44 +45,28 @@
     mode: '0755'
   become: true
 
-# ========== Atomic Rule Loading =============================================
-# 1. Render to /etc/iptables directly with .tmp suffix
+# ========== Rule loading (idempotent) =======================================
+# Render straight to the persistent file. `validate` syntax-checks the rendered
+# ruleset (iptables-restore --test) on a temp copy before it is atomically moved
+# into place, so a broken ruleset is never written. The rules are only reloaded
+# into the running kernel when the file content actually changes (see handler).
 - name: Render IPv4 rules
   template:
     src: rules.v4.j2
-    dest: /etc/iptables/rules.v4.tmp
+    dest: /etc/iptables/rules.v4
     mode: '0600'
+    validate: iptables-restore --test %s
   become: true
+  notify: Reload IPv4 rules
 
-# 2. Syntax-check IPv4 rules
-- name: Syntax-check IPv4 rules
-  shell: iptables-restore --test < /etc/iptables/rules.v4.tmp
-  become: true
-
-# 3. Load IPv4 rules atomically
-- name: Load IPv4 rules atomically
-  shell: iptables-restore < /etc/iptables/rules.v4.tmp
-  become: true
-  notify: Promote v4 rules
-
-# 1. Render to /etc/iptables directly with .tmp suffix for IPv6
 - name: Render IPv6 rules
   template:
     src: rules.v6.j2
-    dest: /etc/iptables/rules.v6.tmp
+    dest: /etc/iptables/rules.v6
     mode: '0600'
+    validate: ip6tables-restore --test %s
   become: true
-
-# 2. Syntax-check IPv6 rules
-- name: Syntax-check IPv6 rules
-  shell: ip6tables-restore --test < /etc/iptables/rules.v6.tmp
-  become: true
-
-# 3. Load IPv6 rules atomically
-- name: Load IPv6 rules atomically
-  shell: ip6tables-restore < /etc/iptables/rules.v6.tmp
-  become: true
-  notify: Promote v6 rules
+  notify: Reload IPv6 rules
 
 # ========== systemd override ================================================
 - name: Create netfilter-persistent override dir
