@@ -2,4 +2,8 @@
 # cloudflared default variables
 cloudflared_dir: "/opt/cloudflared"
 cloudflared_gpg_key_url: "https://pkg.cloudflare.com/cloudflare-main.gpg"
-cloudflared_apt_repository: "deb [signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared {{ ansible_facts['distribution_release'] }} main"
+# Cloudflare's apt repo is split per codename and lags new Ubuntu releases (no 26.04
+# "resolute" yet). Pin to the latest available LTS codename; cloudflared is a static Go
+# binary and works on newer releases. Override with -e cloudflared_apt_release=<codename>.
+cloudflared_apt_release: "noble"
+cloudflared_apt_repository: "deb [arch={{ ansible_facts['architecture'] | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }} signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared {{ cloudflared_apt_release }} main"
