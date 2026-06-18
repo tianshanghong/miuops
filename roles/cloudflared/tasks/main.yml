@@ -16,9 +16,39 @@
     mode: '0644'
   tags: ['cloudflared']
 
+- name: Install python3-debian (required by the deb822_repository module)
+  apt:
+    name: python3-debian
+    state: present
+    update_cache: yes
+  tags: ['cloudflared']
+
+- name: Remove legacy Cloudflare .list repo (migrated to deb822 .sources)
+  find:
+    paths: /etc/apt/sources.list.d
+    patterns: '*.list'
+    contains: 'pkg\.cloudflare\.com'
+  register: cloudflared_legacy_list
+  tags: ['cloudflared']
+
+- name: Delete legacy Cloudflare .list repo files
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ cloudflared_legacy_list.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  tags: ['cloudflared']
+
 - name: Add Cloudflare apt repository
-  apt_repository:
-    repo: "{{ cloudflared_apt_repository }}"
+  deb822_repository:
+    name: cloudflared
+    types: deb
+    uris: https://pkg.cloudflare.com/cloudflared
+    suites: "{{ cloudflared_apt_release }}"
+    components: main
+    architectures: "{{ ansible_facts['architecture'] | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }}"
+    signed_by: /etc/apt/keyrings/cloudflare-main.gpg
     state: present
   tags: ['cloudflared']
 

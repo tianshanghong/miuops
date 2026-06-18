@@ -15,4 +15,3 @@ cloudflared_supported_releases:
   - bullseye   # Debian 11
   - bookworm   # Debian 12
 cloudflared_apt_release: "{{ ansible_facts['distribution_release'] if ansible_facts['distribution_release'] in cloudflared_supported_releases else ('bookworm' if ansible_facts['distribution'] == 'Debian' else 'noble') }}"
-cloudflared_apt_repository: "deb [arch={{ ansible_facts['architecture'] | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }} signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared {{ cloudflared_apt_release }} main"

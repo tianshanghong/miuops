@@ -8,6 +8,7 @@
       - ca-certificates
       - curl
       - gnupg
+      - python3-debian  # required by the deb822_repository module
     state: present
     update_cache: yes
   tags: ['docker']
@@ -26,9 +27,32 @@
     mode: '0644'
   tags: ['docker']
 
+- name: Remove legacy Docker .list repo (migrated to deb822 .sources)
+  find:
+    paths: /etc/apt/sources.list.d
+    patterns: '*.list'
+    contains: 'download\.docker\.com'
+  register: docker_legacy_list
+  tags: ['docker']
+
+- name: Delete legacy Docker .list repo files
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ docker_legacy_list.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  tags: ['docker']
+
 - name: Add Docker repository
-  apt_repository:
-    repo: "{{ docker_apt_repository }}"
+  deb822_repository:
+    name: docker
+    types: deb
+    uris: "https://download.docker.com/linux/{{ 'debian' if ansible_facts['distribution'] == 'Debian' else 'ubuntu' }}"
+    suites: "{{ ansible_facts['distribution_release'] }}"
+    components: stable
+    architectures: "{{ ansible_facts['architecture'] | replace('x86_64', 'amd64') | replace('aarch64', 'arm64') }}"
+    signed_by: /etc/apt/keyrings/docker.asc
     state: present
   tags: ['docker']
 
