@@ -83,8 +83,88 @@ jobs:
             ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
             'systemctl is-active cloudflared'
 
-      - name: Verify firewall rules
+      - name: Verify firewall enforcement (security assertions)
         run: |
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
-            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
-            'iptables -L DOCKER-USER -n'
+            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} '
+            set -e
+            v4=$(iptables -S); v6=$(ip6tables -S)
+            echo "$v4" | grep -q "^-P INPUT DROP"            || { echo "FAIL: IPv4 INPUT policy is not DROP"; exit 1; }
+            echo "$v4" | grep -q "^-P FORWARD DROP"          || { echo "FAIL: IPv4 FORWARD policy is not DROP"; exit 1; }
+            echo "$v4" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on INPUT"; exit 1; }
+            echo "$v4" | grep -q -- "--name ssh"             || { echo "FAIL: SSH protection rule missing"; exit 1; }
+            echo "$v4" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: DOCKER-USER missing final DROP"; exit 1; }
+            echo "$v6" | grep -q "^-P INPUT DROP"            || { echo "FAIL: IPv6 INPUT policy is not DROP"; exit 1; }
+            echo "$v6" | grep -q "^-P FORWARD DROP"          || { echo "FAIL: IPv6 FORWARD policy is not DROP"; exit 1; }
+            echo "$v6" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on IPv6 INPUT"; exit 1; }
+            echo "$v6" | grep -q -- "--name ssh"             || { echo "FAIL: IPv6 SSH protection rule missing"; exit 1; }
+            echo "$v6" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: IPv6 DOCKER-USER missing final DROP"; exit 1; }
+            echo "ALL FIREWALL SECURITY ASSERTIONS PASSED"
+          '
+
+      # Exercises the rule-change path that a normal (no-op) run never hits:
+      # force a real change, then prove the role reconciles it safely.
+      - name: Verify firewall change-path (drift → validate → reload → Docker chains → session survival)
+        run: |
+          set -e
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+
+          echo "::group::Tamper persisted ruleset to force a real change"
+          $SSH 'cp /etc/iptables/rules.v4 /tmp/rules.v4.pre && sed -i "/-A INPUT -i lo -j ACCEPT/d" /etc/iptables/rules.v4 && echo "drift injected: removed lo-accept from /etc/iptables/rules.v4"'
+          echo "::endgroup::"
+
+          echo "::group::Re-run playbook — must re-render, validate, reload, restart Docker"
+          set +e
+          out="$(ansible-playbook playbook.yml 2>&1)"; rc=$?
+          set -e
+          echo "$out"
+          echo "::endgroup::"
+          # rc=0 ⇒ no failed tasks AND host stayed reachable (the SSH session survived the reload)
+          [ $rc -eq 0 ] || { echo "FAIL: playbook errored or host became unreachable during reload (rc=$rc)"; exit 1; }
+          echo "$out" | grep -q "firewall : Reload IPv4 rules" || { echo "FAIL: reload handler did not fire on a real rule change"; exit 1; }
+
+          echo "::group::Assert kernel reconciled + Docker chains restored"
+          $SSH '
+            set -e
+            iptables -S INPUT | grep -q -- "-A INPUT -i lo -j ACCEPT" || { echo "FAIL: lo-accept not restored in running kernel"; exit 1; }
+            grep -q -- "-A INPUT -i lo -j ACCEPT" /etc/iptables/rules.v4 || { echo "FAIL: persisted ruleset not reconciled"; exit 1; }
+            iptables -S | grep -q "^-N DOCKER$" || { echo "FAIL: Docker filter chains missing after reload (containers left unprotected)"; exit 1; }
+            echo "CHANGE-PATH RECONCILED OK"
+          '
+          echo "::endgroup::"
+
+          echo "::group::Stabilizing run must be idempotent again"
+          ch="$(ansible-playbook playbook.yml 2>&1 | grep -oP 'changed=\K[0-9]+' | tail -1)"
+          echo "changed on stabilizing run: $ch"
+          [ "$ch" = "0" ] || echo "::warning::firewall not idempotent after change-path (changed=$ch)"
+          echo "::endgroup::"
+
+      # A published Docker port bypasses the host INPUT firewall (DNAT/FORWARD), so
+      # DOCKER-USER is what must block external access. Prove it: publish a throwaway
+      # listener and confirm it is NOT reachable from the runner.
+      # IPv4 only — GitHub runners have no IPv6 egress, so the IPv6 path is NOT
+      # covered here and remains unverified end-to-end.
+      - name: Verify a published Docker port is not externally reachable (IPv4)
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          HOST="${{ secrets.DEV_SERVER_HOST }}"
+          PORT=54321
+          cleanup() { $SSH "docker rm -f fw-exposure-test >/dev/null 2>&1 || true"; }
+          trap cleanup EXIT
+
+          echo "::group::Deploy throwaway container publishing $PORT"
+          $SSH "docker rm -f fw-exposure-test >/dev/null 2>&1; docker run -d --name fw-exposure-test -p ${PORT}:${PORT} busybox httpd -f -p ${PORT} -h /tmp >/dev/null && sleep 2 && docker ps --filter name=fw-exposure-test --format 'status: {{.Status}}'"
+          echo "::endgroup::"
+
+          echo "::group::Positive control — container is actually listening (server loopback)"
+          code="$($SSH "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${PORT}/")"
+          echo "loopback HTTP code: ${code}"
+          { [ -n "$code" ] && [ "$code" != "000" ]; } || { echo "FAIL: test container not listening — external result would be meaningless"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::External IPv4 probe from the runner — MUST be blocked"
+          if curl -4 -s -o /dev/null --connect-timeout 8 --max-time 12 "http://${HOST}:${PORT}/"; then
+            echo "FAIL: published port ${PORT} is reachable over IPv4 from outside — DOCKER-USER is not blocking it"; exit 1
+          fi
+          echo "external IPv4 access correctly blocked ✅"
+          echo "::endgroup::"
