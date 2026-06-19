@@ -94,11 +94,13 @@ jobs:
             echo "$v4" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on INPUT"; exit 1; }
             echo "$v4" | grep -q -- "--name ssh"             || { echo "FAIL: SSH protection rule missing"; exit 1; }
             echo "$v4" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: DOCKER-USER missing final DROP"; exit 1; }
+            echo "$v4" | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: IPv4 FORWARD does not jump to DOCKER-USER (published ports unguarded)"; exit 1; }
             echo "$v6" | grep -q "^-P INPUT DROP"            || { echo "FAIL: IPv6 INPUT policy is not DROP"; exit 1; }
             echo "$v6" | grep -q "^-P FORWARD DROP"          || { echo "FAIL: IPv6 FORWARD policy is not DROP"; exit 1; }
             echo "$v6" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on IPv6 INPUT"; exit 1; }
             echo "$v6" | grep -q -- "--name ssh"             || { echo "FAIL: IPv6 SSH protection rule missing"; exit 1; }
             echo "$v6" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: IPv6 DOCKER-USER missing final DROP"; exit 1; }
+            echo "$v6" | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: IPv6 FORWARD does not jump to DOCKER-USER (published ports unguarded)"; exit 1; }
             echo "ALL FIREWALL SECURITY ASSERTIONS PASSED"
           '
 
