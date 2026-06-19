@@ -168,3 +168,22 @@ jobs:
           fi
           echo "external IPv4 access correctly blocked ✅"
           echo "::endgroup::"
+
+      # The v6 INPUT chain used to drop ICMPv6, which silently broke NDP and thus
+      # all IPv6 connectivity (critical for IPv6-only-public-IP servers). Assert
+      # the allow rules are present AND that IPv6 actually works end-to-end (v6
+      # egress requires resolving the gateway via NDP, so a 200 proves NDP works).
+      - name: Verify IPv6 is functional after firewall applied (NDP)
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          echo "::group::ICMPv6 NDP/PMTUD allow rules present in ip6tables INPUT"
+          $SSH "ip6tables -S INPUT | grep -q -- '--icmpv6-type neighbour-advertisement -j ACCEPT'" || { echo "FAIL: ICMPv6 neighbour-advertisement accept missing"; exit 1; }
+          $SSH "ip6tables -S INPUT | grep -q -- '--icmpv6-type packet-too-big -j ACCEPT'" || { echo "FAIL: ICMPv6 packet-too-big (PMTUD) accept missing"; exit 1; }
+          echo "rules present ✅"
+          echo "::endgroup::"
+          echo "::group::IPv6 egress works (proves gateway NDP resolves)"
+          code="$($SSH "curl -6 -s -m 12 -o /dev/null -w '%{http_code}' https://www.google.com" 2>/dev/null || true)"
+          echo "server curl -6 -> HTTP ${code:-<none>}"
+          [ "$code" = "200" ] || { echo "FAIL: server still has no working IPv6 egress after the NDP fix"; exit 1; }
+          echo "IPv6 functional ✅"
+          echo "::endgroup::"
