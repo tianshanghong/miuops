@@ -38,19 +38,6 @@ This Ansible role sets up iptables firewall rules to secure Docker networking by
 - Docker network isolation is left to Docker's built-in network management
 - The system INPUT chain and Docker's DOCKER-USER chain are both secured
 
-## Docker published ports
-
-A container that publishes a host port (e.g. `-p 5000:5000`) is **not** filtered by the `INPUT` chain — Docker DNATs the traffic through `FORWARD`, bypassing host firewalls like ufw, and [by default allows all external source IPs to reach published ports](https://docs.docker.com/engine/network/firewall-iptables/). This role blocks that in the `DOCKER-USER` chain, which Docker evaluates first in `FORWARD`:
-
-- established/related → `RETURN`
-- container-originated, i.e. from a bridge (`-i br+`) → `RETURN`
-- loopback → bridge (`-i lo -o br+`, for cloudflared → Traefik) → `RETURN`
-- everything else (i.e. arriving on the external interface) → `DROP`
-
-So external hosts cannot reach a published port even if a container sets one. Verified end-to-end with external IPv4 and IPv6 probes, and asserted in CI. Notes: on the default IPv4-only Docker network, published ports are not bound on IPv6 at all; host-bound IPv6 ports are covered by the `INPUT` default `DROP`.
-
-Prefer not publishing host ports (use Traefik labels). If you must, bind to loopback: `127.0.0.1:5000:5000`.
-
 ## Requirements
 
 - Requires `iptables` to be available on the target system

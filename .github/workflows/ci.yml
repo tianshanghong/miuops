@@ -142,9 +142,8 @@ jobs:
       # A published Docker port bypasses the host INPUT firewall (DNAT/FORWARD), so
       # DOCKER-USER is what must block external access. Prove it: publish a throwaway
       # listener and confirm it is NOT reachable from the runner.
-      # IPv4 only — GitHub runners have no IPv6 egress; the IPv6 path was verified
-      # manually (Docker won't bind published ports on the default v6-less network,
-      # and host-bound IPv6 ports are dropped by the INPUT default policy).
+      # IPv4 only — GitHub runners have no IPv6 egress, so the IPv6 path is NOT
+      # covered here and remains unverified end-to-end.
       - name: Verify a published Docker port is not externally reachable (IPv4)
         run: |
           SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"

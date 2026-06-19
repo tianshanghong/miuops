@@ -124,17 +124,6 @@ Per-stack ingress networks eliminate this risk. Each stack gets its own bridge n
 6. **No `ports:` except Traefik** — all other ingress goes through Traefik labels.
 7. **Some images default to binding on `localhost`** — if a container is unreachable from Traefik, set `HOST=0.0.0.0` in its environment. This is safe within a per-stack ingress network because only Traefik can reach the container.
 
-### Published ports and the firewall
-
-Rule 6 ("no `ports:` except Traefik") is the primary control; the firewall is the backstop if a stray `ports:` slips in. **Published Docker ports bypass the host `INPUT` firewall** — Docker DNATs/forwards the traffic, so it never traverses `INPUT`, and [by default Docker allows all external source IPs to reach published ports](https://docs.docker.com/engine/network/firewall-iptables/). The `firewall` role closes this in the `DOCKER-USER` chain, which Docker evaluates first in `FORWARD`: only established, bridge-originated (`-i br+`), and loopback→bridge traffic is allowed — anything arriving on the external interface is dropped.
-
-Verified end-to-end against a live host (Docker 29, external IPv4 **and** IPv6 probes):
-
-- **IPv4** `-p 5000:5000` → the container listens, but external access is **dropped by `DOCKER-USER`**.
-- **IPv6** → Docker does not bind published ports on IPv6 for the default (IPv4-only) network (so there is nothing to reach), and a host-bound IPv6 port is **dropped by the `INPUT` default policy**.
-
-If you genuinely need a host port (rare — prefer Traefik labels), bind it to loopback: `127.0.0.1:5000:5000`, never `5000:5000`.
-
 ### Topology
 
 ```
