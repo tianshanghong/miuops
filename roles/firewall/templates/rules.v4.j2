@@ -15,6 +15,11 @@
 # 3. loopback
 -A INPUT -i lo -j ACCEPT
 
+# NOTE: IPv4 needs no ICMP allow here — ARP (its neighbour discovery) is L2 and
+# not filtered by iptables. IPv6 is different: rules.v6.j2 has an ICMPv6/NDP
+# block at this position that is REQUIRED. Keep the two templates in sync with
+# that asymmetry in mind.
+
 # 4. SSH rate-limit
 # -- UPDATE / DROP
 -A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --update --seconds 60 --hitcount 6 -j DROP

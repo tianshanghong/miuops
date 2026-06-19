@@ -19,17 +19,21 @@
 # not filtered here), IPv6 neighbour/router discovery is ICMPv6 and IS filtered.
 # Without these the INPUT DROP policy silently breaks IPv6 entirely: the host
 # cannot resolve its gateway via NDP and loses all v6 connectivity (in/out).
-# Allow NDP, plus the error types required for Path MTU Discovery.
+# This is host INPUT only; forwarded/container v6 is governed by DOCKER-USER.
+# Error types (PMTUD etc.) and echo can arrive with any hop limit:
 -A INPUT -p ipv6-icmp --icmpv6-type destination-unreachable -j ACCEPT
 -A INPUT -p ipv6-icmp --icmpv6-type packet-too-big -j ACCEPT
 -A INPUT -p ipv6-icmp --icmpv6-type time-exceeded -j ACCEPT
 -A INPUT -p ipv6-icmp --icmpv6-type parameter-problem -j ACCEPT
 -A INPUT -p ipv6-icmp --icmpv6-type echo-request -j ACCEPT
 -A INPUT -p ipv6-icmp --icmpv6-type echo-reply -j ACCEPT
--A INPUT -p ipv6-icmp --icmpv6-type router-solicitation -j ACCEPT
--A INPUT -p ipv6-icmp --icmpv6-type router-advertisement -j ACCEPT
--A INPUT -p ipv6-icmp --icmpv6-type neighbour-solicitation -j ACCEPT
--A INPUT -p ipv6-icmp --icmpv6-type neighbour-advertisement -j ACCEPT
+# NDP MUST be link-local: require hop limit 255 (RFC 4861/4890) so off-link /
+# routed packets spoofing NDP are rejected. (On-link spoofing still needs
+# switch-level RA-Guard — out of scope for a host firewall.)
+-A INPUT -p ipv6-icmp --icmpv6-type router-solicitation -m hl --hl-eq 255 -j ACCEPT
+-A INPUT -p ipv6-icmp --icmpv6-type router-advertisement -m hl --hl-eq 255 -j ACCEPT
+-A INPUT -p ipv6-icmp --icmpv6-type neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT
+-A INPUT -p ipv6-icmp --icmpv6-type neighbour-advertisement -m hl --hl-eq 255 -j ACCEPT
 
 # 4. SSH rate-limit
 # -- UPDATE / DROP
