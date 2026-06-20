@@ -26,3 +26,43 @@ ansible-playbook playbook.yml --limit server-a   # equivalent
 
 From separate clones: do the above once per server in a single checkout, import
 each server's `files/<tunnel_id>.json`, then retire the old clones.
+
+## Per-server firewall posture
+
+Each server's exposure is data in its `host_vars`. Defaults are generic-safe (SSH
+rate-limited, 6 attempts / 60s). To harden a specific server:
+
+```yaml
+# host_vars/prod-a.yml
+firewall_management_networks_v4: ["203.0.113.0/24"]   # allow SSH from these CIDRs
+firewall_ssh_ratelimit_enabled: false                 # then the rate-limiter is optional
+```
+
+Keep the rate-limiter on if you connect from a dynamic IP — it is the only SSH
+protection without a fixed source address.
+
+## Cloudflare API token
+
+One **scoped "Edit zone DNS" token per Cloudflare account** manages every domain —
+no per-domain tokens. It is **bootstrap-only**: `up`/`add-domain`/`remove-domain`
+use it for DNS; day-2 `apply` does not need it (tunnels run from the on-server
+`<tunnel_id>.json`). The token is an env var and never enters `host_vars`, the
+inventory, or anything committed. Prefer a scoped token over the Global API Key.
+
+## Optional advanced patterns
+
+All optional — the tool never requires them.
+
+- **Environment grouping.** If several servers should share a posture, group them
+  in `inventory.ini` and put shared vars in `group_vars/<group>.yml` (standard
+  Ansible), then `miuops apply <group>` / `ansible-playbook --limit <group>`.
+- **Separate private config repo.** Keep `inventory.ini`, `host_vars/`, and
+  `files/*.json` in a private repo that consumes this public tool: point Ansible at
+  it with `ansible-playbook -i /path/to/fleet/inventory.ini playbook.yml`.
+- **SOPS-encrypted secrets.** Gitignored plaintext is readable by any agent on your
+  machine. Encrypting `host_vars`/`files` with [SOPS](https://github.com/getsops/sops)
+  stores ciphertext in git instead. With a **YubiKey-backed age key for sensitive
+  servers**, an agent cannot decrypt them at all (no hardware) — so it can neither
+  read nor deploy those hosts. (At deploy time the value is decrypted to be used;
+  SOPS protects it at rest.)
+
