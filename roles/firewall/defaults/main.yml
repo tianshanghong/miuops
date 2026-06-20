@@ -23,3 +23,10 @@ firewall_whitelist_ports_v6: []
 # SSH port the firewall rules open / rate-limit (was previously set in a playbook
 # pre_task). Override per server in host_vars if SSH runs on a non-default port.
 ssh_port: "22"
+
+# SSH brute-force protection. Default on (the only protection for users without a
+# fixed source IP). Operators who allowlist firewall_management_networks_* may
+# set firewall_ssh_ratelimit_enabled: false in that host's host_vars.
+firewall_ssh_ratelimit_enabled: true
+firewall_ssh_ratelimit_hits: 6
+firewall_ssh_ratelimit_seconds: 60

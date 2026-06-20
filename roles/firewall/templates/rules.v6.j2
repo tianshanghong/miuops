@@ -35,11 +35,14 @@
 -A INPUT -p ipv6-icmp --icmpv6-type neighbour-solicitation -m hl --hl-eq 255 -j ACCEPT
 -A INPUT -p ipv6-icmp --icmpv6-type neighbour-advertisement -m hl --hl-eq 255 -j ACCEPT
 
-# 4. SSH rate-limit
-# -- UPDATE / DROP
--A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --update --seconds 60 --hitcount 6 -j DROP
-# -- SET / ACCEPT
+# 4. SSH
+{% if firewall_ssh_ratelimit_enabled | bool %}
+# rate-limited (default): drop sources over the burst, else accept + track
+-A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --update --seconds {{ firewall_ssh_ratelimit_seconds }} --hitcount {{ firewall_ssh_ratelimit_hits }} -j DROP
 -A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --set -j ACCEPT
+{% else %}
+-A INPUT -p tcp --dport {{ ssh_port }} -j ACCEPT
+{% endif %}
 
 # 5. management nets
 {% for cidr in firewall_management_networks_v6|default([]) %}
