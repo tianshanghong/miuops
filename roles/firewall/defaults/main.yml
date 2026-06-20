@@ -19,3 +19,7 @@ firewall_whitelist_ports_v4: []
 firewall_whitelist_ports_v6: []
   # - 80
   # - 443
+
+# SSH port the firewall rules open / rate-limit (was previously set in a playbook
+# pre_task). Override per server in host_vars if SSH runs on a non-default port.
+ssh_port: "22"
