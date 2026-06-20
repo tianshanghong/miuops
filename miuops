@@ -61,6 +61,56 @@ domain_owner() {
     done
 }
 
+# ── Cloudflare DNS helpers ─────────────────────────────────────────
+cf_zone_id() {
+    local domain="$1" resp http
+    resp=$(curl -s -w "\n%{http_code}" \
+        "https://api.cloudflare.com/client/v4/zones?name=${domain}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json") \
+        || die "Cloudflare API request failed — network error"
+    http=$(echo "$resp" | tail -1); resp=$(echo "$resp" | sed '$d')
+    case "$http" in
+        200) ;;
+        401|403) die "Cloudflare API returned ${http} (unauthorized) — check CF_API_TOKEN" ;;
+        *) die "Cloudflare API returned HTTP ${http} for zone '${domain}'" ;;
+    esac
+    local zid; zid=$(echo "$resp" | jq -r '.result[0].id // empty')
+    [[ -n "$zid" ]] || die "Zone not found for '${domain}' (is it in your Cloudflare account?)"
+    echo "$zid"
+}
+
+cf_create_cname() {
+    local zid="$1" name="$2" tid="$3"
+    if $DRY_RUN; then dry "Would create CNAME ${name} -> ${tid}.cfargotunnel.com"; return 0; fi
+    local resp ok msg
+    resp=$(curl -s -X POST \
+        "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
+        --data "{\"type\":\"CNAME\",\"name\":\"${name}\",\"content\":\"${tid}.cfargotunnel.com\",\"proxied\":true}") \
+        || die "Cloudflare API request failed — network error"
+    ok=$(echo "$resp" | jq -r '.success')
+    if [[ "$ok" == "true" ]]; then
+        info "DNS record created for ${name}"
+    else
+        msg=$(echo "$resp" | jq -r '.errors[0].message // empty' 2>/dev/null)
+        if echo "$msg" | grep -qi "already exists"; then
+            info "DNS record for ${name} already exists (OK)"
+        else
+            warn "Failed to create DNS record for ${name}: ${msg:-unknown error}"
+        fi
+    fi
+}
+
+cf_delete_cname() {
+    local zid="$1" name="$2" rid
+    rid=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records?type=CNAME&name=${name}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" | jq -r '.result[0].id // empty')
+    [[ -n "$rid" ]] || { info "CNAME ${name} already absent (OK)"; return 0; }
+    if $DRY_RUN; then dry "Would delete CNAME ${name}"; return 0; fi
+    curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records/${rid}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" >/dev/null && info "Deleted CNAME ${name}"
+}
+
 # Converge: run the playbook (optionally limited to one host). Honors DRY_RUN/NO_APPLY.
 run_apply() {
     local host="${1:-}"
@@ -419,6 +469,85 @@ cmd_up() {
         echo ""
         info "Next: create your stack repo from miuops-stack-template"
     fi
+}
+
+cmd_add_domain() {
+    local host="" doms=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)  DRY_RUN=true; shift ;;
+            --no-apply) NO_APPLY=true; shift ;;
+            -*) die "Unknown flag: $1" ;;
+            *)  if [[ -z "$host" ]]; then host="$1"; else doms+=("$1"); fi; shift ;;
+        esac
+    done
+    [[ -n "$host" && ${#doms[@]} -ge 1 ]] || die "Usage: miuops add-domain [--dry-run] <host> <domain...>"
+    [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}' — is it in inventory? Run 'miuops up' first."
+    [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
+
+    local tid; tid="$(hv_tunnel "$host")"
+    [[ -n "$tid" ]] || die "host_vars/${host}.yml has no tunnel_id"
+
+    local current=() d
+    while IFS= read -r d; do [[ -n "$d" ]] && current+=("$d"); done < <(hv_domains "$host")
+
+    local added=false dd owner present c zid
+    for dd in "${doms[@]}"; do
+        owner="$(domain_owner "$dd")"
+        [[ -n "$owner" && "$owner" != "$host" ]] && die "Domain '${dd}' already belongs to '${owner}'."
+        present=false
+        for c in "${current[@]:-}"; do [[ "$c" == "$dd" ]] && present=true; done
+        if $present; then info "${dd} already on ${host} (skip)"; continue; fi
+        zid="$(cf_zone_id "$dd")"
+        cf_create_cname "$zid" "$dd" "$tid"
+        cf_create_cname "$zid" "*.${dd}" "$tid"
+        current+=("$dd"); added=true
+    done
+
+    $added || { info "Nothing new to add."; return 0; }
+    if $DRY_RUN; then dry "Would set ${host} domains: ${current[*]}"
+    else write_host_vars "$host" "$tid" "${current[@]}"; fi
+    run_apply "$host"
+}
+
+cmd_remove_domain() {
+    local host="" doms=() force=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)  DRY_RUN=true; shift ;;
+            --no-apply) NO_APPLY=true; shift ;;
+            --force)    force=true; shift ;;
+            -*) die "Unknown flag: $1" ;;
+            *)  if [[ -z "$host" ]]; then host="$1"; else doms+=("$1"); fi; shift ;;
+        esac
+    done
+    [[ -n "$host" && ${#doms[@]} -ge 1 ]] || die "Usage: miuops remove-domain [--dry-run] [--force] <host> <domain...>"
+    [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}'."
+    [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
+
+    local tid; tid="$(hv_tunnel "$host")"
+    local keep=() d removed=false dd drop zid
+    while IFS= read -r d; do
+        [[ -z "$d" ]] && continue
+        drop=false
+        for dd in "${doms[@]}"; do [[ "$dd" == "$d" ]] && drop=true; done
+        if $drop; then
+            zid="$(cf_zone_id "$d")"
+            cf_delete_cname "$zid" "$d"
+            cf_delete_cname "$zid" "*.${d}"
+            removed=true
+        else
+            keep+=("$d")
+        fi
+    done < <(hv_domains "$host")
+
+    $removed || { warn "None of the given domains were on ${host} — nothing removed."; return 0; }
+    if [[ ${#keep[@]} -eq 0 && "$force" != true ]]; then
+        die "Refusing to remove the last domain of '${host}' (a server needs at least one). Use --force to override."
+    fi
+    if $DRY_RUN; then dry "Would set ${host} domains: ${keep[*]:-(none)}"
+    else write_host_vars "$host" "$tid" "${keep[@]:-}"; fi
+    run_apply "$host"
 }
 
 # ── Main ───────────────────────────────────────────────────────────

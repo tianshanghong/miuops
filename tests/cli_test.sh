@@ -41,4 +41,12 @@ echo "$out" | grep -q -- "--limit server-a" || fail "apply --dry-run should show
 out="$(cd "$ROOT" && ./miuops apply --no-apply server-a 2>&1 || true)"
 echo "$out" | grep -qi "no-apply" || fail "--no-apply should skip converge"
 
+# --- Task 9: add-domain / remove-domain reject unknown hosts (offline) ---
+out="$(cd "$ROOT" && CF_API_TOKEN=x ./miuops add-domain nope new.example 2>&1 || true)"
+echo "$out" | grep -qiE 'no host_vars|inventory' || fail "add-domain should reject unknown host"
+out="$(cd "$ROOT" && CF_API_TOKEN=x ./miuops remove-domain nope x.example 2>&1 || true)"
+echo "$out" | grep -qiE 'no host_vars' || fail "remove-domain should reject unknown host"
+out="$(cd "$ROOT" && CF_API_TOKEN=x ./miuops add-domain onlyhost 2>&1 || true)"
+echo "$out" | grep -qi 'Usage' || fail "add-domain with no domains should show usage"
+
 echo "ALL CLI HELPER TESTS PASSED"
