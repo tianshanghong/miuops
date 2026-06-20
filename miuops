@@ -17,12 +17,18 @@ dry()  { echo -e "  ${YELLOW}[dry-run]${NC} $1"; }
 DRY_RUN=false
 NO_APPLY=false
 
+# ── Validation ──────────────────────────────────────────────────────
+valid_domain() { echo "$1" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$'; }
+# A host alias becomes a filename (host_vars/<h>.yml) and an inventory key, so
+# restrict it to a safe charset — blocks path traversal and sed/grep metachars.
+valid_host_alias() { echo "$1" | grep -qE '^[A-Za-z0-9._-]+$'; }
+
 # ── Config helpers (host_vars + inventory) ──────────────────────────
 hv_path() { echo "${SCRIPT_DIR}/host_vars/$1.yml"; }
 
 hv_domains() {
     local f; f="$(hv_path "$1")"; [[ -f "$f" ]] || return 0
-    sed -n 's/^[[:space:]]*-[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$f"
+    sed -n 's/^[[:space:]]*-[[:space:]][[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$f"
 }
 
 hv_tunnel() {
@@ -199,12 +205,14 @@ cmd_up() {
         ssh_host="$target"
     fi
 
+    # The host becomes a filename + inventory key — keep it to a safe charset.
+    valid_host_alias "$ssh_host" || die "Invalid host '${ssh_host}'
+  Use letters, digits, dot, dash, underscore (IPv6 literals need a named alias)."
+
     # Validate domain format (portable — no bash regex quantifiers)
     for domain in "${domains[@]}"; do
-        if ! echo "$domain" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$'; then
-            die "Invalid domain: '${domain}'
+        valid_domain "$domain" || die "Invalid domain: '${domain}'
   Expected format: example.com"
-        fi
     done
 
     # A domain belongs to exactly one server (its CNAMEs point to one tunnel).
@@ -498,6 +506,8 @@ cmd_add_domain() {
         esac
     done
     [[ -n "$host" && ${#doms[@]} -ge 1 ]] || die "Usage: miuops add-domain [--dry-run] <host> <domain...>"
+    valid_host_alias "$host" || die "Invalid host '${host}'"
+    local _vd; for _vd in "${doms[@]}"; do valid_domain "$_vd" || die "Invalid domain: '${_vd}'"; done
     [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}' — is it in inventory? Run 'miuops up' first."
     [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
 
@@ -538,6 +548,7 @@ cmd_remove_domain() {
         esac
     done
     [[ -n "$host" && ${#doms[@]} -ge 1 ]] || die "Usage: miuops remove-domain [--dry-run] [--force] <host> <domain...>"
+    valid_host_alias "$host" || die "Invalid host '${host}'"
     [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}'."
     [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
 
@@ -561,8 +572,16 @@ cmd_remove_domain() {
     if [[ ${#keep[@]} -eq 0 && "$force" != true ]]; then
         die "Refusing to remove the last domain of '${host}' (a server needs at least one). Use --force to override."
     fi
-    if $DRY_RUN; then dry "Would set ${host} domains: ${keep[*]:-(none)}"
-    else write_host_vars "$host" "$tid" "${keep[@]:-}"; fi
+    if $DRY_RUN; then
+        dry "Would set ${host} domains: ${keep[*]:-(none)}"
+        return 0
+    fi
+    if [[ ${#keep[@]} -eq 0 ]]; then
+        write_host_vars "$host" "$tid"
+        warn "${host} now has no domains — skipping converge. Add a domain or remove the host."
+        return 0
+    fi
+    write_host_vars "$host" "$tid" "${keep[@]}"
     run_apply "$host"
 }
 
