@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="${MIUOPS_TEST_SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,6 +15,50 @@ warn() { echo -e "${YELLOW}=>${NC} $1"; }
 dry()  { echo -e "  ${YELLOW}[dry-run]${NC} $1"; }
 
 DRY_RUN=false
+
+# ── Config helpers (host_vars + inventory) ──────────────────────────
+hv_path() { echo "${SCRIPT_DIR}/host_vars/$1.yml"; }
+
+hv_domains() {
+    local f; f="$(hv_path "$1")"; [[ -f "$f" ]] || return 0
+    sed -n 's/^[[:space:]]*-[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$f"
+}
+
+hv_tunnel() {
+    local f; f="$(hv_path "$1")"; [[ -f "$f" ]] || return 0
+    sed -n 's/^tunnel_id:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$f" | head -1
+}
+
+write_host_vars() {
+    local host="$1" tid="$2"; shift 2
+    local f; f="$(hv_path "$host")"; mkdir -p "$(dirname "$f")"
+    { echo "---"; echo "domains:";
+      local d; for d in "$@"; do echo "  - \"${d}\""; done
+      echo ""; echo "tunnel_id: \"${tid}\""; } > "$f"
+}
+
+inventory_upsert() {
+    local host="$1" ah="$2" au="$3" inv="${SCRIPT_DIR}/inventory.ini"
+    local line="${host} ansible_host=${ah} ansible_user=${au}"
+    if [[ -f "$inv" ]] && grep -qE "^${host}[[:space:]]" "$inv"; then
+        local tmp; tmp="$(mktemp)"
+        sed "s|^${host}[[:space:]].*|${line}|" "$inv" > "$tmp" && mv "$tmp" "$inv"
+    else
+        [[ -f "$inv" ]] || printf '[bare_metal]\n' > "$inv"
+        grep -q '^\[bare_metal\]' "$inv" || printf '[bare_metal]\n' >> "$inv"
+        printf '%s\n' "$line" >> "$inv"
+    fi
+}
+
+# Echoes the inventory host that already owns <domain> (empty if none).
+domain_owner() {
+    local domain="$1" f host
+    for f in "${SCRIPT_DIR}"/host_vars/*.yml; do
+        [[ -e "$f" ]] || continue
+        host="$(basename "$f" .yml)"
+        if hv_domains "$host" | grep -qx "$domain"; then echo "$host"; return 0; fi
+    done
+}
 
 usage() {
     cat <<EOF
@@ -367,7 +411,12 @@ credentials_file: \"/opt/cloudflared/{{ tunnel_id }}.json\""
 }
 
 # ── Main ───────────────────────────────────────────────────────────
-case "${1:-}" in
-    up) shift; cmd_up "$@" ;;
-    *)  usage ;;
-esac
+if [[ "${1:-}" != "--source-only" ]]; then
+    case "${1:-}" in
+        up)            shift; cmd_up "$@" ;;
+        apply)         shift; cmd_apply "$@" ;;
+        add-domain)    shift; cmd_add_domain "$@" ;;
+        remove-domain) shift; cmd_remove_domain "$@" ;;
+        *)             usage ;;
+    esac
+fi

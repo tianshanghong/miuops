@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Unit tests for the miuops CLI. Sources the CLI with --source-only (no dispatch)
+# into a sandboxed SCRIPT_DIR so config-writing helpers can be exercised offline.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+fail() { echo "FAIL: $1"; exit 1; }
+
+export MIUOPS_TEST_SCRIPT_DIR="$TMP"
+# shellcheck disable=SC1090
+source "$ROOT/miuops" --source-only
+
+# --- helpers: write_host_vars / hv_tunnel / hv_domains ---
+mkdir -p "$TMP/host_vars"
+write_host_vars server-a tunnelA example.com example.org
+[ -f "$TMP/host_vars/server-a.yml" ] || fail "host_vars not written"
+hv_tunnel server-a | grep -qx tunnelA      || fail "tunnel_id wrong"
+hv_domains server-a | grep -qx example.com || fail "domain example.com missing"
+hv_domains server-a | grep -qx example.org || fail "domain example.org missing"
+
+# --- inventory_upsert is additive (does not clobber other hosts) ---
+inventory_upsert server-a 198.51.100.1 root
+inventory_upsert server-b 198.51.100.2 root
+grep -qE '^server-a ' "$TMP/inventory.ini" || fail "server-a missing from inventory"
+grep -qE '^server-b ' "$TMP/inventory.ini" || fail "server-b missing from inventory"
+inventory_upsert server-a 198.51.100.9 admin   # update in place
+[ "$(grep -c '^server-a ' "$TMP/inventory.ini")" = "1" ] || fail "server-a duplicated"
+grep -q 'ansible_host=198.51.100.9' "$TMP/inventory.ini" || fail "server-a not updated"
+
+# --- domain_owner finds the owning host ---
+[ "$(domain_owner example.com)" = "server-a" ] || fail "domain_owner wrong"
+[ -z "$(domain_owner unowned.example)" ]        || fail "domain_owner false positive"
+
+echo "ALL CLI HELPER TESTS PASSED"
