@@ -137,19 +137,35 @@ cmd_apply() {
 
 usage() {
     cat <<EOF
-Usage: ./miuops up [--dry-run] <user@host> <domain1> [domain2 ...]
+miuops — provision & manage a fleet of Docker + Traefik + Cloudflare-Tunnel servers.
 
-Bootstrap a bare-metal server with Docker, Traefik, and Cloudflare Tunnel.
+Usage:
+  ./miuops up [--dry-run] [--no-apply] <user@host> <domain> [domain ...]
+      Day-1: register the host, create its tunnel + DNS, write host_vars, converge.
+      Additive — re-running adds domains, never drops them.
+
+  ./miuops apply [--dry-run] [--no-apply] [<host>]
+      Day-2: converge one host (or the whole fleet if <host> is omitted).
+
+  ./miuops add-domain [--dry-run] [--no-apply] <host> <domain> [domain ...]
+      Add domain(s) to an existing host (creates DNS, merges into host_vars).
+
+  ./miuops remove-domain [--dry-run] [--no-apply] [--force] <host> <domain> [domain ...]
+      Remove domain(s) from a host and delete their Cloudflare CNAMEs.
 
 Options:
-  --dry-run    Show what would happen without making changes
+  --dry-run     Show what would happen without making changes
+  --no-apply    Change config/DNS but skip the Ansible converge
 
 Environment:
-  CF_API_TOKEN   Cloudflare API token (use 'Edit zone DNS' template)
+  CF_API_TOKEN  Cloudflare API token ('Edit zone DNS' template); needed by
+                up/add-domain/remove-domain (not by apply).
 
 Examples:
   CF_API_TOKEN=xxx ./miuops up root@203.0.113.10 example.com
-  CF_API_TOKEN=xxx ./miuops up root@203.0.113.10 example.com example.org
+  CF_API_TOKEN=xxx ./miuops add-domain 203.0.113.10 example.org
+  ./miuops apply                 # converge the whole fleet
+  ./miuops apply 203.0.113.10    # converge one server
 EOF
     exit 1
 }
