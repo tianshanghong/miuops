@@ -36,14 +36,15 @@ jobs:
           dev ansible_host=${{ secrets.DEV_SERVER_HOST }} ansible_user=${{ secrets.DEV_SERVER_USER }} ansible_ssh_private_key_file=~/.ssh/id_ed25519
           EOF
 
-      - name: Write group_vars
+      - name: Write host_vars
         env:
           GROUP_VARS: ${{ secrets.GROUP_VARS_ALL }}
         run: |
-          printf '%s\n' "$GROUP_VARS" > group_vars/all.yml
+          mkdir -p host_vars
+          printf '%s\n' "$GROUP_VARS" > host_vars/dev.yml
           python3 -c "
           import yaml
-          with open('group_vars/all.yml') as f:
+          with open('host_vars/dev.yml') as f:
               data = yaml.safe_load(f)
           for d in data.get('domains', []):
               print(f'::add-mask::{d}')
