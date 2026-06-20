@@ -94,11 +94,13 @@ jobs:
             echo "$v4" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on INPUT"; exit 1; }
             echo "$v4" | grep -q -- "--name ssh"             || { echo "FAIL: SSH protection rule missing"; exit 1; }
             echo "$v4" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: DOCKER-USER missing final DROP"; exit 1; }
+            echo "$v4" | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: IPv4 FORWARD does not jump to DOCKER-USER (published ports unguarded)"; exit 1; }
             echo "$v6" | grep -q "^-P INPUT DROP"            || { echo "FAIL: IPv6 INPUT policy is not DROP"; exit 1; }
             echo "$v6" | grep -q "^-P FORWARD DROP"          || { echo "FAIL: IPv6 FORWARD policy is not DROP"; exit 1; }
             echo "$v6" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on IPv6 INPUT"; exit 1; }
             echo "$v6" | grep -q -- "--name ssh"             || { echo "FAIL: IPv6 SSH protection rule missing"; exit 1; }
             echo "$v6" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: IPv6 DOCKER-USER missing final DROP"; exit 1; }
+            echo "$v6" | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: IPv6 FORWARD does not jump to DOCKER-USER (published ports unguarded)"; exit 1; }
             echo "ALL FIREWALL SECURITY ASSERTIONS PASSED"
           '
 
@@ -167,4 +169,35 @@ jobs:
             echo "FAIL: published port ${PORT} is reachable over IPv4 from outside — DOCKER-USER is not blocking it"; exit 1
           fi
           echo "external IPv4 access correctly blocked ✅"
+          echo "::endgroup::"
+
+      # The v6 INPUT chain used to drop ICMPv6, which silently broke NDP and thus
+      # all IPv6 connectivity (critical for IPv6-only-public-IP servers). Assert
+      # the allow rules are present AND that IPv6 actually works end-to-end (v6
+      # egress requires resolving the gateway via NDP, so a 200 proves NDP works).
+      - name: Verify IPv6 is functional after firewall applied (NDP)
+        run: |
+          # Reuse one SSH connection (ControlPersist) so the checks below count as
+          # a single new SSH connection from the runner's IP — avoids tripping the
+          # firewall's own SSH rate-limit (6 new conns / 60s).
+          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=60s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          echo "::group::ICMPv6 NDP/PMTUD allow rules present in ip6tables INPUT"
+          # `ip6tables -S` may render the type by name OR number; match both, and
+          # anchor with ( |$) so a numeric type can't substring-match (2 vs 25 etc).
+          v6in="$($SSH 'ip6tables -S INPUT')"
+          echo "$v6in" | grep -Eq -- 'icmpv6-type (neighbour-advertisement|136)( |$)' || { echo "$v6in"; echo "FAIL: ICMPv6 NDP (neighbour-advertisement) accept missing"; exit 1; }
+          echo "$v6in" | grep -Eq -- 'icmpv6-type (packet-too-big|2)( |$)' || { echo "FAIL: ICMPv6 packet-too-big (PMTUD) accept missing"; exit 1; }
+          echo "ICMPv6 allow rules present ✅"
+          echo "::endgroup::"
+          echo "::group::IPv6 functional check (only if the host has a global v6 address)"
+          if [ -z "$($SSH 'ip -6 -o addr show scope global 2>/dev/null | head -1')" ]; then
+            echo "::notice::dev server has no global IPv6 address — skipping functional v6 egress test"
+          # curl exit 0 = connection + transfer succeeded over IPv6 (proves the
+          # gateway resolved via NDP); tolerant of HTTP status so a redirect isn't a fail.
+          elif $SSH "curl -6 -sS -o /dev/null --max-time 12 https://www.google.com"; then
+            echo "IPv6 egress works — gateway NDP resolves ✅"
+          else
+            echo "---- diagnostics ----"; $SSH "ip -6 route show default; ip -6 neigh show" || true
+            echo "FAIL: host has a global IPv6 address but no working v6 egress after the NDP fix"; exit 1
+          fi
           echo "::endgroup::"
