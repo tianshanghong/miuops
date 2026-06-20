@@ -31,4 +31,14 @@ grep -q 'ansible_host=198.51.100.9' "$TMP/inventory.ini" || fail "server-a not u
 [ "$(domain_owner example.com)" = "server-a" ] || fail "domain_owner wrong"
 [ -z "$(domain_owner unowned.example)" ]        || fail "domain_owner false positive"
 
+# --- Task 7: cmd_up uses host_vars, never group_vars ---
+grep -q 'group_vars' "$ROOT/miuops" && fail "miuops still references group_vars"
+grep -q 'write_host_vars "\$ssh_host"' "$ROOT/miuops" || fail "up does not call write_host_vars"
+
+# --- Task 8: apply targets --limit; --no-apply skips converge ---
+out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"
+echo "$out" | grep -q -- "--limit server-a" || fail "apply --dry-run should show --limit server-a"
+out="$(cd "$ROOT" && ./miuops apply --no-apply server-a 2>&1 || true)"
+echo "$out" | grep -qi "no-apply" || fail "--no-apply should skip converge"
+
 echo "ALL CLI HELPER TESTS PASSED"

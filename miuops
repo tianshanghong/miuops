@@ -15,6 +15,7 @@ warn() { echo -e "${YELLOW}=>${NC} $1"; }
 dry()  { echo -e "  ${YELLOW}[dry-run]${NC} $1"; }
 
 DRY_RUN=false
+NO_APPLY=false
 
 # ── Config helpers (host_vars + inventory) ──────────────────────────
 hv_path() { echo "${SCRIPT_DIR}/host_vars/$1.yml"; }
@@ -60,6 +61,30 @@ domain_owner() {
     done
 }
 
+# Converge: run the playbook (optionally limited to one host). Honors DRY_RUN/NO_APPLY.
+run_apply() {
+    local host="${1:-}"
+    if $NO_APPLY; then info "--no-apply: skipping converge"; return 0; fi
+    local cmd=(ansible-playbook "${SCRIPT_DIR}/playbook.yml")
+    [[ -n "$host" ]] && cmd+=(--limit "$host")
+    if $DRY_RUN; then dry "Would run: ${cmd[*]}"; return 0; fi
+    info "Converging${host:+ ${host}}..."
+    "${cmd[@]}"
+}
+
+cmd_apply() {
+    local host=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)  DRY_RUN=true; shift ;;
+            --no-apply) NO_APPLY=true; shift ;;
+            -*) die "Unknown flag: $1" ;;
+            *)  host="$1"; shift ;;
+        esac
+    done
+    run_apply "$host"
+}
+
 usage() {
     cat <<EOF
 Usage: ./miuops up [--dry-run] <user@host> <domain1> [domain2 ...]
@@ -85,6 +110,7 @@ cmd_up() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --dry-run) DRY_RUN=true; shift ;;
+            --no-apply) NO_APPLY=true; shift ;;
             -*) die "Unknown flag: $1" ;;
             *) positional+=("$1"); shift ;;
         esac
@@ -112,6 +138,15 @@ cmd_up() {
         if ! echo "$domain" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$'; then
             die "Invalid domain: '${domain}'
   Expected format: example.com"
+        fi
+    done
+
+    # A domain belongs to exactly one server (its CNAMEs point to one tunnel).
+    for domain in "${domains[@]}"; do
+        local owner; owner="$(domain_owner "$domain")"
+        if [[ -n "$owner" && "$owner" != "$ssh_host" ]]; then
+            die "Domain '${domain}' already belongs to server '${owner}'.
+  A domain maps to exactly one server. Run 'remove-domain ${owner} ${domain}' first."
         fi
     done
 
@@ -204,27 +239,24 @@ cmd_up() {
     local tunnel_name="miuops-${ssh_host//[:.\/]/-}"
     local tunnel_id=""
 
-    # Check existing config for tunnel_id and warn about dropped domains
-    if [[ -f "${SCRIPT_DIR}/group_vars/all.yml" ]]; then
-        local existing_tid
-        existing_tid=$(sed -n 's/^tunnel_id:[[:space:]]*"\([^"]*\)".*/\1/p' "${SCRIPT_DIR}/group_vars/all.yml" | head -1) || true
-        if [[ -n "$existing_tid" && "$existing_tid" != "<would-be-created>" ]]; then
-            tunnel_id="$existing_tid"
-            info "Reusing tunnel ID from existing config: ${tunnel_id}"
-        fi
-
-        local prev_domains prev_domain
-        prev_domains=$(sed -n 's/^[[:space:]]*-[[:space:]]*"\([^"]*\)".*/\1/p' "${SCRIPT_DIR}/group_vars/all.yml") || true
-        for prev_domain in $prev_domains; do
-            local found=false
-            for domain in "${domains[@]}"; do
-                [[ "$domain" == "$prev_domain" ]] && found=true
-            done
-            if ! $found; then
-                warn "Domain '${prev_domain}' is in existing config but not in this invocation — it will be removed from ingress rules"
-            fi
-        done
+    # Reuse this host's existing tunnel from host_vars (additive — never drops domains)
+    local existing_tid
+    existing_tid="$(hv_tunnel "$ssh_host")"
+    if [[ -n "$existing_tid" && "$existing_tid" != "<would-be-created>" ]]; then
+        tunnel_id="$existing_tid"
+        info "Reusing tunnel ID from host_vars: ${tunnel_id}"
     fi
+
+    # merged_domains = union(existing host_vars domains, passed domains). DNS is
+    # created only for the passed domains (Step 4); host_vars stores the union so a
+    # re-run that passes fewer domains never silently drops the others.
+    local merged_domains=() md
+    while IFS= read -r md; do [[ -n "$md" ]] && merged_domains+=("$md"); done < <(hv_domains "$ssh_host")
+    for domain in "${domains[@]}"; do
+        local present=false m
+        for m in "${merged_domains[@]:-}"; do [[ "$m" == "$domain" ]] && present=true; done
+        $present || merged_domains+=("$domain")
+    done
 
     if [[ ! -f ~/.cloudflared/cert.pem ]]; then
         if $DRY_RUN; then
@@ -354,55 +386,34 @@ cmd_up() {
         done
     done
 
-    # ── Step 5: Generate config files ──────────────────────────────
-
-    local inventory_content="[bare_metal]
-${ssh_host} ansible_user=${ssh_user}"
-
-    local groupvars_content
-    groupvars_content="---
-domains:"
-    for domain in "${domains[@]}"; do
-        groupvars_content+="
-  - \"${domain}\""
-    done
-    groupvars_content+="
-
-tunnel_id: \"${tunnel_id}\"
-credentials_file: \"/opt/cloudflared/{{ tunnel_id }}.json\""
-
+    # ── Step 5: Write config + converge ────────────────────────────
     if $DRY_RUN; then
-        info "Would generate inventory.ini:"
-        echo "$inventory_content"
-        echo ""
-        info "Would generate group_vars/all.yml:"
-        echo "$groupvars_content"
-        echo ""
+        info "Would write host_vars/${ssh_host}.yml:"
+        echo "domains:"; printf '  - "%s"\n' "${merged_domains[@]}"
+        echo "tunnel_id: \"${tunnel_id}\""
+        info "Would upsert inventory.ini host '${ssh_host}' (ansible_user=${ssh_user})"
         dry "Would install Ansible Galaxy requirements"
-        dry "Would run: ansible-playbook playbook.yml"
+        dry "Would run: ansible-playbook playbook.yml --limit ${ssh_host}"
         echo ""
         info "${BOLD}Dry run complete.${NC} Re-run without --dry-run to execute."
     else
-        info "Generating inventory.ini..."
-        echo "$inventory_content" > "${SCRIPT_DIR}/inventory.ini"
+        info "Writing host_vars/${ssh_host}.yml..."
+        write_host_vars "$ssh_host" "$tunnel_id" "${merged_domains[@]}"
 
-        info "Generating group_vars/all.yml..."
-        echo "$groupvars_content" > "${SCRIPT_DIR}/group_vars/all.yml"
+        info "Updating inventory.ini..."
+        inventory_upsert "$ssh_host" "$ssh_host" "$ssh_user"
 
-        # ── Step 6: Install Ansible Galaxy requirements ────────────
         info "Installing Ansible Galaxy requirements..."
         if ! ansible-galaxy collection install -r "${SCRIPT_DIR}/requirements.yml" 2>&1; then
             die "Failed to install Ansible Galaxy requirements"
         fi
 
-        # ── Step 7: Run playbook ───────────────────────────────────
-        info "Running playbook..."
-        ansible-playbook "${SCRIPT_DIR}/playbook.yml"
+        run_apply "$ssh_host"
 
         echo ""
         info "${BOLD}Done!${NC} Server bootstrapped."
         info "Tunnel: ${tunnel_id}"
-        for domain in "${domains[@]}"; do
+        for domain in "${merged_domains[@]}"; do
             info "Domain: *.${domain} -> Cloudflare Tunnel -> Traefik"
         done
         echo ""
