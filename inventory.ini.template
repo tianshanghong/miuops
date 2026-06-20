@@ -1,16 +1,14 @@
+# Copy to inventory.ini and list your servers below (flat, one per line).
+# Per-server config (domains, tunnel_id) lives in host_vars/<name>.yml —
+# see host_vars/server1.yml.example. miuops manages both files for you.
 [bare_metal]
-# List your target servers below with their actual IP addresses and credentials
-# Examples:
 server1 ansible_host=192.0.2.10 ansible_user=admin
-server2 ansible_host=192.0.2.11 ansible_user=admin
+# server2 ansible_host=192.0.2.11 ansible_user=admin
+# For SSH key auth, add: ansible_ssh_private_key_file=~/.ssh/id_ed25519
 
-# For SSH key authentication:
-# server3 ansible_host=192.0.2.12 ansible_user=admin ansible_ssh_private_key_file=~/.ssh/id_rsa
-
-# For different server groups, you can create additional sections:
-# [development]
-# dev-server ansible_host=192.0.2.20 ansible_user=admin
-
+# OPTIONAL (advanced): if several servers should share a firewall posture, group
+# them and put shared vars in group_vars/<group>.yml — standard Ansible.
 # [production]
-# prod-server1 ansible_host=192.0.2.30 ansible_user=admin
-# prod-server2 ansible_host=192.0.2.31 ansible_user=admin 
+# server1
+# [production:vars]
+# firewall_management_networks_v4=["203.0.113.0/24"]

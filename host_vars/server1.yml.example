@@ -1,0 +1,9 @@
+# Copy to host_vars/<name>.yml where <name> matches the inventory.ini host alias.
+# This is the ONLY per-server config.
+domains:
+  - "example.com"
+tunnel_id: ""   # this server's Cloudflare tunnel UUID (miuops fills this in)
+
+# Optional firewall posture override for this server (defaults are generic-safe):
+# firewall_management_networks_v4: ["203.0.113.0/24"]
+# firewall_ssh_ratelimit_enabled: false
