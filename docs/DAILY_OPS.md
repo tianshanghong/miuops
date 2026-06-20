@@ -153,7 +153,8 @@ For each domain, delete the two CNAME records pointing to `<tunnel-id>.cfargotun
 
 ```bash
 rm -f files/<tunnel-id>.json
-rm -f group_vars/all.yml
+rm -f host_vars/<host>.yml
+# (or remove just this host's line from inventory.ini if managing a fleet)
 rm -f inventory.ini
 ```
 

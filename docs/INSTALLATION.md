@@ -63,7 +63,7 @@ The CLI handles everything:
 2. Looks up the Cloudflare Zone ID for each domain
 3. Creates a Cloudflare Tunnel (or reuses an existing one)
 4. Creates DNS CNAME records for all domains (Cloudflare API)
-5. Generates `inventory.ini` and `group_vars/all.yml`
+5. Writes `inventory.ini` and `host_vars/<host>.yml`
 6. Installs Ansible Galaxy dependencies
 7. Runs the playbook
 
@@ -94,9 +94,9 @@ ansible-galaxy collection install -r requirements.yml
 
 # Configure
 cp inventory.ini.template inventory.ini
-cp group_vars/all.yml.template group_vars/all.yml
-# Edit inventory.ini with your server details
-# Edit group_vars/all.yml with your domains and tunnel ID
+cp host_vars/server1.yml.example host_vars/<host>.yml   # <host> = inventory alias
+# Edit inventory.ini with your server details (the host alias)
+# Edit host_vars/<host>.yml with that host's domains and tunnel ID
 
 # Create Cloudflare Tunnel (handled automatically by ./miuops up)
 cloudflared tunnel create miuops-203-0-113-10
