@@ -20,19 +20,22 @@
 # block at this position that is REQUIRED. Keep the two templates in sync with
 # that asymmetry in mind.
 
-# 4. SSH
+# 4. management nets — trusted sources fully allowed, and (being before the SSH
+#    rule) exempt from the SSH rate-limit below
+{% for cidr in firewall_management_networks_v4|default([]) %}
+-A INPUT -s {{ cidr }} -j ACCEPT
+{% endfor %}
+
+# 5. SSH
 {% if firewall_ssh_ratelimit_enabled | bool %}
-# rate-limited (default): drop sources over the burst, else accept + track
--A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --update --seconds {{ firewall_ssh_ratelimit_seconds }} --hitcount {{ firewall_ssh_ratelimit_hits }} -j DROP
+# rate-limited (default): drop sources over the burst, else accept + track.
+# Use --rcheck (not the timestamp-refreshing variant) so a blocked attempt does
+# NOT extend the window — the ban self-clears instead of self-extending under load.
+-A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --rcheck --seconds {{ firewall_ssh_ratelimit_seconds }} --hitcount {{ firewall_ssh_ratelimit_hits }} -j DROP
 -A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --set -j ACCEPT
 {% else %}
 -A INPUT -p tcp --dport {{ ssh_port }} -j ACCEPT
 {% endif %}
-
-# 5. management nets
-{% for cidr in firewall_management_networks_v4|default([]) %}
--A INPUT -s {{ cidr }} -j ACCEPT
-{% endfor %}
 
 # 6. whitelisted ports
 {% for port in firewall_whitelist_ports_v4|default([]) %}
