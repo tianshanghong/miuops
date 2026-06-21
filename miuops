@@ -77,11 +77,16 @@ cf_zone_id() {
     http=$(echo "$resp" | tail -1); resp=$(echo "$resp" | sed '$d')
     case "$http" in
         200) ;;
-        401|403) die "Cloudflare API returned ${http} (unauthorized) — check CF_API_TOKEN" ;;
-        *) die "Cloudflare API returned HTTP ${http} for zone '${domain}'" ;;
+        401|403) die "Cloudflare API returned ${http} (unauthorized)
+  - Is your CF_API_TOKEN valid?
+  - Does it have Zone:Read and DNS:Edit permissions?" ;;
+        *) die "Cloudflare API returned HTTP ${http} for zone '${domain}'
+  Response: $(echo "$resp" | jq -r '.errors[0].message // empty' 2>/dev/null || echo 'unknown')" ;;
     esac
     local zid; zid=$(echo "$resp" | jq -r '.result[0].id // empty')
-    [[ -n "$zid" ]] || die "Zone not found for '${domain}' (is it in your Cloudflare account?)"
+    [[ -n "$zid" ]] || die "Zone not found for '${domain}'
+  - Is the domain added to your Cloudflare account?
+  - Does your API token have access to this zone?"
     echo "$zid"
 }
 
@@ -192,7 +197,7 @@ cmd_up() {
 
     local target="${positional[0]}"
     local domains=("${positional[@]:1}")
-    local domain dns_response success error_msg record_name
+    local domain
     local ssh_user ssh_host
     local zone_id_list=()
 
@@ -277,33 +282,10 @@ cmd_up() {
     fi
 
     # ── Step 2: Look up Zone IDs ────────────────────────────────────
-    local zone_response zone_id http_code
-
+    local zone_id
     for domain in "${domains[@]}"; do
         info "Looking up Zone ID for ${domain}..."
-
-        zone_response=$(curl -s -w "\n%{http_code}" \
-            "https://api.cloudflare.com/client/v4/zones?name=${domain}" \
-            -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json") || die "Cloudflare API request failed — network error"
-
-        http_code=$(echo "$zone_response" | tail -1)
-        zone_response=$(echo "$zone_response" | sed '$d')
-
-        case "$http_code" in
-            200) ;;
-            401|403) die "Cloudflare API returned ${http_code} (unauthorized)
-  - Is your CF_API_TOKEN valid?
-  - Does it have Zone:Zone:Read and Zone:DNS:Edit permissions?" ;;
-            *)  die "Cloudflare API returned HTTP ${http_code}
-  Response: $(echo "$zone_response" | jq -r '.errors[0].message // empty' 2>/dev/null || echo 'unknown')" ;;
-        esac
-
-        zone_id=$(echo "$zone_response" | jq -r '.result[0].id // empty')
-        [[ -n "$zone_id" ]] || die "Zone not found for '${domain}'
-  - Is the domain added to your Cloudflare account?
-  - Does your API token have access to this zone?"
-
+        zone_id="$(cf_zone_id "$domain")"
         zone_id_list+=("$zone_id")
         info "Zone ID: ${zone_id}"
     done
@@ -429,35 +411,12 @@ cmd_up() {
     # ── Step 4: Create DNS records ───────────────────────────────────
     info "Creating DNS records..."
 
-    local i
+    local i zid
     for i in "${!domains[@]}"; do
         domain="${domains[$i]}"
-        local zid="${zone_id_list[$i]}"
-        for record_name in "${domain}" "*.${domain}"; do
-            if $DRY_RUN; then
-                dry "Would create CNAME ${record_name} -> ${tunnel_id}.cfargotunnel.com (zone: ${zid})"
-            else
-                info "Creating CNAME ${record_name} -> tunnel ${tunnel_id}..."
-                dns_response=$(curl -s -X POST \
-                    "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records" \
-                    -H "Authorization: Bearer ${CF_API_TOKEN}" \
-                    -H "Content-Type: application/json" \
-                    --data "{\"type\":\"CNAME\",\"name\":\"${record_name}\",\"content\":\"${tunnel_id}.cfargotunnel.com\",\"proxied\":true}") \
-                    || die "Cloudflare API request failed — network error"
-
-                success=$(echo "$dns_response" | jq -r '.success')
-                if [[ "$success" == "true" ]]; then
-                    info "DNS record created for ${record_name}"
-                else
-                    error_msg=$(echo "$dns_response" | jq -r '.errors[0].message // empty' 2>/dev/null)
-                    if echo "$error_msg" | grep -qi "already exists"; then
-                        info "DNS record for ${record_name} already exists (OK)"
-                    else
-                        warn "Failed to create DNS record for ${record_name}: ${error_msg:-unknown error}"
-                    fi
-                fi
-            fi
-        done
+        zid="${zone_id_list[$i]}"
+        cf_create_cname "$zid" "${domain}" "$tunnel_id"
+        cf_create_cname "$zid" "*.${domain}" "$tunnel_id"
     done
 
     # ── Step 5: Write config + converge ────────────────────────────

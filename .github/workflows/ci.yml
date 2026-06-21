@@ -17,7 +17,7 @@ jobs:
 
       - name: Lint + CLI unit tests
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y shellcheck >/dev/null
+          command -v shellcheck >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y shellcheck >/dev/null; }
           shellcheck -S error miuops
           bash tests/cli_test.sh
 

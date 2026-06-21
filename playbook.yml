@@ -21,7 +21,7 @@
     - name: Check for required variables
       fail:
         msg: "Please configure at least one domain in host_vars/<host>.yml"
-      when: domains is not defined or domains | length == 0 or domains[0] == ""
+      when: domains | default([], true) | length == 0 or domains[0] == ""
     
     - name: Check for Tunnel ID
       pause:

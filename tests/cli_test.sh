@@ -46,6 +46,10 @@ write_host_vars solo tdx
 grep -q -- '- ""' "$TMP/host_vars/solo.yml" && fail "empty domain entry written"
 [ -z "$(hv_domains solo)" ] || fail "solo host should have no domains"
 
+# --- cf_zone_id parses the Cloudflare response (curl mocked, no network) ---
+got="$( export CF_API_TOKEN=x; curl() { printf '{"result":[{"id":"ZONEID123"}],"success":true}\n200\n'; }; cf_zone_id example.com )"
+[ "$got" = "ZONEID123" ] || fail "cf_zone_id did not parse zone id (got: '$got')"
+
 # --- Task 7: cmd_up uses host_vars, never group_vars ---
 grep -q 'group_vars' "$ROOT/miuops" && fail "miuops still references group_vars"
 grep -q 'write_host_vars "\$ssh_host"' "$ROOT/miuops" || fail "up does not call write_host_vars"
