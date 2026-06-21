@@ -40,6 +40,8 @@ valid_host_alias 'bad|host'   && fail "host alias with | accepted"
 valid_host_alias '../etc/x'   && fail "host alias with / accepted (path traversal)"
 valid_domain 'example.com'    || fail "valid domain rejected"
 valid_domain 'not a domain'   && fail "invalid domain accepted"
+valid_host_alias "$(printf 'good\nrm -rf /')"   && fail "host alias with embedded newline accepted"
+valid_domain "$(printf 'a.com\nevil;payload')"  && fail "domain with embedded newline accepted"
 
 # --- write_host_vars with zero domains must not emit a '- ""' entry ---
 write_host_vars solo tdx

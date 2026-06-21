@@ -18,10 +18,12 @@ DRY_RUN=false
 NO_APPLY=false
 
 # ── Validation ──────────────────────────────────────────────────────
-valid_domain() { echo "$1" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$'; }
-# A host alias becomes a filename (host_vars/<h>.yml) and an inventory key, so
+# Use [[ =~ ]] (whole-string anchored) rather than `grep` (line-oriented), so a
+# value with an embedded newline can't slip past via a clean first line.
+valid_domain() { local re='^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$'; [[ "$1" =~ $re ]]; }
+# A host alias / SSH user becomes a filename, inventory key, or sed operand, so
 # restrict it to a safe charset — blocks path traversal and sed/grep metachars.
-valid_host_alias() { echo "$1" | grep -qE '^[A-Za-z0-9._-]+$'; }
+valid_host_alias() { local re='^[A-Za-z0-9._-]+$'; [[ "$1" =~ $re ]]; }
 
 # ── Config helpers (host_vars + inventory) ──────────────────────────
 hv_path() { echo "${SCRIPT_DIR}/host_vars/$1.yml"; }
@@ -213,6 +215,8 @@ cmd_up() {
     # The host becomes a filename + inventory key — keep it to a safe charset.
     valid_host_alias "$ssh_host" || die "Invalid host '${ssh_host}'
   Use letters, digits, dot, dash, underscore (IPv6 literals need a named alias)."
+    # The user is written into inventory.ini via sed — keep it to a safe charset too.
+    valid_host_alias "$ssh_user" || die "Invalid SSH user '${ssh_user}' (letters, digits, dot, dash, underscore only)."
 
     # Validate domain format (portable — no bash regex quantifiers)
     for domain in "${domains[@]}"; do
