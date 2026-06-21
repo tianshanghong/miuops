@@ -98,6 +98,18 @@ cf_zone_id() {
     echo "$zid"
 }
 
+# Echo "<id>\t<content>" of the CNAME named $2 in zone $1 (empty fields if none).
+# Dies on network / API error.
+cf_cname_record() {
+    local zid="$1" name="$2" resp
+    resp=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records?type=CNAME&name=${name}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}") \
+        || die "Cloudflare API request failed looking up CNAME ${name} (network error)"
+    [[ "$(echo "$resp" | jq -r '.success')" == "true" ]] \
+        || die "Cloudflare API error looking up CNAME ${name}: $(echo "$resp" | jq -r '.errors[0].message // "unknown"')"
+    echo "$resp" | jq -r '(.result[0] // {}) | [.id // "", .content // ""] | @tsv'
+}
+
 cf_create_cname() {
     local zid="$1" name="$2" tid="$3"
     if $DRY_RUN; then dry "Would create CNAME ${name} -> ${tid}.cfargotunnel.com"; return 0; fi
@@ -106,29 +118,30 @@ cf_create_cname() {
         "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records" \
         -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
         --data "{\"type\":\"CNAME\",\"name\":\"${name}\",\"content\":\"${tid}.cfargotunnel.com\",\"proxied\":true}") \
-        || die "Cloudflare API request failed — network error"
+        || die "Cloudflare API request failed creating CNAME ${name} (network error)"
     ok=$(echo "$resp" | jq -r '.success')
     if [[ "$ok" == "true" ]]; then
         info "DNS record created for ${name}"
-    else
-        msg=$(echo "$resp" | jq -r '.errors[0].message // empty' 2>/dev/null)
-        if echo "$msg" | grep -qi "already exists"; then
-            info "DNS record for ${name} already exists (OK)"
+        return 0
+    fi
+    msg=$(echo "$resp" | jq -r '.errors[0].message // empty' 2>/dev/null)
+    if echo "$msg" | grep -qi "already exists"; then
+        # Already there — verify it points at THIS tunnel, else the domain is misrouted.
+        local rec content; rec="$(cf_cname_record "$zid" "$name")"; content="${rec#*$'\t'}"
+        if [[ "$content" == "${tid}.cfargotunnel.com" ]]; then
+            info "DNS record for ${name} already points here (OK)"
         else
-            warn "Failed to create DNS record for ${name}: ${msg:-unknown error}"
+            die "CNAME ${name} already exists but points to '${content}', not this tunnel.
+  Remove or repoint it in Cloudflare, then retry."
         fi
+    else
+        die "Failed to create DNS record for ${name}: ${msg:-unknown error}"
     fi
 }
 
 cf_delete_cname() {
-    local zid="$1" name="$2" tid="${3:-}" resp rid content
-    resp=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records?type=CNAME&name=${name}" \
-        -H "Authorization: Bearer ${CF_API_TOKEN}") \
-        || die "Cloudflare API request failed looking up CNAME ${name} (network error)"
-    [[ "$(echo "$resp" | jq -r '.success')" == "true" ]] \
-        || die "Cloudflare API error looking up CNAME ${name}: $(echo "$resp" | jq -r '.errors[0].message // "unknown"')"
-    rid=$(echo "$resp" | jq -r '.result[0].id // empty')
-    content=$(echo "$resp" | jq -r '.result[0].content // empty')
+    local zid="$1" name="$2" tid="${3:-}" rec rid content
+    rec="$(cf_cname_record "$zid" "$name")"; rid="${rec%%$'\t'*}"; content="${rec#*$'\t'}"
     [[ -n "$rid" ]] || { info "CNAME ${name} already absent (OK)"; return 0; }
     # Only delete a record we own (pointing at this tunnel) — never someone else's
     # CNAME that happens to share the name.
@@ -141,11 +154,9 @@ cf_delete_cname() {
     del=$(curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records/${rid}" \
         -H "Authorization: Bearer ${CF_API_TOKEN}") \
         || die "Cloudflare API request failed deleting CNAME ${name} (network error)"
-    if [[ "$(echo "$del" | jq -r '.success')" == "true" ]]; then
-        info "Deleted CNAME ${name}"
-    else
-        warn "Cloudflare did not confirm deletion of ${name}: $(echo "$del" | jq -r '.errors[0].message // "unknown"')"
-    fi
+    [[ "$(echo "$del" | jq -r '.success')" == "true" ]] \
+        || die "Cloudflare did not confirm deletion of ${name}: $(echo "$del" | jq -r '.errors[0].message // "unknown"')"
+    info "Deleted CNAME ${name}"
 }
 
 # Converge: run the playbook (optionally limited to one host). Honors DRY_RUN/NO_APPLY.
@@ -553,8 +564,10 @@ cmd_remove_domain() {
     valid_host_alias "$host" || die "Invalid host '${host}'"
     [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}'."
     local _ld; for _ld in "${!doms[@]}"; do doms[$_ld]="$(lc "${doms[$_ld]}")"; done
+    local _vd; for _vd in "${doms[@]}"; do valid_domain "$_vd" || die "Invalid domain: '${_vd}'"; done
 
     local tid; tid="$(hv_tunnel "$host")"
+    [[ -n "$tid" ]] || die "host_vars/${host}.yml has no tunnel_id"
 
     # Split into keep/remove WITHOUT touching DNS, so the last-domain refusal is
     # checked before anything is deleted.

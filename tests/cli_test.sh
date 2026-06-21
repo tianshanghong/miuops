@@ -103,4 +103,25 @@ echo "$out" | grep -qi 'not this tunnel' || fail "cf_delete_cname should skip a 
 out="$( export CF_API_TOKEN=x; curl() { if printf '%s' "$*" | grep -q DELETE; then printf '{"success":true}'; else printf '{"success":true,"result":[{"id":"R1","content":"TUN1.cfargotunnel.com"}]}'; fi; }; cf_delete_cname z1 app.example.com TUN1 2>&1 )"
 echo "$out" | grep -qi 'Deleted CNAME' || fail "cf_delete_cname should delete a matching CNAME"
 
+# cf_create_cname: existing record pointing elsewhere -> hard error (not silent OK)
+out="$( ( export CF_API_TOKEN=x; curl() { if printf '%s' "$*" | grep -q POST; then printf '{"success":false,"errors":[{"message":"A record with that host already exists."}]}'; else printf '{"success":true,"result":[{"id":"R1","content":"other.example.com"}]}'; fi; }; cf_create_cname z1 app.example.com TUN1 ) 2>&1 || true )"
+echo "$out" | grep -qi 'not this tunnel' || fail "cf_create_cname must reject an existing CNAME pointing elsewhere"
+
+# cf_create_cname: existing record pointing at our tunnel -> OK
+out="$( ( export CF_API_TOKEN=x; curl() { if printf '%s' "$*" | grep -q POST; then printf '{"success":false,"errors":[{"message":"record already exists"}]}'; else printf '{"success":true,"result":[{"id":"R1","content":"TUN1.cfargotunnel.com"}]}'; fi; }; cf_create_cname z1 app.example.com TUN1 ) 2>&1 || true )"
+echo "$out" | grep -qi 'already points here' || fail "cf_create_cname should accept an existing CNAME that points here"
+
+# cf_create_cname: a non-already-exists API failure -> hard error
+out="$( ( export CF_API_TOKEN=x; curl() { printf '{"success":false,"errors":[{"message":"Invalid zone"}]}'; }; cf_create_cname z1 app.example.com TUN1 ) 2>&1 || true )"
+echo "$out" | grep -qi 'Failed to create' || fail "cf_create_cname must die on an API failure"
+
+# cf_delete_cname: a failed delete -> hard error (not a warning)
+out="$( ( export CF_API_TOKEN=x; curl() { if printf '%s' "$*" | grep -q DELETE; then printf '{"success":false,"errors":[{"message":"boom"}]}'; else printf '{"success":true,"result":[{"id":"R1","content":"TUN1.cfargotunnel.com"}]}'; fi; }; cf_delete_cname z1 app.example.com TUN1 ) 2>&1 || true )"
+echo "$out" | grep -qi 'did not confirm deletion' || fail "cf_delete_cname must die on a failed delete"
+
+# remove-domain: missing tunnel_id -> hard error
+write_host_vars notunnel "" a.example b.example
+out="$(cd "$ROOT" && MIUOPS_TEST_SCRIPT_DIR="$TMP" ./miuops remove-domain notunnel a.example 2>&1 || true)"
+echo "$out" | grep -qi 'no tunnel_id' || fail "remove-domain must require a non-empty tunnel_id"
+
 echo "ALL CLI HELPER TESTS PASSED"
