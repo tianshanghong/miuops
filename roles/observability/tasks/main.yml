@@ -1,0 +1,63 @@
+---
+# Grafana Alloy -> Grafana Cloud. Entire role is a no-op unless observability_enabled.
+
+- name: Ensure Grafana Cloud connection is configured
+  assert:
+    that:
+      - grafana_cloud_prometheus_url | length > 0
+      - grafana_cloud_prometheus_user | length > 0
+      - grafana_cloud_loki_url | length > 0
+      - grafana_cloud_loki_user | length > 0
+      - grafana_cloud_token | length > 0
+    fail_msg: >-
+      observability_enabled is true but Grafana Cloud settings are incomplete.
+      Set grafana_cloud_prometheus_url/_user and grafana_cloud_loki_url/_user in
+      gitignored group_vars/all.yml, and provide grafana_cloud_token (gitignored
+      config or the GRAFANA_CLOUD_TOKEN env var). See docs/OBSERVABILITY.md.
+    quiet: true
+  when: observability_enabled | bool
+  tags: ['observability']
+
+- name: Create Alloy config directory
+  file:
+    path: /etc/alloy
+    state: directory
+    mode: '0755'
+  when: observability_enabled | bool
+  tags: ['observability']
+
+- name: Deploy Alloy config (contains the Grafana Cloud token)
+  template:
+    src: config.alloy.j2
+    dest: /etc/alloy/config.alloy
+    mode: '0600'
+  no_log: true
+  notify: Restart Alloy
+  when: observability_enabled | bool
+  tags: ['observability']
+
+- name: Run Grafana Alloy container
+  community.docker.docker_container:
+    name: alloy
+    image: "{{ observability_alloy_image }}"
+    state: started
+    pull: true
+    restart_policy: unless-stopped
+    # host networking: reach cloudflared on 127.0.0.1:2000; Alloy listens on nothing
+    # inbound (its own HTTP server is bound to loopback below).
+    network_mode: host
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=127.0.0.1:12345
+    volumes:
+      - "/etc/alloy/config.alloy:/etc/alloy/config.alloy:ro"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "/:/rootfs:ro"
+      - "/proc:/host/proc:ro"
+      - "/sys:/host/sys:ro"
+      - "/sys/fs/cgroup:/sys/fs/cgroup:ro"
+      - "/var/lib/docker:/var/lib/docker:ro"
+  when: observability_enabled | bool
+  tags: ['observability']

@@ -1,0 +1,25 @@
+---
+# Grafana Alloy agent shipping metrics + logs to Grafana Cloud. Opt-in per host:
+# set `observability_enabled: true` in that host's host_vars.
+observability_enabled: false
+
+# Pin the Alloy image (supply chain). Verify/bump at hub.docker.com/r/grafana/alloy/tags
+observability_alloy_image: "grafana/alloy:v1.5.1"
+
+observability_scrape_interval: "60s"
+
+# cloudflared exposes Prometheus metrics here (roles/cloudflared config.yml: metrics: 127.0.0.1:2000).
+# Set to "" to skip scraping it.
+observability_cloudflared_metrics: "127.0.0.1:2000"
+
+# --- Grafana Cloud connection ---
+# URLs + instance IDs are NOT secret — put them in gitignored group_vars/all.yml
+# (one Cloud stack for the whole fleet) or per host_vars.
+grafana_cloud_prometheus_url: ""
+grafana_cloud_prometheus_user: ""
+grafana_cloud_loki_url: ""
+grafana_cloud_loki_user: ""
+
+# The token IS secret. Keep it ONLY in gitignored config, or pass GRAFANA_CLOUD_TOKEN
+# at apply time. Never commit it. Scope the Access Policy to metrics:write + logs:write.
+grafana_cloud_token: "{{ lookup('env', 'GRAFANA_CLOUD_TOKEN') | default('', true) }}"
