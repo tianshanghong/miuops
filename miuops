@@ -24,6 +24,8 @@ valid_domain() { local re='^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,
 # A host alias / SSH user becomes a filename, inventory key, or sed operand, so
 # restrict it to a safe charset — blocks path traversal and sed/grep metachars.
 valid_host_alias() { local re='^[A-Za-z0-9._-]+$'; [[ "$1" =~ $re ]]; }
+# Lowercase a domain (DNS is case-insensitive; portable — bash 3.2 lacks ${,,}).
+lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
 
 # ── Config helpers (host_vars + inventory) ──────────────────────────
 hv_path() { echo "${SCRIPT_DIR}/host_vars/$1.yml"; }
@@ -40,18 +42,22 @@ hv_tunnel() {
 
 write_host_vars() {
     local host="$1" tid="$2"; shift 2
-    local f; f="$(hv_path "$host")"; mkdir -p "$(dirname "$f")"
+    local f tmp; f="$(hv_path "$host")"; mkdir -p "$(dirname "$f")"
+    tmp="$(mktemp "${f}.XXXXXX")"
     { echo "---"; echo "domains:";
       local d; for d in "$@"; do echo "  - \"${d}\""; done
-      echo ""; echo "tunnel_id: \"${tid}\""; } > "$f"
+      echo ""; echo "tunnel_id: \"${tid}\""; } > "$tmp"
+    mv "$tmp" "$f"   # atomic — no half-written YAML if interrupted mid-write
 }
 
 inventory_upsert() {
     local host="$1" ah="$2" au="$3" inv="${SCRIPT_DIR}/inventory.ini"
     local line="${host} ansible_host=${ah} ansible_user=${au}"
-    if [[ -f "$inv" ]] && grep -qE "^${host}[[:space:]]" "$inv"; then
+    # Match the host as an exact first field (awk $1==h), never as a regex/sed
+    # pattern — so a dot in the alias or IP can't act as a wildcard.
+    if [[ -f "$inv" ]] && awk -v h="$host" '$1==h{found=1} END{exit !found}' "$inv"; then
         local tmp; tmp="$(mktemp)"
-        sed "s|^${host}[[:space:]].*|${line}|" "$inv" > "$tmp" && mv "$tmp" "$inv"
+        awk -v h="$host" -v repl="$line" '$1==h{print repl; next} {print}' "$inv" > "$tmp" && mv "$tmp" "$inv"
     else
         [[ -f "$inv" ]] || printf '[bare_metal]\n' > "$inv"
         grep -q '^\[bare_metal\]' "$inv" || printf '[bare_metal]\n' >> "$inv"
@@ -65,7 +71,7 @@ domain_owner() {
     for f in "${SCRIPT_DIR}"/host_vars/*.yml; do
         [[ -e "$f" ]] || continue
         host="$(basename "$f" .yml)"
-        if hv_domains "$host" | grep -qx "$domain"; then echo "$host"; return 0; fi
+        if hv_domains "$host" | grep -Fqx -- "$domain"; then echo "$host"; return 0; fi
     done
 }
 
@@ -115,22 +121,49 @@ cf_create_cname() {
 }
 
 cf_delete_cname() {
-    local zid="$1" name="$2" rid
-    rid=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records?type=CNAME&name=${name}" \
-        -H "Authorization: Bearer ${CF_API_TOKEN}" | jq -r '.result[0].id // empty')
+    local zid="$1" name="$2" tid="${3:-}" resp rid content
+    resp=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records?type=CNAME&name=${name}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}") \
+        || die "Cloudflare API request failed looking up CNAME ${name} (network error)"
+    [[ "$(echo "$resp" | jq -r '.success')" == "true" ]] \
+        || die "Cloudflare API error looking up CNAME ${name}: $(echo "$resp" | jq -r '.errors[0].message // "unknown"')"
+    rid=$(echo "$resp" | jq -r '.result[0].id // empty')
+    content=$(echo "$resp" | jq -r '.result[0].content // empty')
     [[ -n "$rid" ]] || { info "CNAME ${name} already absent (OK)"; return 0; }
+    # Only delete a record we own (pointing at this tunnel) — never someone else's
+    # CNAME that happens to share the name.
+    if [[ -n "$tid" && "$content" != "${tid}.cfargotunnel.com" ]]; then
+        warn "CNAME ${name} points to '${content}', not this tunnel — leaving it untouched"
+        return 0
+    fi
     if $DRY_RUN; then dry "Would delete CNAME ${name}"; return 0; fi
-    curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records/${rid}" \
-        -H "Authorization: Bearer ${CF_API_TOKEN}" >/dev/null && info "Deleted CNAME ${name}"
+    local del
+    del=$(curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records/${rid}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}") \
+        || die "Cloudflare API request failed deleting CNAME ${name} (network error)"
+    if [[ "$(echo "$del" | jq -r '.success')" == "true" ]]; then
+        info "Deleted CNAME ${name}"
+    else
+        warn "Cloudflare did not confirm deletion of ${name}: $(echo "$del" | jq -r '.errors[0].message // "unknown"')"
+    fi
 }
 
 # Converge: run the playbook (optionally limited to one host). Honors DRY_RUN/NO_APPLY.
+# Ensures Galaxy collections are installed first, so a fresh control machine can
+# run `apply` without having run `up` beforehand.
 run_apply() {
     local host="${1:-}"
     if $NO_APPLY; then info "--no-apply: skipping converge"; return 0; fi
     local cmd=(ansible-playbook "${SCRIPT_DIR}/playbook.yml")
     [[ -n "$host" ]] && cmd+=(--limit "$host")
-    if $DRY_RUN; then dry "Would run: ${cmd[*]}"; return 0; fi
+    if $DRY_RUN; then
+        dry "Would install Ansible Galaxy requirements"
+        dry "Would run: ${cmd[*]}"
+        return 0
+    fi
+    info "Installing Ansible Galaxy requirements..."
+    ansible-galaxy collection install -r "${SCRIPT_DIR}/requirements.yml" >/dev/null \
+        || die "Failed to install Ansible Galaxy requirements"
     info "Converging${host:+ ${host}}..."
     "${cmd[@]}"
 }
@@ -217,6 +250,9 @@ cmd_up() {
   Use letters, digits, dot, dash, underscore (IPv6 literals need a named alias)."
     # The user is written into inventory.ini via sed — keep it to a safe charset too.
     valid_host_alias "$ssh_user" || die "Invalid SSH user '${ssh_user}' (letters, digits, dot, dash, underscore only)."
+
+    # Normalize domains to lowercase (DNS is case-insensitive).
+    local _di; for _di in "${!domains[@]}"; do domains[$_di]="$(lc "${domains[$_di]}")"; done
 
     # Validate domain format (portable — no bash regex quantifiers)
     for domain in "${domains[@]}"; do
@@ -333,13 +369,19 @@ cmd_up() {
         existing=$(cloudflared tunnel list -o json 2>&1) || true
         if ! echo "$existing" | jq -e 'type == "array"' >/dev/null 2>&1; then
             if $DRY_RUN; then
-                warn "Cloudflare cert.pem appears stale — would need to re-login"
+                warn "Could not list tunnels — would re-check cert/login"
                 existing="[]"
-            else
-                warn "Cloudflare cert.pem is stale, re-authenticating..."
+            elif echo "$existing" | grep -qiE 'cert|login|unauthor|expired|invalid|token|credential'; then
+                # Looks like an auth/cert problem → re-login.
+                warn "Cloudflare cert.pem looks stale, re-authenticating..."
                 rm -f ~/.cloudflared/cert.pem
                 cloudflared login
                 existing=$(cloudflared tunnel list -o json 2>/dev/null || echo "[]")
+            else
+                # Likely a transient network/API failure — do NOT delete a valid cert.
+                die "'cloudflared tunnel list' failed (looks like a network/API issue, not auth):
+${existing}
+  Fix connectivity and retry — your cert.pem was left intact."
             fi
         fi
     else
@@ -401,6 +443,7 @@ cmd_up() {
         if [[ ! -f "${SCRIPT_DIR}/files/${tunnel_id}.json" ]]; then
             if [[ -f ~/.cloudflared/${tunnel_id}.json ]]; then
                 cp ~/.cloudflared/"${tunnel_id}.json" "${SCRIPT_DIR}/files/"
+                chmod 600 "${SCRIPT_DIR}/files/${tunnel_id}.json"
                 info "Tunnel credentials copied"
             else
                 die "Credentials not found at ~/.cloudflared/${tunnel_id}.json
@@ -440,12 +483,7 @@ cmd_up() {
         info "Updating inventory.ini..."
         inventory_upsert "$ssh_host" "$ssh_host" "$ssh_user"
 
-        info "Installing Ansible Galaxy requirements..."
-        if ! ansible-galaxy collection install -r "${SCRIPT_DIR}/requirements.yml" 2>&1; then
-            die "Failed to install Ansible Galaxy requirements"
-        fi
-
-        run_apply "$ssh_host"
+        run_apply "$ssh_host"   # installs Galaxy requirements, then converges
 
         echo ""
         info "${BOLD}Done!${NC} Server bootstrapped."
@@ -470,6 +508,7 @@ cmd_add_domain() {
     done
     [[ -n "$host" && ${#doms[@]} -ge 1 ]] || die "Usage: miuops add-domain [--dry-run] <host> <domain...>"
     valid_host_alias "$host" || die "Invalid host '${host}'"
+    local _ld; for _ld in "${!doms[@]}"; do doms[$_ld]="$(lc "${doms[$_ld]}")"; done
     local _vd; for _vd in "${doms[@]}"; do valid_domain "$_vd" || die "Invalid domain: '${_vd}'"; done
     [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}' — is it in inventory? Run 'miuops up' first."
     [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
@@ -513,32 +552,40 @@ cmd_remove_domain() {
     [[ -n "$host" && ${#doms[@]} -ge 1 ]] || die "Usage: miuops remove-domain [--dry-run] [--force] <host> <domain...>"
     valid_host_alias "$host" || die "Invalid host '${host}'"
     [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}'."
-    [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
+    local _ld; for _ld in "${!doms[@]}"; do doms[$_ld]="$(lc "${doms[$_ld]}")"; done
 
     local tid; tid="$(hv_tunnel "$host")"
-    local keep=() d removed=false dd drop zid
+
+    # Split into keep/remove WITHOUT touching DNS, so the last-domain refusal is
+    # checked before anything is deleted.
+    local keep=() remove=() d dd drop
     while IFS= read -r d; do
         [[ -z "$d" ]] && continue
         drop=false
         for dd in "${doms[@]}"; do [[ "$dd" == "$d" ]] && drop=true; done
-        if $drop; then
-            zid="$(cf_zone_id "$d")"
-            cf_delete_cname "$zid" "$d"
-            cf_delete_cname "$zid" "*.${d}"
-            removed=true
-        else
-            keep+=("$d")
-        fi
+        if $drop; then remove+=("$d"); else keep+=("$d"); fi
     done < <(hv_domains "$host")
 
-    $removed || { warn "None of the given domains were on ${host} — nothing removed."; return 0; }
+    [[ ${#remove[@]} -ge 1 ]] || { warn "None of the given domains were on ${host} — nothing removed."; return 0; }
     if [[ ${#keep[@]} -eq 0 && "$force" != true ]]; then
         die "Refusing to remove the last domain of '${host}' (a server needs at least one). Use --force to override."
     fi
+
     if $DRY_RUN; then
+        dry "Would delete CNAMEs for: ${remove[*]}"
         dry "Would set ${host} domains: ${keep[*]:-(none)}"
         return 0
     fi
+
+    # Only now (deletion is actually going to happen) do we need the API token.
+    [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
+    local zid
+    for d in "${remove[@]}"; do
+        zid="$(cf_zone_id "$d")"
+        cf_delete_cname "$zid" "$d" "$tid"
+        cf_delete_cname "$zid" "*.${d}" "$tid"
+    done
+
     if [[ ${#keep[@]} -eq 0 ]]; then
         write_host_vars "$host" "$tid"
         warn "${host} now has no domains — skipping converge. Add a domain or remove the host."

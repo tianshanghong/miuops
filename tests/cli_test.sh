@@ -70,4 +70,37 @@ echo "$out" | grep -qiE 'no host_vars' || fail "remove-domain should reject unkn
 out="$(cd "$ROOT" && CF_API_TOKEN=x ./miuops add-domain onlyhost 2>&1 || true)"
 echo "$out" | grep -qi 'Usage' || fail "add-domain with no domains should show usage"
 
+# --- review-fix regressions ---
+
+# lc: lowercase normalization (DNS is case-insensitive)
+[ "$(lc Example.COM)" = "example.com" ] || fail "lc did not lowercase"
+
+# domain_owner uses fixed-string match — a '.' must not act as a regex wildcard
+write_host_vars rgxhost trx abcdXcom
+[ -z "$(domain_owner abcd.com)" ] || fail "domain_owner matched via regex '.' (need grep -F)"
+
+# inventory_upsert matches the host as an exact field (dot is not a wildcard)
+inventory_upsert host.a 203.0.113.1 root
+inventory_upsert hostXa 203.0.113.2 root
+inventory_upsert host.a 203.0.113.9 root   # update host.a only
+grep -Fq 'hostXa ansible_host=203.0.113.2 ' "$TMP/inventory.ini" || fail "hostXa clobbered by host.a (dot wildcard)"
+grep -Fq 'host.a ansible_host=203.0.113.9 ' "$TMP/inventory.ini" || fail "host.a not updated"
+
+# remove-domain refuses the last domain BEFORE deleting DNS (no token needed)
+write_host_vars onehost ot only.example
+out="$(cd "$ROOT" && MIUOPS_TEST_SCRIPT_DIR="$TMP" ./miuops remove-domain onehost only.example 2>&1 || true)"
+echo "$out" | grep -qi 'Refusing to remove the last domain' || fail "remove-domain must refuse last domain before deleting"
+
+# apply ensures Galaxy collections (visible in dry-run)
+out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"
+echo "$out" | grep -qi 'Galaxy requirements' || fail "apply should ensure Galaxy collections"
+
+# cf_delete_cname skips a CNAME pointing elsewhere (not our tunnel)
+out="$( export CF_API_TOKEN=x; curl() { printf '{"success":true,"result":[{"id":"R1","content":"other.example.com"}]}'; }; cf_delete_cname z1 app.example.com TUN1 2>&1 )"
+echo "$out" | grep -qi 'not this tunnel' || fail "cf_delete_cname should skip a non-tunnel CNAME"
+
+# cf_delete_cname deletes a CNAME pointing to our tunnel (and checks .success)
+out="$( export CF_API_TOKEN=x; curl() { if printf '%s' "$*" | grep -q DELETE; then printf '{"success":true}'; else printf '{"success":true,"result":[{"id":"R1","content":"TUN1.cfargotunnel.com"}]}'; fi; }; cf_delete_cname z1 app.example.com TUN1 2>&1 )"
+echo "$out" | grep -qi 'Deleted CNAME' || fail "cf_delete_cname should delete a matching CNAME"
+
 echo "ALL CLI HELPER TESTS PASSED"
