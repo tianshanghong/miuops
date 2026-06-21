@@ -1,9 +1,6 @@
 ---
 # cloudflared default variables
 cloudflared_dir: "/opt/cloudflared"
-# Derived from the host's tunnel_id; identical formula for every server, so it is
-# a role default rather than per-server config.
-credentials_file: "{{ cloudflared_dir }}/{{ tunnel_id }}.json"
 cloudflared_gpg_key_url: "https://pkg.cloudflare.com/cloudflare-main.gpg"
 # Codenames Cloudflare publishes cloudflared packages for. New releases lag here
 # (e.g. Ubuntu 26.04 "resolute", Debian 13 "trixie"), so cloudflared_apt_release uses
