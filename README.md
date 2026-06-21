@@ -70,6 +70,33 @@ CF_API_TOKEN=your_token ./miuops up --dry-run root@203.0.113.10 example.com exam
 CF_API_TOKEN=your_token ./miuops up 203.0.113.10 example.com
 ```
 
+## Commands
+
+| Command | What it does |
+|---|---|
+| `miuops up <user@host> <domain…>` | Day-1: create the tunnel + DNS, write config, converge. Additive — re-running adds domains, never drops them. |
+| `miuops apply [host]` | Day-2: re-converge one server (or the whole fleet if omitted). |
+| `miuops add-domain <host> <domain…>` | Add domain(s) to a server (creates DNS, merges config). |
+| `miuops remove-domain <host> <domain…>` | Remove domain(s) and delete their Cloudflare CNAMEs. |
+
+All commands accept `--dry-run` (preview) and `--no-apply` (change config/DNS but skip the converge).
+
+## Managing multiple servers
+
+Each server is one line in `inventory.ini` plus one `host_vars/<name>.yml` (its
+`domains` + `tunnel_id`). Run `miuops up` once per server in a single checkout —
+they coexist, and you converge any subset:
+
+```bash
+miuops apply server-a          # one server
+miuops apply                   # the whole fleet
+```
+
+Day-to-day domain/converge commands are in [Daily Operations](docs/DAILY_OPS.md).
+See **[Scaling & advanced patterns](docs/SCALING.md)** for migrating from a
+single-server setup and optional patterns (env grouping, SOPS, YubiKey, a
+management-CIDR SSH allowlist).
+
 ## What Gets Deployed
 
 | Component | Role | Purpose |
@@ -84,6 +111,10 @@ CF_API_TOKEN=your_token ./miuops up 203.0.113.10 example.com
 After bootstrap, create your private stack repo from the **[miuops-stack-template](https://github.com/tianshanghong/miuops-stack-template)** — it includes Traefik, S3 backups, and a GitHub Actions pipeline that deploys on push to `main`.
 
 ## Infrastructure Upgrades
+
+Pull tool updates, then re-converge with `miuops apply [host]` (whole fleet if
+omitted). To target a single role, add `--tags` (and `--limit <host>` for one
+server):
 
 ```bash
 # Update firewall rules
@@ -103,7 +134,9 @@ ansible-playbook playbook.yml --tags docker
 
 - `./miuops up` automatically creates and configures a Cloudflare Tunnel
 - DNS CNAME records are created by the CLI via Cloudflare API
-- Re-running `./miuops up` with additional domains adds them to the existing tunnel
+- Re-running `./miuops up` with additional domains adds them (additive — never drops)
+- `./miuops add-domain <host> <domain…>` / `remove-domain <host> <domain…>` manage domains on a live server (remove-domain also deletes the orphaned CNAMEs)
+- A domain belongs to exactly one server; assigning it to a second is refused
 - To delete a tunnel, see [Deleting a tunnel](docs/DAILY_OPS.md#deleting-a-tunnel)
 
 ## Backup Setup
@@ -111,13 +144,13 @@ ansible-playbook playbook.yml --tags docker
 - `scripts/setup-s3-backup.sh` — Create an S3 bucket (Object Lock + lifecycle) and IAM user for backups
 - `images/postgres-walg/` — Custom PostgreSQL 17 + WAL-G image for continuous WAL archiving to S3
 
-The setup script creates a single `{project}-backup` bucket used by both offen (volume tarballs under `vol/`) and WAL-G (database backups under `db/`). Object Lock (Compliance, 30 days) prevents deletion; S3 lifecycle transitions to Glacier at 30 days and expires at 90 days.
+The setup script creates a single `{project}-backup` bucket used by both offen (volume tarballs under `vol/`) and WAL-G (database backups under `db/`). Object Lock (Governance, 30 days) prevents deletion; S3 lifecycle transitions to Glacier at 30 days and expires at 90 days.
 
 ## Security
 
 - Zero exposed ports — all traffic flows through Cloudflare Tunnel
 - iptables firewall with default-DROP on INPUT and DOCKER-USER chains
-- Rate-limited SSH (6 attempts per 60 seconds)
+- Rate-limited SSH by default (6 attempts / 60s, configurable); optional management-CIDR allowlist
 - Docker daemon hardened (ICC disabled, userland proxy disabled)
 - Sensitive files excluded from version control (`.gitignore`)
 
@@ -125,6 +158,7 @@ The setup script creates a single `{project}-backup` bucket used by both offen (
 
 - [Architecture](docs/ARCHITECTURE.md) — Design decisions, network model, and system diagram
 - [Installation Guide](docs/INSTALLATION.md) — Full end-to-end setup walkthrough
+- [Scaling & Advanced](docs/SCALING.md) — Migration to a fleet + optional patterns (env grouping, SOPS, YubiKey)
 - [Repository Structure](docs/STRUCTURE.md) — Directory layout and role descriptions
 - [Disaster Recovery](docs/DISASTER_RECOVERY.md) — Backup restore procedures for all failure scenarios
 - [Daily Operations](docs/DAILY_OPS.md) — Quick reference for day-to-day server management

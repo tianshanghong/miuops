@@ -11,6 +11,11 @@ inventory.ini
 # Ignore configuration with real credentials
 group_vars/all.yml
 
+# Ignore per-server config with real domains/tunnel ids (keep the .example)
+host_vars/*.yml
+!host_vars/*.yml.example
+
+
 # Ignore vault password file
 .vault_pass
 

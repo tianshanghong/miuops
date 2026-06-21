@@ -1,0 +1,6 @@
+---
+# Internal, derived role variables — NOT meant to be configured by the operator
+# (that's what defaults/ and host_vars are for). credentials_file is always
+# <cloudflared_dir>/<tunnel_id>.json — the same formula on every server — so it
+# lives here as a derived value rather than as a per-server or default knob.
+credentials_file: "{{ cloudflared_dir }}/{{ tunnel_id }}.json"

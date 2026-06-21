@@ -7,7 +7,7 @@ End-to-end walkthrough: from bare server to running services. For a condensed ve
 | Requirement | Purpose |
 |---|---|
 | Cloudflare account with your domain(s) | DNS, CDN, WAF |
-| Cloudflare API token | Tunnel creation and DNS records (scope to all zones you'll use) |
+| Cloudflare API token | DNS records — zone lookup + CNAME management (scope to all zones you'll use) |
 | Server with SSH access (Debian/Ubuntu) | Target machine |
 | Local tools: `ansible`, `cloudflared`, `jq`, `curl`, `ssh` | The CLI checks these and guides you |
 | aws CLI (configured with admin credentials) | Backup bucket setup (Step 2) |
@@ -63,7 +63,7 @@ The CLI handles everything:
 2. Looks up the Cloudflare Zone ID for each domain
 3. Creates a Cloudflare Tunnel (or reuses an existing one)
 4. Creates DNS CNAME records for all domains (Cloudflare API)
-5. Generates `inventory.ini` and `group_vars/all.yml`
+5. Writes `inventory.ini` and `host_vars/<host>.yml`
 6. Installs Ansible Galaxy dependencies
 7. Runs the playbook
 
@@ -94,9 +94,9 @@ ansible-galaxy collection install -r requirements.yml
 
 # Configure
 cp inventory.ini.template inventory.ini
-cp group_vars/all.yml.template group_vars/all.yml
-# Edit inventory.ini with your server details
-# Edit group_vars/all.yml with your domains and tunnel ID
+cp host_vars/server1.yml.example host_vars/<host>.yml   # <host> = inventory alias
+# Edit inventory.ini with your server details (the host alias)
+# Edit host_vars/<host>.yml with that host's domains and tunnel ID
 
 # Create Cloudflare Tunnel (handled automatically by ./miuops up)
 cloudflared tunnel create miuops-203-0-113-10

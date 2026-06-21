@@ -20,8 +20,8 @@
     
     - name: Check for required variables
       fail:
-        msg: "Please configure at least one domain in group_vars/all.yml"
-      when: domains is not defined or domains | length == 0 or domains[0] == ""
+        msg: "Please configure at least one domain in host_vars/<host>.yml"
+      when: domains | default([], true) | length == 0 or domains[0] == ""
     
     - name: Check for Tunnel ID
       pause:
@@ -33,12 +33,7 @@
       set_fact:
         tunnel_id: "{{ tunnel_id_prompt.user_input }}"
       when: (tunnel_id is not defined or tunnel_id == "") and tunnel_id_prompt.user_input is defined
-    
-    - name: Set default SSH port if not defined
-      set_fact:
-        ssh_port: "22"
-      when: ssh_port is not defined
-  
+
   roles:
     - role: firewall
       tags: ['firewall']

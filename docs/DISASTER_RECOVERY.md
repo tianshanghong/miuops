@@ -25,7 +25,7 @@ The server is lost. You need a new machine running the same services with restor
 
 Ensure SSH access from your control machine. The server must run Debian or Ubuntu.
 
-### 2. Update inventory
+### 2. Restore this host's config
 
 Edit `inventory.ini` with the new server's IP and SSH user:
 
@@ -34,13 +34,19 @@ Edit `inventory.ini` with the new server's IP and SSH user:
 server1 ansible_host=NEW_IP ansible_user=admin
 ```
 
+Ensure `host_vars/server1.yml` (its `domains` + `tunnel_id`) exists, and restore the
+tunnel credentials to `files/<tunnel_id>.json` (reuse the same tunnel ID — no need
+to recreate it in Cloudflare).
+
 ### 3. Run the bootstrap playbook
 
 ```bash
-ansible-playbook playbook.yml
+ansible-playbook playbook.yml --limit server1
 ```
 
-This installs Docker, Traefik, cloudflared, and the firewall — same as initial setup.
+This installs Docker, Traefik, cloudflared, and the firewall — same as initial
+setup. (`--limit server1` scopes the run to the rebuilt host; omit it to converge
+the whole fleet.)
 
 ### 4. Update GitHub Actions secrets
 
@@ -52,7 +58,9 @@ In your stack repo (Settings > Secrets > Actions), update:
 | `SSH_USER` | New SSH user (if changed) |
 | `SSH_PRIVATE_KEY` | New SSH private key (if changed) |
 
-`ENV_FILE` stays the same unless credentials changed.
+The stack's `.env` lives on the **server** at `/opt/stacks/.env` (not a GitHub
+secret) — recreate it on the rebuilt server as in [INSTALLATION.md](INSTALLATION.md)
+(the Ansible bootstrap pre-creates it with secure permissions; fill in your values).
 
 ### 5. Deploy stacks
 
@@ -237,16 +245,17 @@ Save the new `AccessKeyId` and `SecretAccessKey`.
 aws iam delete-access-key --user-name PROJECT-backup --access-key-id OLD_KEY_ID
 ```
 
-### 3. Update the stack repo
+### 3. Update the server's `.env`
 
-Update your `.env` file with the new credentials:
+Update `/opt/stacks/.env` on the server with the new credentials:
 
 ```
 AWS_ACCESS_KEY_ID=new_key_id
 AWS_SECRET_ACCESS_KEY=new_secret_key
 ```
 
-Update the `ENV_FILE` secret in GitHub Actions (Settings > Secrets > Actions) with the new `.env` contents.
+The `.env` lives on the server (not a GitHub secret) — edit it over SSH
+(`ssh <user>@<server>`), then redeploy.
 
 ### 4. Redeploy
 

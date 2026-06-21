@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="${MIUOPS_TEST_SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -15,22 +15,214 @@ warn() { echo -e "${YELLOW}=>${NC} $1"; }
 dry()  { echo -e "  ${YELLOW}[dry-run]${NC} $1"; }
 
 DRY_RUN=false
+NO_APPLY=false
+
+# ── Validation ──────────────────────────────────────────────────────
+# Use [[ =~ ]] (whole-string anchored) rather than `grep` (line-oriented), so a
+# value with an embedded newline can't slip past via a clean first line.
+valid_domain() { local re='^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$'; [[ "$1" =~ $re ]]; }
+# A host alias / SSH user becomes a filename, inventory key, or sed operand, so
+# restrict it to a safe charset — blocks path traversal and sed/grep metachars.
+valid_host_alias() { local re='^[A-Za-z0-9._-]+$'; [[ "$1" =~ $re ]]; }
+# Lowercase a domain (DNS is case-insensitive; portable — bash 3.2 lacks ${,,}).
+lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# ── Config helpers (host_vars + inventory) ──────────────────────────
+hv_path() { echo "${SCRIPT_DIR}/host_vars/$1.yml"; }
+
+hv_domains() {
+    local f; f="$(hv_path "$1")"; [[ -f "$f" ]] || return 0
+    sed -n 's/^[[:space:]]*-[[:space:]][[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$f"
+}
+
+hv_tunnel() {
+    local f; f="$(hv_path "$1")"; [[ -f "$f" ]] || return 0
+    sed -n 's/^tunnel_id:[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}.*/\1/p' "$f" | head -1
+}
+
+write_host_vars() {
+    local host="$1" tid="$2"; shift 2
+    local f tmp; f="$(hv_path "$host")"; mkdir -p "$(dirname "$f")"
+    tmp="$(mktemp "${f}.XXXXXX")"
+    { echo "---"; echo "domains:";
+      local d; for d in "$@"; do echo "  - \"${d}\""; done
+      echo ""; echo "tunnel_id: \"${tid}\""; } > "$tmp"
+    mv "$tmp" "$f"   # atomic — no half-written YAML if interrupted mid-write
+}
+
+inventory_upsert() {
+    local host="$1" ah="$2" au="$3" inv="${SCRIPT_DIR}/inventory.ini"
+    local line="${host} ansible_host=${ah} ansible_user=${au}"
+    # Match the host as an exact first field (awk $1==h), never as a regex/sed
+    # pattern — so a dot in the alias or IP can't act as a wildcard.
+    if [[ -f "$inv" ]] && awk -v h="$host" '$1==h{found=1} END{exit !found}' "$inv"; then
+        local tmp; tmp="$(mktemp)"
+        awk -v h="$host" -v repl="$line" '$1==h{print repl; next} {print}' "$inv" > "$tmp" && mv "$tmp" "$inv"
+    else
+        [[ -f "$inv" ]] || printf '[bare_metal]\n' > "$inv"
+        grep -q '^\[bare_metal\]' "$inv" || printf '[bare_metal]\n' >> "$inv"
+        printf '%s\n' "$line" >> "$inv"
+    fi
+}
+
+# Echoes the inventory host that already owns <domain> (empty if none).
+domain_owner() {
+    local domain="$1" f host
+    for f in "${SCRIPT_DIR}"/host_vars/*.yml; do
+        [[ -e "$f" ]] || continue
+        host="$(basename "$f" .yml)"
+        if hv_domains "$host" | grep -Fqx -- "$domain"; then echo "$host"; return 0; fi
+    done
+}
+
+# ── Cloudflare DNS helpers ─────────────────────────────────────────
+cf_zone_id() {
+    local domain="$1" resp http
+    resp=$(curl -s -w "\n%{http_code}" \
+        "https://api.cloudflare.com/client/v4/zones?name=${domain}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json") \
+        || die "Cloudflare API request failed — network error"
+    http=$(echo "$resp" | tail -1); resp=$(echo "$resp" | sed '$d')
+    case "$http" in
+        200) ;;
+        401|403) die "Cloudflare API returned ${http} (unauthorized)
+  - Is your CF_API_TOKEN valid?
+  - Does it have Zone:Read and DNS:Edit permissions?" ;;
+        *) die "Cloudflare API returned HTTP ${http} for zone '${domain}'
+  Response: $(echo "$resp" | jq -r '.errors[0].message // empty' 2>/dev/null || echo 'unknown')" ;;
+    esac
+    local zid; zid=$(echo "$resp" | jq -r '.result[0].id // empty')
+    [[ -n "$zid" ]] || die "Zone not found for '${domain}'
+  - Is the domain added to your Cloudflare account?
+  - Does your API token have access to this zone?"
+    echo "$zid"
+}
+
+# Echo "<id>\t<content>" of the CNAME named $2 in zone $1 (empty fields if none).
+# Dies on network / API error.
+cf_cname_record() {
+    local zid="$1" name="$2" resp
+    resp=$(curl -s "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records?type=CNAME&name=${name}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}") \
+        || die "Cloudflare API request failed looking up CNAME ${name} (network error)"
+    [[ "$(echo "$resp" | jq -r '.success')" == "true" ]] \
+        || die "Cloudflare API error looking up CNAME ${name}: $(echo "$resp" | jq -r '.errors[0].message // "unknown"')"
+    echo "$resp" | jq -r '(.result[0] // {}) | [.id // "", .content // ""] | @tsv'
+}
+
+cf_create_cname() {
+    local zid="$1" name="$2" tid="$3"
+    if $DRY_RUN; then dry "Would create CNAME ${name} -> ${tid}.cfargotunnel.com"; return 0; fi
+    local resp ok msg
+    resp=$(curl -s -X POST \
+        "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json" \
+        --data "{\"type\":\"CNAME\",\"name\":\"${name}\",\"content\":\"${tid}.cfargotunnel.com\",\"proxied\":true}") \
+        || die "Cloudflare API request failed creating CNAME ${name} (network error)"
+    ok=$(echo "$resp" | jq -r '.success')
+    if [[ "$ok" == "true" ]]; then
+        info "DNS record created for ${name}"
+        return 0
+    fi
+    msg=$(echo "$resp" | jq -r '.errors[0].message // empty' 2>/dev/null)
+    if echo "$msg" | grep -qi "already exists"; then
+        # Already there — verify it points at THIS tunnel, else the domain is misrouted.
+        local rec content; rec="$(cf_cname_record "$zid" "$name")"; content="${rec#*$'\t'}"
+        if [[ "$content" == "${tid}.cfargotunnel.com" ]]; then
+            info "DNS record for ${name} already points here (OK)"
+        else
+            die "CNAME ${name} already exists but points to '${content}', not this tunnel.
+  Remove or repoint it in Cloudflare, then retry."
+        fi
+    else
+        die "Failed to create DNS record for ${name}: ${msg:-unknown error}"
+    fi
+}
+
+cf_delete_cname() {
+    local zid="$1" name="$2" tid="${3:-}" rec rid content
+    rec="$(cf_cname_record "$zid" "$name")"; rid="${rec%%$'\t'*}"; content="${rec#*$'\t'}"
+    [[ -n "$rid" ]] || { info "CNAME ${name} already absent (OK)"; return 0; }
+    # Only delete a record we own (pointing at this tunnel) — never someone else's
+    # CNAME that happens to share the name.
+    if [[ -n "$tid" && "$content" != "${tid}.cfargotunnel.com" ]]; then
+        warn "CNAME ${name} points to '${content}', not this tunnel — leaving it untouched"
+        return 0
+    fi
+    if $DRY_RUN; then dry "Would delete CNAME ${name}"; return 0; fi
+    local del
+    del=$(curl -s -X DELETE "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records/${rid}" \
+        -H "Authorization: Bearer ${CF_API_TOKEN}") \
+        || die "Cloudflare API request failed deleting CNAME ${name} (network error)"
+    [[ "$(echo "$del" | jq -r '.success')" == "true" ]] \
+        || die "Cloudflare did not confirm deletion of ${name}: $(echo "$del" | jq -r '.errors[0].message // "unknown"')"
+    info "Deleted CNAME ${name}"
+}
+
+# Converge: run the playbook (optionally limited to one host). Honors DRY_RUN/NO_APPLY.
+# Ensures Galaxy collections are installed first, so a fresh control machine can
+# run `apply` without having run `up` beforehand.
+run_apply() {
+    local host="${1:-}"
+    if $NO_APPLY; then info "--no-apply: skipping converge"; return 0; fi
+    local cmd=(ansible-playbook "${SCRIPT_DIR}/playbook.yml")
+    [[ -n "$host" ]] && cmd+=(--limit "$host")
+    if $DRY_RUN; then
+        dry "Would install Ansible Galaxy requirements"
+        dry "Would run: ${cmd[*]}"
+        return 0
+    fi
+    info "Installing Ansible Galaxy requirements..."
+    ansible-galaxy collection install -r "${SCRIPT_DIR}/requirements.yml" >/dev/null \
+        || die "Failed to install Ansible Galaxy requirements"
+    info "Converging${host:+ ${host}}..."
+    "${cmd[@]}"
+}
+
+cmd_apply() {
+    local host=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)  DRY_RUN=true; shift ;;
+            --no-apply) NO_APPLY=true; shift ;;
+            -*) die "Unknown flag: $1" ;;
+            *)  host="$1"; shift ;;
+        esac
+    done
+    run_apply "$host"
+}
 
 usage() {
     cat <<EOF
-Usage: ./miuops up [--dry-run] <user@host> <domain1> [domain2 ...]
+miuops — provision & manage a fleet of Docker + Traefik + Cloudflare-Tunnel servers.
 
-Bootstrap a bare-metal server with Docker, Traefik, and Cloudflare Tunnel.
+Usage:
+  ./miuops up [--dry-run] [--no-apply] <user@host> <domain> [domain ...]
+      Day-1: register the host, create its tunnel + DNS, write host_vars, converge.
+      Additive — re-running adds domains, never drops them.
+
+  ./miuops apply [--dry-run] [--no-apply] [<host>]
+      Day-2: converge one host (or the whole fleet if <host> is omitted).
+
+  ./miuops add-domain [--dry-run] [--no-apply] <host> <domain> [domain ...]
+      Add domain(s) to an existing host (creates DNS, merges into host_vars).
+
+  ./miuops remove-domain [--dry-run] [--no-apply] [--force] <host> <domain> [domain ...]
+      Remove domain(s) from a host and delete their Cloudflare CNAMEs.
 
 Options:
-  --dry-run    Show what would happen without making changes
+  --dry-run     Show what would happen without making changes
+  --no-apply    Change config/DNS but skip the Ansible converge
 
 Environment:
-  CF_API_TOKEN   Cloudflare API token (use 'Edit zone DNS' template)
+  CF_API_TOKEN  Cloudflare API token ('Edit zone DNS' template); needed by
+                up/add-domain/remove-domain (not by apply).
 
 Examples:
   CF_API_TOKEN=xxx ./miuops up root@203.0.113.10 example.com
-  CF_API_TOKEN=xxx ./miuops up root@203.0.113.10 example.com example.org
+  CF_API_TOKEN=xxx ./miuops add-domain 203.0.113.10 example.org
+  ./miuops apply                 # converge the whole fleet
+  ./miuops apply 203.0.113.10    # converge one server
 EOF
     exit 1
 }
@@ -41,6 +233,7 @@ cmd_up() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --dry-run) DRY_RUN=true; shift ;;
+            --no-apply) NO_APPLY=true; shift ;;
             -*) die "Unknown flag: $1" ;;
             *) positional+=("$1"); shift ;;
         esac
@@ -50,7 +243,7 @@ cmd_up() {
 
     local target="${positional[0]}"
     local domains=("${positional[@]:1}")
-    local domain dns_response success error_msg record_name
+    local domain
     local ssh_user ssh_host
     local zone_id_list=()
 
@@ -63,11 +256,27 @@ cmd_up() {
         ssh_host="$target"
     fi
 
+    # The host becomes a filename + inventory key — keep it to a safe charset.
+    valid_host_alias "$ssh_host" || die "Invalid host '${ssh_host}'
+  Use letters, digits, dot, dash, underscore (IPv6 literals need a named alias)."
+    # The user is written into inventory.ini via sed — keep it to a safe charset too.
+    valid_host_alias "$ssh_user" || die "Invalid SSH user '${ssh_user}' (letters, digits, dot, dash, underscore only)."
+
+    # Normalize domains to lowercase (DNS is case-insensitive).
+    local _di; for _di in "${!domains[@]}"; do domains[$_di]="$(lc "${domains[$_di]}")"; done
+
     # Validate domain format (portable — no bash regex quantifiers)
     for domain in "${domains[@]}"; do
-        if ! echo "$domain" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$'; then
-            die "Invalid domain: '${domain}'
+        valid_domain "$domain" || die "Invalid domain: '${domain}'
   Expected format: example.com"
+    done
+
+    # A domain belongs to exactly one server (its CNAMEs point to one tunnel).
+    for domain in "${domains[@]}"; do
+        local owner; owner="$(domain_owner "$domain")"
+        if [[ -n "$owner" && "$owner" != "$ssh_host" ]]; then
+            die "Domain '${domain}' already belongs to server '${owner}'.
+  A domain maps to exactly one server. Run 'remove-domain ${owner} ${domain}' first."
         fi
     done
 
@@ -124,33 +333,10 @@ cmd_up() {
     fi
 
     # ── Step 2: Look up Zone IDs ────────────────────────────────────
-    local zone_response zone_id http_code
-
+    local zone_id
     for domain in "${domains[@]}"; do
         info "Looking up Zone ID for ${domain}..."
-
-        zone_response=$(curl -s -w "\n%{http_code}" \
-            "https://api.cloudflare.com/client/v4/zones?name=${domain}" \
-            -H "Authorization: Bearer ${CF_API_TOKEN}" \
-            -H "Content-Type: application/json") || die "Cloudflare API request failed — network error"
-
-        http_code=$(echo "$zone_response" | tail -1)
-        zone_response=$(echo "$zone_response" | sed '$d')
-
-        case "$http_code" in
-            200) ;;
-            401|403) die "Cloudflare API returned ${http_code} (unauthorized)
-  - Is your CF_API_TOKEN valid?
-  - Does it have Zone:Zone:Read and Zone:DNS:Edit permissions?" ;;
-            *)  die "Cloudflare API returned HTTP ${http_code}
-  Response: $(echo "$zone_response" | jq -r '.errors[0].message // empty' 2>/dev/null || echo 'unknown')" ;;
-        esac
-
-        zone_id=$(echo "$zone_response" | jq -r '.result[0].id // empty')
-        [[ -n "$zone_id" ]] || die "Zone not found for '${domain}'
-  - Is the domain added to your Cloudflare account?
-  - Does your API token have access to this zone?"
-
+        zone_id="$(cf_zone_id "$domain")"
         zone_id_list+=("$zone_id")
         info "Zone ID: ${zone_id}"
     done
@@ -160,27 +346,24 @@ cmd_up() {
     local tunnel_name="miuops-${ssh_host//[:.\/]/-}"
     local tunnel_id=""
 
-    # Check existing config for tunnel_id and warn about dropped domains
-    if [[ -f "${SCRIPT_DIR}/group_vars/all.yml" ]]; then
-        local existing_tid
-        existing_tid=$(sed -n 's/^tunnel_id:[[:space:]]*"\([^"]*\)".*/\1/p' "${SCRIPT_DIR}/group_vars/all.yml" | head -1) || true
-        if [[ -n "$existing_tid" && "$existing_tid" != "<would-be-created>" ]]; then
-            tunnel_id="$existing_tid"
-            info "Reusing tunnel ID from existing config: ${tunnel_id}"
-        fi
-
-        local prev_domains prev_domain
-        prev_domains=$(sed -n 's/^[[:space:]]*-[[:space:]]*"\([^"]*\)".*/\1/p' "${SCRIPT_DIR}/group_vars/all.yml") || true
-        for prev_domain in $prev_domains; do
-            local found=false
-            for domain in "${domains[@]}"; do
-                [[ "$domain" == "$prev_domain" ]] && found=true
-            done
-            if ! $found; then
-                warn "Domain '${prev_domain}' is in existing config but not in this invocation — it will be removed from ingress rules"
-            fi
-        done
+    # Reuse this host's existing tunnel from host_vars (additive — never drops domains)
+    local existing_tid
+    existing_tid="$(hv_tunnel "$ssh_host")"
+    if [[ -n "$existing_tid" && "$existing_tid" != "<would-be-created>" ]]; then
+        tunnel_id="$existing_tid"
+        info "Reusing tunnel ID from host_vars: ${tunnel_id}"
     fi
+
+    # merged_domains = union(existing host_vars domains, passed domains). DNS is
+    # created only for the passed domains (Step 4); host_vars stores the union so a
+    # re-run that passes fewer domains never silently drops the others.
+    local merged_domains=() md
+    while IFS= read -r md; do [[ -n "$md" ]] && merged_domains+=("$md"); done < <(hv_domains "$ssh_host")
+    for domain in "${domains[@]}"; do
+        local present=false m
+        for m in "${merged_domains[@]:-}"; do [[ "$m" == "$domain" ]] && present=true; done
+        $present || merged_domains+=("$domain")
+    done
 
     if [[ ! -f ~/.cloudflared/cert.pem ]]; then
         if $DRY_RUN; then
@@ -197,13 +380,19 @@ cmd_up() {
         existing=$(cloudflared tunnel list -o json 2>&1) || true
         if ! echo "$existing" | jq -e 'type == "array"' >/dev/null 2>&1; then
             if $DRY_RUN; then
-                warn "Cloudflare cert.pem appears stale — would need to re-login"
+                warn "Could not list tunnels — would re-check cert/login"
                 existing="[]"
-            else
-                warn "Cloudflare cert.pem is stale, re-authenticating..."
+            elif echo "$existing" | grep -qiE 'cert|login|unauthor|expired|invalid|token|credential'; then
+                # Looks like an auth/cert problem → re-login.
+                warn "Cloudflare cert.pem looks stale, re-authenticating..."
                 rm -f ~/.cloudflared/cert.pem
                 cloudflared login
                 existing=$(cloudflared tunnel list -o json 2>/dev/null || echo "[]")
+            else
+                # Likely a transient network/API failure — do NOT delete a valid cert.
+                die "'cloudflared tunnel list' failed (looks like a network/API issue, not auth):
+${existing}
+  Fix connectivity and retry — your cert.pem was left intact."
             fi
         fi
     else
@@ -265,6 +454,7 @@ cmd_up() {
         if [[ ! -f "${SCRIPT_DIR}/files/${tunnel_id}.json" ]]; then
             if [[ -f ~/.cloudflared/${tunnel_id}.json ]]; then
                 cp ~/.cloudflared/"${tunnel_id}.json" "${SCRIPT_DIR}/files/"
+                chmod 600 "${SCRIPT_DIR}/files/${tunnel_id}.json"
                 info "Tunnel credentials copied"
             else
                 die "Credentials not found at ~/.cloudflared/${tunnel_id}.json
@@ -279,86 +469,37 @@ cmd_up() {
     # ── Step 4: Create DNS records ───────────────────────────────────
     info "Creating DNS records..."
 
-    local i
+    local i zid
     for i in "${!domains[@]}"; do
         domain="${domains[$i]}"
-        local zid="${zone_id_list[$i]}"
-        for record_name in "${domain}" "*.${domain}"; do
-            if $DRY_RUN; then
-                dry "Would create CNAME ${record_name} -> ${tunnel_id}.cfargotunnel.com (zone: ${zid})"
-            else
-                info "Creating CNAME ${record_name} -> tunnel ${tunnel_id}..."
-                dns_response=$(curl -s -X POST \
-                    "https://api.cloudflare.com/client/v4/zones/${zid}/dns_records" \
-                    -H "Authorization: Bearer ${CF_API_TOKEN}" \
-                    -H "Content-Type: application/json" \
-                    --data "{\"type\":\"CNAME\",\"name\":\"${record_name}\",\"content\":\"${tunnel_id}.cfargotunnel.com\",\"proxied\":true}") \
-                    || die "Cloudflare API request failed — network error"
-
-                success=$(echo "$dns_response" | jq -r '.success')
-                if [[ "$success" == "true" ]]; then
-                    info "DNS record created for ${record_name}"
-                else
-                    error_msg=$(echo "$dns_response" | jq -r '.errors[0].message // empty' 2>/dev/null)
-                    if echo "$error_msg" | grep -qi "already exists"; then
-                        info "DNS record for ${record_name} already exists (OK)"
-                    else
-                        warn "Failed to create DNS record for ${record_name}: ${error_msg:-unknown error}"
-                    fi
-                fi
-            fi
-        done
+        zid="${zone_id_list[$i]}"
+        cf_create_cname "$zid" "${domain}" "$tunnel_id"
+        cf_create_cname "$zid" "*.${domain}" "$tunnel_id"
     done
 
-    # ── Step 5: Generate config files ──────────────────────────────
-
-    local inventory_content="[bare_metal]
-${ssh_host} ansible_user=${ssh_user}"
-
-    local groupvars_content
-    groupvars_content="---
-domains:"
-    for domain in "${domains[@]}"; do
-        groupvars_content+="
-  - \"${domain}\""
-    done
-    groupvars_content+="
-
-tunnel_id: \"${tunnel_id}\"
-credentials_file: \"/opt/cloudflared/{{ tunnel_id }}.json\""
-
+    # ── Step 5: Write config + converge ────────────────────────────
     if $DRY_RUN; then
-        info "Would generate inventory.ini:"
-        echo "$inventory_content"
-        echo ""
-        info "Would generate group_vars/all.yml:"
-        echo "$groupvars_content"
-        echo ""
+        info "Would write host_vars/${ssh_host}.yml:"
+        echo "domains:"; printf '  - "%s"\n' "${merged_domains[@]}"
+        echo "tunnel_id: \"${tunnel_id}\""
+        info "Would upsert inventory.ini host '${ssh_host}' (ansible_user=${ssh_user})"
         dry "Would install Ansible Galaxy requirements"
-        dry "Would run: ansible-playbook playbook.yml"
+        dry "Would run: ansible-playbook playbook.yml --limit ${ssh_host}"
         echo ""
         info "${BOLD}Dry run complete.${NC} Re-run without --dry-run to execute."
     else
-        info "Generating inventory.ini..."
-        echo "$inventory_content" > "${SCRIPT_DIR}/inventory.ini"
+        info "Writing host_vars/${ssh_host}.yml..."
+        write_host_vars "$ssh_host" "$tunnel_id" "${merged_domains[@]}"
 
-        info "Generating group_vars/all.yml..."
-        echo "$groupvars_content" > "${SCRIPT_DIR}/group_vars/all.yml"
+        info "Updating inventory.ini..."
+        inventory_upsert "$ssh_host" "$ssh_host" "$ssh_user"
 
-        # ── Step 6: Install Ansible Galaxy requirements ────────────
-        info "Installing Ansible Galaxy requirements..."
-        if ! ansible-galaxy collection install -r "${SCRIPT_DIR}/requirements.yml" 2>&1; then
-            die "Failed to install Ansible Galaxy requirements"
-        fi
-
-        # ── Step 7: Run playbook ───────────────────────────────────
-        info "Running playbook..."
-        ansible-playbook "${SCRIPT_DIR}/playbook.yml"
+        run_apply "$ssh_host"   # installs Galaxy requirements, then converges
 
         echo ""
         info "${BOLD}Done!${NC} Server bootstrapped."
         info "Tunnel: ${tunnel_id}"
-        for domain in "${domains[@]}"; do
+        for domain in "${merged_domains[@]}"; do
             info "Domain: *.${domain} -> Cloudflare Tunnel -> Traefik"
         done
         echo ""
@@ -366,8 +507,114 @@ credentials_file: \"/opt/cloudflared/{{ tunnel_id }}.json\""
     fi
 }
 
+cmd_add_domain() {
+    local host="" doms=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)  DRY_RUN=true; shift ;;
+            --no-apply) NO_APPLY=true; shift ;;
+            -*) die "Unknown flag: $1" ;;
+            *)  if [[ -z "$host" ]]; then host="$1"; else doms+=("$1"); fi; shift ;;
+        esac
+    done
+    [[ -n "$host" && ${#doms[@]} -ge 1 ]] || die "Usage: miuops add-domain [--dry-run] <host> <domain...>"
+    valid_host_alias "$host" || die "Invalid host '${host}'"
+    local _ld; for _ld in "${!doms[@]}"; do doms[$_ld]="$(lc "${doms[$_ld]}")"; done
+    local _vd; for _vd in "${doms[@]}"; do valid_domain "$_vd" || die "Invalid domain: '${_vd}'"; done
+    [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}' — is it in inventory? Run 'miuops up' first."
+    [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
+
+    local tid; tid="$(hv_tunnel "$host")"
+    [[ -n "$tid" ]] || die "host_vars/${host}.yml has no tunnel_id"
+
+    local current=() d
+    while IFS= read -r d; do [[ -n "$d" ]] && current+=("$d"); done < <(hv_domains "$host")
+
+    local added=false dd owner present c zid
+    for dd in "${doms[@]}"; do
+        owner="$(domain_owner "$dd")"
+        [[ -n "$owner" && "$owner" != "$host" ]] && die "Domain '${dd}' already belongs to '${owner}'."
+        present=false
+        for c in "${current[@]:-}"; do [[ "$c" == "$dd" ]] && present=true; done
+        if $present; then info "${dd} already on ${host} (skip)"; continue; fi
+        zid="$(cf_zone_id "$dd")"
+        cf_create_cname "$zid" "$dd" "$tid"
+        cf_create_cname "$zid" "*.${dd}" "$tid"
+        current+=("$dd"); added=true
+    done
+
+    $added || { info "Nothing new to add."; return 0; }
+    if $DRY_RUN; then dry "Would set ${host} domains: ${current[*]}"
+    else write_host_vars "$host" "$tid" "${current[@]}"; fi
+    run_apply "$host"
+}
+
+cmd_remove_domain() {
+    local host="" doms=() force=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dry-run)  DRY_RUN=true; shift ;;
+            --no-apply) NO_APPLY=true; shift ;;
+            --force)    force=true; shift ;;
+            -*) die "Unknown flag: $1" ;;
+            *)  if [[ -z "$host" ]]; then host="$1"; else doms+=("$1"); fi; shift ;;
+        esac
+    done
+    [[ -n "$host" && ${#doms[@]} -ge 1 ]] || die "Usage: miuops remove-domain [--dry-run] [--force] <host> <domain...>"
+    valid_host_alias "$host" || die "Invalid host '${host}'"
+    [[ -f "$(hv_path "$host")" ]] || die "No host_vars for '${host}'."
+    local _ld; for _ld in "${!doms[@]}"; do doms[$_ld]="$(lc "${doms[$_ld]}")"; done
+    local _vd; for _vd in "${doms[@]}"; do valid_domain "$_vd" || die "Invalid domain: '${_vd}'"; done
+
+    local tid; tid="$(hv_tunnel "$host")"
+    [[ -n "$tid" ]] || die "host_vars/${host}.yml has no tunnel_id"
+
+    # Split into keep/remove WITHOUT touching DNS, so the last-domain refusal is
+    # checked before anything is deleted.
+    local keep=() remove=() d dd drop
+    while IFS= read -r d; do
+        [[ -z "$d" ]] && continue
+        drop=false
+        for dd in "${doms[@]}"; do [[ "$dd" == "$d" ]] && drop=true; done
+        if $drop; then remove+=("$d"); else keep+=("$d"); fi
+    done < <(hv_domains "$host")
+
+    [[ ${#remove[@]} -ge 1 ]] || { warn "None of the given domains were on ${host} — nothing removed."; return 0; }
+    if [[ ${#keep[@]} -eq 0 && "$force" != true ]]; then
+        die "Refusing to remove the last domain of '${host}' (a server needs at least one). Use --force to override."
+    fi
+
+    if $DRY_RUN; then
+        dry "Would delete CNAMEs for: ${remove[*]}"
+        dry "Would set ${host} domains: ${keep[*]:-(none)}"
+        return 0
+    fi
+
+    # Only now (deletion is actually going to happen) do we need the API token.
+    [[ -n "${CF_API_TOKEN:-}" ]] || die "CF_API_TOKEN is required"
+    local zid
+    for d in "${remove[@]}"; do
+        zid="$(cf_zone_id "$d")"
+        cf_delete_cname "$zid" "$d" "$tid"
+        cf_delete_cname "$zid" "*.${d}" "$tid"
+    done
+
+    if [[ ${#keep[@]} -eq 0 ]]; then
+        write_host_vars "$host" "$tid"
+        warn "${host} now has no domains — skipping converge. Add a domain or remove the host."
+        return 0
+    fi
+    write_host_vars "$host" "$tid" "${keep[@]}"
+    run_apply "$host"
+}
+
 # ── Main ───────────────────────────────────────────────────────────
-case "${1:-}" in
-    up) shift; cmd_up "$@" ;;
-    *)  usage ;;
-esac
+if [[ "${1:-}" != "--source-only" ]]; then
+    case "${1:-}" in
+        up)            shift; cmd_up "$@" ;;
+        apply)         shift; cmd_apply "$@" ;;
+        add-domain)    shift; cmd_add_domain "$@" ;;
+        remove-domain) shift; cmd_remove_domain "$@" ;;
+        *)             usage ;;
+    esac
+fi

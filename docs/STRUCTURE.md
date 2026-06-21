@@ -5,9 +5,9 @@
 ├── ansible.cfg                # Ansible configuration
 ├── playbook.yml               # Main Ansible playbook
 ├── requirements.yml           # Ansible Galaxy requirements
-├── inventory.ini.template     # Example inventory file
-├── group_vars/
-│   └── all.yml.template       # Example group variables
+├── inventory.ini.template     # Example inventory file (flat host list)
+├── host_vars/
+│   └── server1.yml.example    # Per-server config example (domains + tunnel_id)
 ├── roles/
 │   ├── firewall/              # iptables firewall (INPUT + DOCKER-USER)
 │   ├── docker/                # Docker engine installation
