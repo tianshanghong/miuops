@@ -25,8 +25,10 @@ firewall_whitelist_ports_v6: []
 ssh_port: "22"
 
 # SSH brute-force protection. Default on (the only protection for users without a
-# fixed source IP). Operators who allowlist firewall_management_networks_* may
-# set firewall_ssh_ratelimit_enabled: false in that host's host_vars.
+# fixed source IP). Management networks (firewall_management_networks_*) are
+# allowed before this rule, so they bypass it; an operator who allowlists may also
+# set firewall_ssh_ratelimit_enabled: false. The default 10 new conns / 60s is
+# forgiving for scp/rsync/CI bursts while still throttling brute force.
 firewall_ssh_ratelimit_enabled: true
-firewall_ssh_ratelimit_hits: 6
+firewall_ssh_ratelimit_hits: 10
 firewall_ssh_ratelimit_seconds: 60
