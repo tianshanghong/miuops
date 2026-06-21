@@ -10,6 +10,18 @@ Stack directories are referenced as `$STACK_DIR` below — replace with the actu
 ssh admin@your-server-ip
 ```
 
+## Managing containers with LazyDocker
+
+[LazyDocker](https://github.com/jesseduffield/lazydocker) is the recommended TUI for
+inspecting containers, logs, and resource usage. Point it at the server through a
+Docker context over SSH (no extra daemon port exposed):
+
+```bash
+docker context create myserver --docker "host=ssh://admin@your-server"
+docker context use myserver
+lazydocker
+```
+
 ## Viewing logs
 
 ```bash

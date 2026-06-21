@@ -58,7 +58,9 @@ In your stack repo (Settings > Secrets > Actions), update:
 | `SSH_USER` | New SSH user (if changed) |
 | `SSH_PRIVATE_KEY` | New SSH private key (if changed) |
 
-`ENV_FILE` stays the same unless credentials changed.
+The stack's `.env` lives on the **server** at `/opt/stacks/.env` (not a GitHub
+secret) — recreate it on the rebuilt server as in [INSTALLATION.md](INSTALLATION.md)
+(the Ansible bootstrap pre-creates it with secure permissions; fill in your values).
 
 ### 5. Deploy stacks
 
@@ -243,16 +245,17 @@ Save the new `AccessKeyId` and `SecretAccessKey`.
 aws iam delete-access-key --user-name PROJECT-backup --access-key-id OLD_KEY_ID
 ```
 
-### 3. Update the stack repo
+### 3. Update the server's `.env`
 
-Update your `.env` file with the new credentials:
+Update `/opt/stacks/.env` on the server with the new credentials:
 
 ```
 AWS_ACCESS_KEY_ID=new_key_id
 AWS_SECRET_ACCESS_KEY=new_secret_key
 ```
 
-Update the `ENV_FILE` secret in GitHub Actions (Settings > Secrets > Actions) with the new `.env` contents.
+The `.env` lives on the server (not a GitHub secret) — edit it over SSH
+(`ssh <user>@<server>`), then redeploy.
 
 ### 4. Redeploy
 
