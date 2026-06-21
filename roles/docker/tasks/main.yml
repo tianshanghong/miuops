@@ -110,6 +110,6 @@
   apt:
     # Ubuntu 25.04+ makes qemu-user-static a virtual package with multiple providers
     # (apt can't install it directly); use the concrete qemu-user-binfmt package instead.
-    name: "{{ 'qemu-user-binfmt' if ansible_distribution_version is version('25.04', '>=') else 'qemu-user-static' }}"
+    name: "{{ 'qemu-user-binfmt' if ansible_facts['distribution_version'] is version('25.04', '>=') else 'qemu-user-static' }}"
     state: present
   tags: ['docker']
