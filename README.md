@@ -92,8 +92,9 @@ miuops apply server-a          # one server
 miuops apply                   # the whole fleet
 ```
 
-See **[Fleet management](docs/FLEET.md)** for the layout, migration from a
-single-server setup, and optional patterns (env grouping, SOPS, YubiKey, a
+Day-to-day domain/converge commands are in [Daily Operations](docs/DAILY_OPS.md).
+See **[Scaling & advanced patterns](docs/SCALING.md)** for migrating from a
+single-server setup and optional patterns (env grouping, SOPS, YubiKey, a
 management-CIDR SSH allowlist).
 
 ## What Gets Deployed
@@ -157,7 +158,7 @@ The setup script creates a single `{project}-backup` bucket used by both offen (
 
 - [Architecture](docs/ARCHITECTURE.md) — Design decisions, network model, and system diagram
 - [Installation Guide](docs/INSTALLATION.md) — Full end-to-end setup walkthrough
-- [Fleet Management](docs/FLEET.md) — Multiple servers, migration, and optional advanced patterns
+- [Scaling & Advanced](docs/SCALING.md) — Migration to a fleet + optional patterns (env grouping, SOPS, YubiKey)
 - [Repository Structure](docs/STRUCTURE.md) — Directory layout and role descriptions
 - [Disaster Recovery](docs/DISASTER_RECOVERY.md) — Backup restore procedures for all failure scenarios
 - [Daily Operations](docs/DAILY_OPS.md) — Quick reference for day-to-day server management

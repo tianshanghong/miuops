@@ -103,34 +103,34 @@ To manually re-run a deploy without changes:
 git commit --allow-empty -m "Redeploy" && git push
 ```
 
-## Adding a domain to the tunnel
+## Adding a domain
 
-A single Cloudflare Tunnel can serve multiple domains. Re-run `./miuops up` with all domains — it's idempotent:
-
-```bash
-CF_API_TOKEN=your_token ./miuops up root@your-server existing.com newdomain.com
-```
-
-This registers DNS routes, updates the tunnel config, and re-runs the playbook. Existing domains are unaffected.
-
-Then **add Traefik labels** in your stack repo's compose file with ``Host(`sub.newdomain.com`)`` and deploy.
-
-The Cloudflare API token must have DNS edit permissions for all zones in the list (set this when [creating the token](INSTALLATION.md#create-a-cloudflare-api-token)).
-
-## Removing a domain from the tunnel
-
-Re-run `./miuops up` with only the domains you want to keep:
+Use `add-domain` — it's additive: only the new domain's DNS is created, existing
+domains are untouched.
 
 ```bash
-# Was: ./miuops up root@your-server example.com example.org
-# Now remove example.org:
-CF_API_TOKEN=your_token ./miuops up root@your-server example.com
+CF_API_TOKEN=your_token ./miuops add-domain <host> newdomain.com
 ```
 
-This updates the ingress config (traffic to the removed domain hits 404). Then clean up the orphaned DNS records:
+`<host>` is the server's alias in `inventory.ini`. This creates the `newdomain.com`
+and `*.newdomain.com` CNAMEs, merges the domain into the host's `host_vars`, and
+re-converges. Then **add Traefik labels** in your stack repo's compose file with
+``Host(`sub.newdomain.com`)`` and deploy.
 
-1. Go to the [Cloudflare dashboard](https://dash.cloudflare.com) → DNS for the removed domain
-2. Delete the two CNAME records pointing to `<tunnel-id>.cfargotunnel.com`
+The Cloudflare API token needs DNS edit permission for the domain's zone (set this
+when [creating the token](INSTALLATION.md#create-a-cloudflare-api-token)).
+
+## Removing a domain
+
+Use `remove-domain` — it drops the domain from the host's `host_vars`, **deletes the
+orphaned CNAMEs** (`d` and `*.d`) for you, and re-converges:
+
+```bash
+CF_API_TOKEN=your_token ./miuops remove-domain <host> example.org
+```
+
+No manual Cloudflare dashboard cleanup needed. A server must keep at least one
+domain — removing the last one is refused unless you pass `--force`.
 
 ## Deleting a tunnel
 
@@ -160,15 +160,17 @@ rm -f inventory.ini
 
 The next `./miuops up` will create a fresh tunnel.
 
-## Infrastructure upgrades
+## Reconfiguring servers (apply)
 
-Run from your local machine (where Ansible is installed):
+Re-converge a server (or the whole fleet) after changing `host_vars` or pulling
+tool updates — run from your local machine. `apply` only re-runs the playbook; it
+doesn't touch DNS, so no `CF_API_TOKEN` is needed.
 
 ```bash
-# Full playbook
-ansible-playbook playbook.yml
+miuops apply <host>     # one server
+miuops apply            # the whole fleet
 
-# Single role
+# Single role (add --limit <host> to scope to one server):
 ansible-playbook playbook.yml --tags firewall
 ansible-playbook playbook.yml --tags docker
 ansible-playbook playbook.yml --tags traefik

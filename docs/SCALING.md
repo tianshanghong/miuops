@@ -1,19 +1,11 @@
-# Managing a fleet of servers
+# Scaling to a fleet — migration & advanced patterns
 
-MiuOps manages multiple servers from a single checkout. Each server has:
-
-- one line in `inventory.ini` (under `[bare_metal]`), and
-- one `host_vars/<name>.yml` holding its `domains` + `tunnel_id`.
-
-Globals (`ssh_port`, `credentials_file`, firewall rate-limit defaults) come from
-role defaults, so a per-server file stays tiny. Converge one server, several, or
-all with `--limit`:
-
-```bash
-miuops apply server-a        # one server
-miuops apply                 # the whole fleet
-ansible-playbook playbook.yml --limit server-a   # equivalent
-```
+MiuOps manages multiple servers from one checkout: a flat `inventory.ini` plus one
+`host_vars/<host>.yml` per server (its `domains` + `tunnel_id`); globals come from
+role defaults. See [STRUCTURE.md](STRUCTURE.md) for the layout and
+[DAILY_OPS.md](DAILY_OPS.md) for the day-to-day commands (`apply`, `add-domain`,
+`remove-domain`). This page covers the **one-time migration** and **optional
+advanced patterns** — none of which the tool requires.
 
 ## Migrating an existing single-server setup
 
@@ -65,4 +57,3 @@ All optional — the tool never requires them.
   servers**, an agent cannot decrypt them at all (no hardware) — so it can neither
   read nor deploy those hosts. (At deploy time the value is decrypted to be used;
   SOPS protects it at rest.)
-
