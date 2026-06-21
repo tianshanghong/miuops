@@ -47,6 +47,7 @@ write_host_vars() {
     { echo "---"; echo "domains:";
       local d; for d in "$@"; do echo "  - \"${d}\""; done
       echo ""; echo "tunnel_id: \"${tid}\""; } > "$tmp"
+    chmod 600 "$tmp"   # restrict before publishing (consistent with files/*.json)
     mv "$tmp" "$f"   # atomic — no half-written YAML if interrupted mid-write
 }
 

@@ -92,7 +92,12 @@
     content: |
       {
         "icc": false,
-        "userland-proxy": false
+        "userland-proxy": false,
+        "no-new-privileges": true,
+        "live-restore": true,
+        "log-driver": "json-file",
+        "log-opts": { "max-size": "10m", "max-file": "3" },
+        "default-ulimits": { "nofile": { "Name": "nofile", "Soft": 65536, "Hard": 65536 } }
       }
     dest: /etc/docker/daemon.json
     mode: '0644'

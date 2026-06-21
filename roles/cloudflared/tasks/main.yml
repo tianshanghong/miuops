@@ -66,23 +66,31 @@
   register: cf_credentials
   tags: ['cloudflared']
 
-- name: Copy tunnel credentials if provided
+- name: Check for the local tunnel credentials file
+  stat:
+    path: "{{ playbook_dir }}/files/{{ tunnel_id }}.json"
+  delegate_to: localhost
+  become: false
+  register: cf_local_credentials
+  tags: ['cloudflared']
+
+- name: Require tunnel credentials (on the server or in files/)
+  assert:
+    that: cf_credentials.stat.exists or cf_local_credentials.stat.exists
+    fail_msg: >-
+      No tunnel credentials for {{ tunnel_id }}: not on the server at
+      {{ credentials_file }} and not in files/{{ tunnel_id }}.json. Create the
+      tunnel and place its JSON in files/ (see docs/INSTALLATION.md), then re-run.
+    quiet: true
+  tags: ['cloudflared']
+
+- name: Copy tunnel credentials to the server
   copy:
     src: "files/{{ tunnel_id }}.json"
     dest: "{{ credentials_file }}"
     mode: '0600'
+  no_log: true
   when: not cf_credentials.stat.exists
-  ignore_errors: true
-  register: credentials_copy
-  tags: ['cloudflared']
-
-- name: Warning about missing credentials file
-  debug:
-    msg: |
-      WARNING: Tunnel credentials file wasn't found or couldn't be copied.
-      You need to run 'cloudflared tunnel login' and 'cloudflared tunnel create <name>'
-      manually on this server, then copy the JSON credentials to {{ credentials_file }}.
-  when: not cf_credentials.stat.exists and (credentials_copy is failed or credentials_copy is skipped)
   tags: ['cloudflared']
 
 - name: Deploy cloudflared config
