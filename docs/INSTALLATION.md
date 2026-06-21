@@ -7,7 +7,7 @@ End-to-end walkthrough: from bare server to running services. For a condensed ve
 | Requirement | Purpose |
 |---|---|
 | Cloudflare account with your domain(s) | DNS, CDN, WAF |
-| Cloudflare API token | Tunnel creation and DNS records (scope to all zones you'll use) |
+| Cloudflare API token | DNS records — zone lookup + CNAME management (scope to all zones you'll use) |
 | Server with SSH access (Debian/Ubuntu) | Target machine |
 | Local tools: `ansible`, `cloudflared`, `jq`, `curl`, `ssh` | The CLI checks these and guides you |
 | aws CLI (configured with admin credentials) | Backup bucket setup (Step 2) |

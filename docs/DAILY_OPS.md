@@ -154,8 +154,7 @@ For each domain, delete the two CNAME records pointing to `<tunnel-id>.cfargotun
 ```bash
 rm -f files/<tunnel-id>.json
 rm -f host_vars/<host>.yml
-# (or remove just this host's line from inventory.ini if managing a fleet)
-rm -f inventory.ini
+# remove the host's line from inventory.ini — or `rm -f inventory.ini` only if it was your only server
 ```
 
 The next `./miuops up` will create a fresh tunnel.

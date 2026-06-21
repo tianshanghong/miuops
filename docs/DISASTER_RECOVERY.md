@@ -25,7 +25,7 @@ The server is lost. You need a new machine running the same services with restor
 
 Ensure SSH access from your control machine. The server must run Debian or Ubuntu.
 
-### 2. Update inventory
+### 2. Restore this host's config
 
 Edit `inventory.ini` with the new server's IP and SSH user:
 
@@ -34,13 +34,19 @@ Edit `inventory.ini` with the new server's IP and SSH user:
 server1 ansible_host=NEW_IP ansible_user=admin
 ```
 
+Ensure `host_vars/server1.yml` (its `domains` + `tunnel_id`) exists, and restore the
+tunnel credentials to `files/<tunnel_id>.json` (reuse the same tunnel ID — no need
+to recreate it in Cloudflare).
+
 ### 3. Run the bootstrap playbook
 
 ```bash
-ansible-playbook playbook.yml
+ansible-playbook playbook.yml --limit server1
 ```
 
-This installs Docker, Traefik, cloudflared, and the firewall — same as initial setup.
+This installs Docker, Traefik, cloudflared, and the firewall — same as initial
+setup. (`--limit server1` scopes the run to the rebuilt host; omit it to converge
+the whole fleet.)
 
 ### 4. Update GitHub Actions secrets
 
