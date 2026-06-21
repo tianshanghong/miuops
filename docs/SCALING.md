@@ -22,7 +22,7 @@ each server's `files/<tunnel_id>.json`, then retire the old clones.
 ## Per-server firewall posture
 
 Each server's exposure is data in its `host_vars`. Defaults are generic-safe (SSH
-rate-limited, 6 attempts / 60s). To harden a specific server:
+rate-limited, 10 attempts / 60s). To harden a specific server:
 
 ```yaml
 # host_vars/prod-a.yml
@@ -40,6 +40,29 @@ no per-domain tokens. It is **bootstrap-only**: `up`/`add-domain`/`remove-domain
 use it for DNS; day-2 `apply` does not need it (tunnels run from the on-server
 `<tunnel_id>.json`). The token is an env var and never enters `host_vars`, the
 inventory, or anything committed. Prefer a scoped token over the Global API Key.
+
+## Co-hosting multiple projects on one server (shared dev)
+
+One server can host several projects at once (e.g. a shared dev box). Each project
+deploys its own compose stack on its own per-stack networks; Traefik routes by
+`Host()`. Add each project's domain with `miuops add-domain <host> dev.projectX.example`.
+
+**Prefix every project's environment variables with the project handle.** All
+stacks on a server share one `/opt/stacks/.env`, so unprefixed names collide —
+project A's `DB_PASSWORD` would silently overwrite project B's. Namespace them:
+
+```dotenv
+# /opt/stacks/.env — one shared file, namespaced per project
+APP1_DB_PASSWORD=...
+APP1_API_KEY=...
+APP2_DB_PASSWORD=...
+APP2_API_KEY=...
+```
+
+Reference the prefixed name in each stack's compose (`${APP1_DB_PASSWORD}`). This
+stops projects from clobbering each other's values and makes it obvious which secret
+belongs to which project. For stronger isolation, give each stack its own file via
+compose `env_file:` instead of the shared `.env`.
 
 ## Optional advanced patterns
 

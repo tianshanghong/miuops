@@ -61,17 +61,21 @@
 -A INPUT -j DROP
 
 ############ DOCKER-USER ############
-# 1. EST/REL
+# 1. drop invalid (mirror INPUT; keeps published ports protected even if an
+#    accept/return rule is ever added before the final DROP below)
+-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
+
+# 2. EST/REL
 -A DOCKER-USER -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
 
-# 2. containers -> any (outbound access, cross-host, cross-network)
+# 3. containers -> any (outbound access, cross-host, cross-network)
 # note: DOCKER-ISOLATION will be applied after DOCKER-USER for same-network isolation, so that the cross-network traffic will be blocked
 -A DOCKER-USER -i br+ -j RETURN
 
-# 3. loopback -> Docker bridge (for cloudflared via 127.0.0.1)
+# 4. loopback -> Docker bridge (for cloudflared via 127.0.0.1)
 -A DOCKER-USER -i lo -o br+ -j RETURN
 
-# 4. drop all other traffic (block inbound)
+# 5. drop all other traffic (block inbound)
 -A DOCKER-USER -j DROP
 
 COMMIT

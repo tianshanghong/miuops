@@ -14,6 +14,9 @@ source "$ROOT/miuops" --source-only
 mkdir -p "$TMP/host_vars"
 write_host_vars server-a tunnelA example.com example.org
 [ -f "$TMP/host_vars/server-a.yml" ] || fail "host_vars not written"
+# host_vars must be written 0600 (portable: Linux `stat -c`, macOS `stat -f`)
+hvperm="$(stat -c '%a' "$TMP/host_vars/server-a.yml" 2>/dev/null || stat -f '%Lp' "$TMP/host_vars/server-a.yml")"
+[ "$hvperm" = "600" ] || fail "host_vars not written 0600 (got $hvperm)"
 hv_tunnel server-a | grep -qx tunnelA      || fail "tunnel_id wrong"
 hv_domains server-a | grep -qx example.com || fail "domain example.com missing"
 hv_domains server-a | grep -qx example.org || fail "domain example.org missing"
