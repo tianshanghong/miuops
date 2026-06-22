@@ -163,3 +163,12 @@ The setup script creates a single `{project}-backup` bucket used by both offen (
 - [Disaster Recovery](docs/DISASTER_RECOVERY.md) — Backup restore procedures for all failure scenarios
 - [Daily Operations](docs/DAILY_OPS.md) — Quick reference for day-to-day server management
 
+## Contributing
+
+Contributions are welcome — please sign off your commits (`git commit -s`) per the
+Developer Certificate of Origin. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[Apache License 2.0](LICENSE) — see also [NOTICE](NOTICE).
+

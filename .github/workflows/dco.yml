@@ -1,0 +1,36 @@
+name: DCO
+
+on:
+  pull_request:
+
+# Least privilege: reading the PR's commits only needs pull-requests: read.
+permissions:
+  pull-requests: read
+
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every commit is signed off (DCO)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # SHAs of commits in this PR that lack a valid Signed-off-by trailer.
+          # Bot commits (e.g. dependabot) are exempt. Commit messages are
+          # filtered entirely inside jq (never interpolated into the shell) and
+          # only commit SHAs are ever emitted — no command-injection surface.
+          missing="$(gh api "repos/$REPO/pulls/$PR/commits" --paginate --jq '
+            .[]
+            | select((.author.type // "") != "Bot")
+            | select((.commit.message | split("\n") | any(test("^Signed-off-by: .+ <[^>]+@[^>]+>"))) | not)
+            | .sha')"
+          if [ -n "$missing" ]; then
+            echo "::error::The following commits are missing a Signed-off-by line (DCO):"
+            printf '  %s\n' "$missing"
+            echo "Sign off with 'git commit -s' (or 'git rebase --signoff <base>'). See CONTRIBUTING.md."
+            exit 1
+          fi
+          echo "All commits are signed off."
