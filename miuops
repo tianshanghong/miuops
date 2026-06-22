@@ -78,25 +78,36 @@ domain_owner() {
 
 # ── Cloudflare DNS helpers ─────────────────────────────────────────
 cf_zone_id() {
-    local domain="$1" resp http
-    resp=$(curl -s -w "\n%{http_code}" \
-        "https://api.cloudflare.com/client/v4/zones?name=${domain}" \
-        -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json") \
-        || die "Cloudflare API request failed — network error"
-    http=$(echo "$resp" | tail -1); resp=$(echo "$resp" | sed '$d')
-    case "$http" in
-        200) ;;
-        401|403) die "Cloudflare API returned ${http} (unauthorized)
+    # Cloudflare zones live at the registered-domain level. For a subdomain
+    # (e.g. dev.example.com) walk up the labels to find the parent zone, so a
+    # subdomain can be pointed at a different server than its apex.
+    local domain="$1" candidate="$1" resp http zid
+    while :; do
+        resp=$(curl -s -w "\n%{http_code}" \
+            "https://api.cloudflare.com/client/v4/zones?name=${candidate}" \
+            -H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json") \
+            || die "Cloudflare API request failed — network error"
+        http=$(echo "$resp" | tail -1); resp=$(echo "$resp" | sed '$d')
+        case "$http" in
+            200) ;;
+            401|403) die "Cloudflare API returned ${http} (unauthorized)
   - Is your CF_API_TOKEN valid?
   - Does it have Zone:Read and DNS:Edit permissions?" ;;
-        *) die "Cloudflare API returned HTTP ${http} for zone '${domain}'
+            *) die "Cloudflare API returned HTTP ${http} for zone '${candidate}'
   Response: $(echo "$resp" | jq -r '.errors[0].message // empty' 2>/dev/null || echo 'unknown')" ;;
-    esac
-    local zid; zid=$(echo "$resp" | jq -r '.result[0].id // empty')
-    [[ -n "$zid" ]] || die "Zone not found for '${domain}'
-  - Is the domain added to your Cloudflare account?
-  - Does your API token have access to this zone?"
-    echo "$zid"
+        esac
+        zid=$(echo "$resp" | jq -r '.result[0].id // empty')
+        [[ -n "$zid" ]] && { echo "$zid"; return 0; }
+        # Not a zone at this level — try the parent (strip the leftmost label),
+        # stopping once we're down to a bare apex (two labels).
+        case "$candidate" in
+            *.*.*) candidate="${candidate#*.}" ;;
+            *) break ;;
+        esac
+    done
+    die "Zone not found for '${domain}'
+  - Is the domain (or its parent zone) added to your Cloudflare account?
+  - Does your API token have access to that zone?"
 }
 
 # Echo "<id>\t<content>" of the CNAME named $2 in zone $1 (empty fields if none).
