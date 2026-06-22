@@ -17,7 +17,7 @@ prometheus.exporter.cadvisor "containers" {
 }
 
 prometheus.scrape "node_and_containers" {
-  targets = concat(
+  targets = array.concat(
     prometheus.exporter.unix.host.targets,
     prometheus.exporter.cadvisor.containers.targets,
   )
