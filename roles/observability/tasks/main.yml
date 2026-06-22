@@ -10,10 +10,10 @@
       - grafana_cloud_loki_user | length > 0
       - grafana_cloud_token | length > 0
     fail_msg: >-
-      observability_enabled is true but Grafana Cloud settings are incomplete.
-      Set grafana_cloud_prometheus_url/_user and grafana_cloud_loki_url/_user in
-      gitignored group_vars/all.yml, and provide grafana_cloud_token (gitignored
-      config or the GRAFANA_CLOUD_TOKEN env var). See docs/OBSERVABILITY.md.
+      observability_enabled is true but one or more Grafana Cloud values are unset.
+      Export these environment variables before running (see docs/OBSERVABILITY.md):
+      GRAFANA_CLOUD_PROM_URL, GRAFANA_CLOUD_PROM_USER, GRAFANA_CLOUD_LOKI_URL,
+      GRAFANA_CLOUD_LOKI_USER, GRAFANA_CLOUD_TOKEN.
     quiet: true
   when: observability_enabled | bool
   tags: ['observability']
