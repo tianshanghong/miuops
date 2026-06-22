@@ -12,6 +12,15 @@ NC='\033[0m'
 die()  { echo -e "${RED}error:${NC} $1" >&2; exit 1; }
 info() { echo -e "${GREEN}=>${NC} $1"; }
 warn() { echo -e "${YELLOW}=>${NC} $1"; }
+# Warn when $1 is itself a subdomain: the auto-created *.<domain> wildcard is a
+# second-level wildcard that Cloudflare's free Universal SSL does NOT cover, so
+# HTTPS to *.<domain> hosts needs Advanced Certificate Manager. The host itself
+# and other first-level names under the apex stay covered.
+acm_wildcard_note() {
+    case "$1" in
+        *.*.*) warn "${1} is a subdomain — its wildcard '*.${1}' needs Cloudflare Advanced Certificate Manager for HTTPS ('${1}' itself is covered by Universal SSL)." ;;
+    esac
+}
 dry()  { echo -e "  ${YELLOW}[dry-run]${NC} $1"; }
 
 DRY_RUN=false
@@ -80,8 +89,10 @@ domain_owner() {
 cf_zone_id() {
     # Cloudflare zones live at the registered-domain level. For a subdomain
     # (e.g. dev.example.com) walk up the labels to find the parent zone, so a
-    # subdomain can be pointed at a different server than its apex.
-    local domain="$1" candidate="$1" resp http zid
+    # subdomain can be pointed at a different server than its apex. The walk
+    # tries the most-specific name first and stops at the two-label apex; the
+    # first existing zone wins.
+    local domain="$1" candidate="$1" resp http zid zname
     while :; do
         resp=$(curl -s -w "\n%{http_code}" \
             "https://api.cloudflare.com/client/v4/zones?name=${candidate}" \
@@ -97,7 +108,14 @@ cf_zone_id() {
   Response: $(echo "$resp" | jq -r '.errors[0].message // empty' 2>/dev/null || echo 'unknown')" ;;
         esac
         zid=$(echo "$resp" | jq -r '.result[0].id // empty')
-        [[ -n "$zid" ]] && { echo "$zid"; return 0; }
+        if [[ -n "$zid" ]]; then
+            # On walk-up, surface the matched zone name so the operator can
+            # confirm which zone the records land in (the ID alone is opaque).
+            zname=$(echo "$resp" | jq -r '.result[0].name // empty')
+            [[ "$candidate" != "$domain" ]] && \
+                echo -e "${GREEN}=>${NC} ${domain}: records will be created in parent zone '${zname:-$candidate}'" >&2
+            echo "$zid"; return 0
+        fi
         # Not a zone at this level — try the parent (strip the leftmost label),
         # stopping once we're down to a bare apex (two labels).
         case "$candidate" in
@@ -487,6 +505,7 @@ ${existing}
         zid="${zone_id_list[$i]}"
         cf_create_cname "$zid" "${domain}" "$tunnel_id"
         cf_create_cname "$zid" "*.${domain}" "$tunnel_id"
+        acm_wildcard_note "$domain"
     done
 
     # ── Step 5: Write config + converge ────────────────────────────
@@ -552,6 +571,7 @@ cmd_add_domain() {
         zid="$(cf_zone_id "$dd")"
         cf_create_cname "$zid" "$dd" "$tid"
         cf_create_cname "$zid" "*.${dd}" "$tid"
+        acm_wildcard_note "$dd"
         current+=("$dd"); added=true
     done
 
