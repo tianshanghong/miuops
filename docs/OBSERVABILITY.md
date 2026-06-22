@@ -57,6 +57,9 @@ Grafana Cloud **Docker / Linux Node** integrations for ready-made dashboards.
 - The token is rendered into `/etc/alloy/config.alloy` on the server at mode `0600`.
 - If `observability_enabled` is true but the connection settings are incomplete, the
   play **fails fast** (it will not start a misconfigured agent).
+- **Known benign log noise:** cadvisor may log `failed to identify the read-write
+  layer ID` for some containers. This only affects the per-container writable-layer
+  *size* metric; container CPU/memory/network metrics are collected normally.
 - **Follow-ups (not yet wired):** Traefik Prometheus metrics (requires enabling
   Traefik's metrics endpoint), host/systemd (journald) logs, CI deployment, and
   alert rules.

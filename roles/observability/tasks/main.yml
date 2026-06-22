@@ -59,5 +59,6 @@
       - "/sys:/host/sys:ro"
       - "/sys/fs/cgroup:/sys/fs/cgroup:ro"
       - "/var/lib/docker:/var/lib/docker:ro"
+      - "/run/udev:/run/udev:ro"
   when: observability_enabled | bool
   tags: ['observability']
