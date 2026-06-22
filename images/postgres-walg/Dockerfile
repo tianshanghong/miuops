@@ -1,4 +1,4 @@
-FROM postgres:17
+FROM postgres:18
 
 ARG WALG_VERSION=v3.0.8
 ARG TARGETARCH
