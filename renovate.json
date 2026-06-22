@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    "schedule:weekly",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "labels": ["dependencies"],
+  "dependencyDashboard": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Grafana Alloy image pinned in the observability role defaults",
+      "fileMatch": ["^roles/observability/defaults/main\\.yml$"],
+      "matchStrings": [
+        "observability_alloy_image:\\s*\"(?<depName>[^:\"]+):(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "WAL-G release pinned in the postgres-walg image",
+      "fileMatch": ["^images/postgres-walg/Dockerfile$"],
+      "matchStrings": [
+        "ARG WALG_VERSION=(?<currentValue>v[0-9][0-9.]*)"
+      ],
+      "depNameTemplate": "wal-g/wal-g",
+      "datasourceTemplate": "github-releases"
+    }
+  ]
+}
