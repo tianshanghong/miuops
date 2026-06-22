@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # GitHub Actions in the workflows — kept pinned to commit SHAs (version in the
+  # trailing comment); Dependabot bumps the SHA + comment on new releases.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci(deps)"
+
+  # Base image of the postgres-walg build (Dockerfile FROM postgres:17).
+  - package-ecosystem: "docker"
+    directory: "/images/postgres-walg"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "build(deps)"
+
+# Not covered by Dependabot (no manager): the Alloy image pin in
+# roles/observability/defaults/main.yml, the Ansible Galaxy collections in
+# requirements.yml, and the WAL-G ARG in images/postgres-walg/Dockerfile.
+# These are low-churn — bump them manually.
