@@ -43,3 +43,5 @@
       tags: ['traefik']
     - role: cloudflared
       tags: ['cloudflared']
+    - role: observability
+      tags: ['observability']

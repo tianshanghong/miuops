@@ -1,0 +1,83 @@
+// Grafana Alloy -> Grafana Cloud. Managed by Ansible (roles/observability).
+// Do not edit on the host; changes are overwritten on the next converge.
+
+//////////////////// METRICS ////////////////////
+
+// Host metrics (CPU, memory, disk, network) — node_exporter equivalent.
+prometheus.exporter.unix "host" {
+  rootfs_path = "/rootfs"
+  procfs_path = "/host/proc"
+  sysfs_path  = "/host/sys"
+}
+
+// Per-container metrics.
+prometheus.exporter.cadvisor "containers" {
+  docker_host      = "unix:///var/run/docker.sock"
+  storage_duration = "5m"
+}
+
+prometheus.scrape "node_and_containers" {
+  targets = array.concat(
+    prometheus.exporter.unix.host.targets,
+    prometheus.exporter.cadvisor.containers.targets,
+  )
+  scrape_interval = "{{ observability_scrape_interval }}"
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+{% if observability_cloudflared_metrics | length > 0 %}
+
+prometheus.scrape "cloudflared" {
+  targets = [
+    { "__address__" = "{{ observability_cloudflared_metrics }}", "job" = "cloudflared" },
+  ]
+  scrape_interval = "{{ observability_scrape_interval }}"
+  forward_to      = [prometheus.remote_write.grafana_cloud.receiver]
+}
+{% endif %}
+
+prometheus.remote_write "grafana_cloud" {
+  endpoint {
+    url = "{{ grafana_cloud_prometheus_url }}"
+    basic_auth {
+      username = "{{ grafana_cloud_prometheus_user }}"
+      password = "{{ grafana_cloud_token }}"
+    }
+  }
+}
+
+//////////////////// LOGS ////////////////////
+
+// Discover running containers and tail their logs.
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "container_logs" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "stream"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.container_logs.output
+  forward_to = [loki.write.grafana_cloud.receiver]
+}
+
+loki.write "grafana_cloud" {
+  endpoint {
+    url = "{{ grafana_cloud_loki_url }}"
+    basic_auth {
+      username = "{{ grafana_cloud_loki_user }}"
+      password = "{{ grafana_cloud_token }}"
+    }
+  }
+}
