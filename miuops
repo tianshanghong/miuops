@@ -18,7 +18,7 @@ warn() { echo -e "${YELLOW}=>${NC} $1"; }
 # and other first-level names under the apex stay covered.
 acm_wildcard_note() {
     case "$1" in
-        *.*.*) warn "${1} is a subdomain — its wildcard '*.${1}' needs Cloudflare Advanced Certificate Manager for HTTPS ('${1}' itself is covered by Universal SSL)." ;;
+        *.*.*) warn "if '${1}' is a subdomain (not a registrable apex), its wildcard '*.${1}' is second-level and free Universal SSL won't cover it — HTTPS to *.${1} hosts would need Advanced Certificate Manager." ;;
     esac
 }
 dry()  { echo -e "  ${YELLOW}[dry-run]${NC} $1"; }
@@ -111,6 +111,8 @@ cf_zone_id() {
         if [[ -n "$zid" ]]; then
             # On walk-up, surface the matched zone name so the operator can
             # confirm which zone the records land in (the ID alone is opaque).
+            # NOTE: stderr (>&2), NOT info() — info() writes to stdout and would
+            # corrupt the zone id captured by zid=$(cf_zone_id ...) in callers.
             zname=$(echo "$resp" | jq -r '.result[0].name // empty')
             [[ "$candidate" != "$domain" ]] && \
                 echo -e "${GREEN}=>${NC} ${domain}: records will be created in parent zone '${zname:-$candidate}'" >&2
