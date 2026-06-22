@@ -36,6 +36,14 @@ prometheus.scrape "cloudflared" {
 {% endif %}
 
 prometheus.remote_write "grafana_cloud" {
+  // Stamp the source host on every metric. Some scrape targets have an identity
+  // that is identical across hosts (e.g. cloudflared at the fixed 127.0.0.1:2000
+  // address yields instance="127.0.0.1:2000" everywhere). Without a distinguishing
+  // label those series collide in Mimir and overwrite each other (out-of-order /
+  // dropped samples). node/cadvisor already get a host-unique instance (the unix
+  // exporter defaults instance to the machine hostname), so this is additive there.
+  external_labels = { host = constants.hostname }
+
   endpoint {
     url = "{{ grafana_cloud_prometheus_url }}"
     basic_auth {
@@ -73,6 +81,10 @@ loki.source.docker "containers" {
 }
 
 loki.write "grafana_cloud" {
+  // Stamp the source host on every log line so identically-named containers on
+  // different hosts (e.g. traefik) stay distinguishable in Loki.
+  external_labels = { host = constants.hostname }
+
   endpoint {
     url = "{{ grafana_cloud_loki_url }}"
     basic_auth {
