@@ -118,6 +118,18 @@ echo "$out" | grep -qi 'already points here' || fail "cf_create_cname should acc
 out="$( ( export CF_API_TOKEN=x; curl() { printf '{"success":false,"errors":[{"message":"Invalid zone"}]}'; }; cf_create_cname z1 app.example.com TUN1 ) 2>&1 || true )"
 echo "$out" | grep -qi 'Failed to create' || fail "cf_create_cname must die on an API failure"
 
+# cf_zone_id walks up to the parent zone for a subdomain (dev.example.com -> example.com)
+out="$( export CF_API_TOKEN=x; curl() { if printf '%s' "$*" | grep -q 'name=dev.example.com'; then printf '{"success":true,"result":[]}\n200'; elif printf '%s' "$*" | grep -q 'name=example.com'; then printf '{"success":true,"result":[{"id":"ZONE1"}]}\n200'; else printf '{"success":true,"result":[]}\n200'; fi; }; cf_zone_id dev.example.com )"
+echo "$out" | grep -qx ZONE1 || fail "cf_zone_id should resolve a subdomain to its parent zone"
+
+# cf_zone_id resolves an apex directly (regression)
+out="$( export CF_API_TOKEN=x; curl() { printf '{"success":true,"result":[{"id":"ZONE2"}]}\n200'; }; cf_zone_id example.com )"
+echo "$out" | grep -qx ZONE2 || fail "cf_zone_id should resolve an apex domain directly"
+
+# cf_zone_id dies when neither the name nor any parent is a zone
+out="$( ( export CF_API_TOKEN=x; curl() { printf '{"success":true,"result":[]}\n200'; }; cf_zone_id sub.unknown.example ) 2>&1 || true )"
+echo "$out" | grep -qi 'Zone not found' || fail "cf_zone_id must die when no parent zone matches"
+
 # cf_delete_cname: a failed delete -> hard error (not a warning)
 out="$( ( export CF_API_TOKEN=x; curl() { if printf '%s' "$*" | grep -q DELETE; then printf '{"success":false,"errors":[{"message":"boom"}]}'; else printf '{"success":true,"result":[{"id":"R1","content":"TUN1.cfargotunnel.com"}]}'; fi; }; cf_delete_cname z1 app.example.com TUN1 ) 2>&1 || true )"
 echo "$out" | grep -qi 'did not confirm deletion' || fail "cf_delete_cname must die on a failed delete"
