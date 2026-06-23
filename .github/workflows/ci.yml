@@ -158,6 +158,18 @@ jobs:
           echo "CHANGE-PATH OK: reconciled, Docker chains intact, Docker not restarted"
           echo "::endgroup::"
 
+          echo "::group::Config-removal: a kernel INPUT rule absent from config is dropped on re-apply"
+          $SSH '
+            set -e
+            iptables -I INPUT 1 -p tcp --dport 65000 -j ACCEPT
+            /usr/local/sbin/miuops-firewall.sh host
+            if iptables -S INPUT | grep -q -- "--dport 65000"; then
+              echo "FAIL: stale INPUT rule (dport 65000) survived re-apply"; exit 1
+            fi
+            echo "stale INPUT rule correctly removed by re-apply ✅"
+          '
+          echo "::endgroup::"
+
           echo "::group::Stabilizing run must be idempotent again"
           ch="$(ansible-playbook playbook.yml 2>&1 | grep -oP 'changed=\K[0-9]+' | tail -1)"
           echo "changed on stabilizing run: $ch"
