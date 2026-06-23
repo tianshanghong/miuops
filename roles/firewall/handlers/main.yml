@@ -1,25 +1,19 @@
 ---
-# Handlers for firewall role
+# Handlers for firewall role. Re-run the appliers when rules/units change.
+# DOCKER-USER apply tolerates "docker not yet installed" on first bootstrap
+# (the playbook post_task applies it once Docker is up).
 
-# Apply the rendered rules to the running kernel. Only triggered when the
-# corresponding rules file changed, so an unchanged run reloads nothing and
-# does not restart Docker.
-- name: Reload IPv4 rules
-  command: iptables-restore /etc/iptables/rules.v4
-  become: true
-  notify: Restart Docker service
-
-- name: Reload IPv6 rules
-  command: ip6tables-restore /etc/iptables/rules.v6
-  become: true
-  notify: Restart Docker service
-
-# If docker service is installed, we will restart it when the rules change.
-# If it is not installed, the docker role will install it and start it later.
-- name: Restart Docker service
+- name: Reload systemd
   systemd:
-    name: docker
-    state: restarted
+    daemon_reload: yes
+  become: true
+
+- name: Apply host firewall
+  command: /usr/local/sbin/miuops-firewall.sh host
+  become: true
+
+- name: Apply docker-user firewall
+  command: /usr/local/sbin/miuops-firewall.sh docker-user
   become: true
   when:
     - ansible_facts.services is defined

@@ -1,20 +1,14 @@
 ---
-# Main tasks for firewall role - nft backend only version with atomic rule loading
+# Firewall role — host-owned chains only (INPUT + DOCKER-USER + FORWARD policy),
+# never flushing Docker's chains. See docs/superpowers/specs/2026-06-23-firewall-*.
 
-# ========== Packages & binary links ==========================================
-- name: Install nft backend (provided by iptables) and persistence tools
+# ========== Packages & nft backend ==========================================
+- name: Install iptables, nftables and persistence tooling
   apt:
-    name:
-      - iptables            # Available in Ubuntu 20.04/22.04/24.04
-      - iptables-persistent # Provides netfilter-persistent service
+    name: [iptables, nftables, iptables-persistent]
     state: present
   become: true
 
-# ========== Force nft backend usage ==========================================
-# 1. Set nft as the default backend for iptables and ip6tables. The alternatives
-#    module is idempotent: it only invokes update-alternatives when the current
-#    selection differs, so it does not rewrite the *-restore slave links on
-#    no-op runs (which previously made the fallback link task flip every run).
 - name: Select nft backend (IPv4/IPv6)
   community.general.alternatives:
     name: "{{ item.name }}"
@@ -24,86 +18,121 @@
     - { name: ip6tables, path: /usr/sbin/ip6tables-nft }
   become: true
 
-# 2. Ensure the *-restore links resolve to the nft backend (fallback for
-#    systems where the alternative does not provide the restore slave link)
 - name: Ensure generic restore links exist (fallback)
   file:
     src: "/usr/sbin/{{ item }}-nft-restore"
     dest: "/usr/sbin/{{ item }}-restore"
     state: link
     force: yes
-  loop:
-    - iptables
-    - ip6tables
+  loop: [iptables, ip6tables]
   become: true
 
-# ========== Rules directory setup ============================================
-- name: Create rules directory
+# ========== Rendered rule artifacts =========================================
+- name: Create miuops-firewall rules directory
   file:
-    path: /etc/iptables
+    path: /etc/miuops-firewall
     state: directory
     mode: '0755'
   become: true
 
-# ========== Rule loading (idempotent) =======================================
-# Render straight to the persistent file. `validate` syntax-checks the rendered
-# ruleset (iptables-restore --test) on a temp copy before it is atomically moved
-# into place, so a broken ruleset is never written. The rules are only reloaded
-# into the running kernel when the file content actually changes (see handler).
-- name: Render IPv4 rules
+- name: Render INPUT (v4) ruleset
   template:
-    src: rules.v4.j2
-    dest: /etc/iptables/rules.v4
+    src: host.v4.rules.j2
+    dest: /etc/miuops-firewall/host.v4.rules
     mode: '0600'
-    validate: iptables-restore --test %s
+    validate: iptables-restore --test --noflush %s
   become: true
-  notify: Reload IPv4 rules
+  notify: Apply host firewall
 
-- name: Render IPv6 rules
+- name: Render INPUT (v6) ruleset
   template:
-    src: rules.v6.j2
-    dest: /etc/iptables/rules.v6
+    src: host.v6.rules.j2
+    dest: /etc/miuops-firewall/host.v6.rules
     mode: '0600'
-    validate: ip6tables-restore --test %s
+    validate: ip6tables-restore --test --noflush %s
   become: true
-  notify: Reload IPv6 rules
+  notify: Apply host firewall
 
-# ========== systemd override ================================================
-- name: Create netfilter-persistent override dir
-  file:
-    path: /etc/systemd/system/netfilter-persistent.service.d
-    state: directory
+- name: Render DOCKER-USER nft transaction
+  template:
+    src: docker-user.nft.j2
+    dest: /etc/miuops-firewall/docker-user.nft
+    mode: '0600'
+    validate: nft -c -f %s
+  become: true
+  notify: Apply docker-user firewall
+
+- name: Install the applier
+  template:
+    src: miuops-firewall.sh.j2
+    dest: /usr/local/sbin/miuops-firewall.sh
     mode: '0755'
   become: true
+  notify:
+    - Apply host firewall
+    - Apply docker-user firewall
 
-- name: Make netfilter-persistent start before Docker
-  copy:
-    dest: /etc/systemd/system/netfilter-persistent.service.d/override.conf
+# ========== systemd units ===================================================
+- name: Install systemd units
+  template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
     mode: '0644'
-    content: |
-      [Unit]
-      Before=docker.service
-      After=network-pre.target
-      Requires=
-
-      [Service]
-      ExecStartPre=/bin/sleep 2
-  register: override_file
+  loop:
+    - miuops-firewall-host.service
+    - miuops-firewall-docker-user.service
+    - miuops-firewall-docker-user.timer
   become: true
+  notify: Reload systemd
 
-- name: Reload systemd if override changed
-  systemd:
-    daemon_reload: yes
-  when: override_file is changed
-  become: true
+- name: Reload systemd now (so enable/start below see the units)
+  meta: flush_handlers
 
-- name: Enable + start netfilter-persistent
+- name: Enable + start host firewall unit (BEFORE masking netfilter-persistent)
   systemd:
-    name: netfilter-persistent
+    name: miuops-firewall-host.service
     enabled: yes
     state: started
   become: true
 
-# Handlers
+- name: Enable docker-user unit + reconcile timer
+  systemd:
+    name: "{{ item }}"
+    enabled: yes
+  loop:
+    - miuops-firewall-docker-user.service
+    - miuops-firewall-docker-user.timer
+  become: true
+
+- name: Start reconcile timer
+  systemd:
+    name: miuops-firewall-docker-user.timer
+    state: started
+  become: true
+
+# ========== Neutralise the old whole-table-flush mechanism ==================
+- name: Mask netfilter-persistent (its restore flushes the whole filter table)
+  systemd:
+    name: netfilter-persistent.service
+    masked: yes
+    enabled: no
+  become: true
+
+- name: Assert netfilter-persistent is masked
+  command: systemctl is-enabled netfilter-persistent.service
+  register: nfp_state
+  changed_when: false
+  failed_when: nfp_state.stdout != "masked"
+  become: true
+
+- name: Remove stale full-table persisted rulesets
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/iptables/rules.v4
+    - /etc/iptables/rules.v6
+  become: true
+
 - name: Flush handlers
   meta: flush_handlers
