@@ -1,0 +1,13 @@
+*filter
+:DOCKER-USER -
+# Container isolation, applied to BOTH ip filter and ip6 filter DOCKER-USER. Identical
+# to the legacy rules. Managed via iptables-restore (NOT raw nft) so the iptables-nft
+# `filter` table stays readable by the iptables tooling and Docker — raw `nft` rules in
+# this table make iptables report it "incompatible". Order matters: the RETURNs must
+# precede the final catch-all DROP.
+-A DOCKER-USER -m conntrack --ctstate INVALID -j DROP
+-A DOCKER-USER -m conntrack --ctstate RELATED,ESTABLISHED -j RETURN
+-A DOCKER-USER -i br+ -j RETURN
+-A DOCKER-USER -i lo -o br+ -j RETURN
+-A DOCKER-USER -j DROP
+COMMIT

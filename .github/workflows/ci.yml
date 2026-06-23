@@ -131,7 +131,7 @@ jobs:
           SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
 
           echo "::group::Snapshot Docker daemon start time + drift the rendered INPUT ruleset"
-          docker_pre="$($SSH 'systemctl show -p ActiveEnterTimestamp --value docker')"
+          docker_pre="$($SSH 'systemctl show -p ExecMainStartTimestampMonotonic --value docker')"
           $SSH 'sed -i "/-A INPUT -i lo -j ACCEPT/d" /etc/miuops-firewall/host.v4.rules && echo "drift injected: removed lo-accept from rendered host.v4.rules"'
           echo "::endgroup::"
 
@@ -153,7 +153,7 @@ jobs:
             iptables -S | grep -q "^-N DOCKER-FORWARD$" || { echo "FAIL: Docker chains missing after re-apply (containers left unprotected)"; exit 1; }
             iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: FORWARD->DOCKER-USER jump missing after re-apply"; exit 1; }
           '
-          docker_post="$($SSH 'systemctl show -p ActiveEnterTimestamp --value docker')"
+          docker_post="$($SSH 'systemctl show -p ExecMainStartTimestampMonotonic --value docker')"
           [ "$docker_pre" = "$docker_post" ] || { echo "FAIL: Docker daemon was restarted by the firewall converge ($docker_pre -> $docker_post)"; exit 1; }
           echo "CHANGE-PATH OK: reconciled, Docker chains intact, Docker not restarted"
           echo "::endgroup::"

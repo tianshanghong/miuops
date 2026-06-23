@@ -53,12 +53,14 @@
   become: true
   notify: Apply host firewall
 
-- name: Render DOCKER-USER nft transaction
+- name: Render DOCKER-USER ruleset
   template:
-    src: docker-user.nft.j2
-    dest: /etc/miuops-firewall/docker-user.nft
+    src: docker-user.rules.j2
+    dest: /etc/miuops-firewall/docker-user.rules
     mode: '0600'
-    validate: nft -c -f %s
+    # No render-time validate: on a fresh host the DOCKER-USER chain doesn't exist
+    # yet (this role runs before docker). The applier validates the SAME file with
+    # `iptables-restore --test` at apply time, after `-N DOCKER-USER` — validated==applied.
   become: true
   notify: Apply docker-user firewall
 

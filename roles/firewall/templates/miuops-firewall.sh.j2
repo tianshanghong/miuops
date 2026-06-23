@@ -43,14 +43,28 @@ apply_host() {
   ip6tables -F INPUT;  ip6tables-restore --noflush "$RULES_DIR/host.v6.rules"
 }
 
+reconcile_docker_user() {
+  # $1 = iptables|ip6tables, $2 = rules file. Idempotent: if the chain is already
+  # exactly our ruleset, do nothing (so the steady state and the reconcile timer
+  # never flush -> no fail-open window). When the chain is empty (Docker recreated
+  # it on restart) the restore appends the rules in a single transaction; we only
+  # -F when the chain is non-empty AND wrong (rare manual corruption). Uses
+  # iptables-restore (NOT raw nft) so the table stays iptables-compatible.
+  local ipt="$1" file="$2" current desired
+  desired="$(grep '^-A DOCKER-USER' "$file")"
+  current="$("$ipt" -S DOCKER-USER 2>/dev/null | grep '^-A DOCKER-USER' || true)"
+  [ "$current" = "$desired" ] && return 0
+  "$ipt"-restore --test --noflush "$file"   # validate the exact file we will apply
+  "$ipt" -F DOCKER-USER
+  "$ipt"-restore --noflush "$file"
+}
+
 apply_docker_user() {
   # Ensure the chains exist (Docker normally creates them; tolerate first boot).
   iptables  -N DOCKER-USER 2>/dev/null || true
   ip6tables -N DOCKER-USER 2>/dev/null || true
-  # Validate the exact artifact, then apply it as ONE atomic nft transaction
-  # (flush chain + re-add) so the catch-all drop is never momentarily absent.
-  nft -c -f "$RULES_DIR/docker-user.nft"
-  nft    -f "$RULES_DIR/docker-user.nft"
+  reconcile_docker_user iptables  "$RULES_DIR/docker-user.rules"
+  reconcile_docker_user ip6tables "$RULES_DIR/docker-user.rules"
   # The jump is Docker's; verify it's present + correctly ordered (self-heal signal).
   assert_forward_jump iptables
   assert_forward_jump ip6tables
