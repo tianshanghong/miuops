@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# miuops firewall applier — manages ONLY host-owned chains (INPUT, OUTPUT/FORWARD
+# policy, DOCKER-USER contents). It never flushes or edits Docker's chains.
+# Rendered by the firewall role; no Jinja variables (kept static on purpose).
+# Usage: miuops-firewall.sh <host|docker-user>
+set -euo pipefail
+
+RULES_DIR=/etc/miuops-firewall
+
+assert_forward_jump() {
+  # $1 = iptables|ip6tables. The FORWARD->DOCKER-USER jump is Docker-owned; if it is
+  # missing or ordered after DOCKER-FORWARD, Docker's chains are corrupt (the
+  # shared-prod failure class) -> fail loudly with the documented repair.
+  local ipt="$1" fwd ln_user ln_fwd
+  fwd="$("$ipt" -S FORWARD)"
+  if ! grep -q -- '-A FORWARD -j DOCKER-USER' <<<"$fwd"; then
+    echo "FATAL: $ipt FORWARD has no jump to DOCKER-USER -- Docker chains corrupt." >&2
+    echo "       Repair: systemctl restart docker" >&2
+    return 1
+  fi
+  if grep -q -- '-A FORWARD -j DOCKER-FORWARD' <<<"$fwd"; then
+    ln_user="$(grep -n -- '-A FORWARD -j DOCKER-USER'    <<<"$fwd" | head -1 | cut -d: -f1)"
+    ln_fwd="$( grep -n -- '-A FORWARD -j DOCKER-FORWARD' <<<"$fwd" | head -1 | cut -d: -f1)"
+    if [ "$ln_user" -gt "$ln_fwd" ]; then
+      echo "FATAL: $ipt FORWARD jumps to DOCKER-FORWARD before DOCKER-USER (wrong order)." >&2
+      echo "       Repair: systemctl restart docker" >&2
+      return 1
+    fi
+  fi
+}
+
+apply_host() {
+  # Fail-closed FIRST: assert default policies before touching any rules, so any
+  # later failure leaves the host CLOSED, never open.
+  iptables  -P INPUT DROP;  iptables  -P FORWARD DROP;  iptables  -P OUTPUT ACCEPT
+  ip6tables -P INPUT DROP;  ip6tables -P FORWARD DROP;  ip6tables -P OUTPUT ACCEPT
+  # Validate the exact files before applying; a broken render keeps the live INPUT.
+  iptables-restore  --test --noflush "$RULES_DIR/host.v4.rules"
+  ip6tables-restore --test --noflush "$RULES_DIR/host.v6.rules"
+  # Replace INPUT only. Between -F and the load the chain is empty but policy is
+  # DROP -> fail-closed; --noflush leaves OUTPUT/FORWARD/Docker chains untouched.
+  iptables  -F INPUT;  iptables-restore  --noflush "$RULES_DIR/host.v4.rules"
+  ip6tables -F INPUT;  ip6tables-restore --noflush "$RULES_DIR/host.v6.rules"
+}
+
+apply_docker_user() {
+  # Ensure the chains exist (Docker normally creates them; tolerate first boot).
+  iptables  -N DOCKER-USER 2>/dev/null || true
+  ip6tables -N DOCKER-USER 2>/dev/null || true
+  # Validate the exact artifact, then apply it as ONE atomic nft transaction
+  # (flush chain + re-add) so the catch-all drop is never momentarily absent.
+  nft -c -f "$RULES_DIR/docker-user.nft"
+  nft    -f "$RULES_DIR/docker-user.nft"
+  # The jump is Docker's; verify it's present + correctly ordered (self-heal signal).
+  assert_forward_jump iptables
+  assert_forward_jump ip6tables
+}
+
+case "${1:-}" in
+  host)        apply_host ;;
+  docker-user) apply_docker_user ;;
+  *) echo "usage: miuops-firewall.sh <host|docker-user>" >&2; exit 2 ;;
+esac
