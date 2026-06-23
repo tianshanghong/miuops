@@ -1,0 +1,11 @@
+[Unit]
+Description=miuops container isolation (DOCKER-USER), re-applied after Docker
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/miuops-firewall.sh docker-user
+[Install]
+WantedBy=multi-user.target

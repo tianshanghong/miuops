@@ -1,0 +1,12 @@
+[Unit]
+Description=miuops host firewall (INPUT zero-port policy), before networking/docker
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target docker.service docker.socket ssh.socket sshd.service
+After=local-fs.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/miuops-firewall.sh host
+[Install]
+WantedBy=multi-user.target
