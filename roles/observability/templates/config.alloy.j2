@@ -10,9 +10,14 @@ prometheus.exporter.unix "host" {
   sysfs_path  = "/host/sys"
 }
 
-// Per-container metrics.
+// Per-container metrics. On Docker 29+ the default storage driver is overlayfs;
+// cAdvisor (v0.54+, bundled in Alloy >= v1.14) resolves each container's read-write
+// layer through containerd rather than /var/lib/docker, so the host containerd
+// socket is mounted into this container (see roles/observability/tasks/main.yml).
+// containerd_host below matches the containerd.io package installed by roles/docker.
 prometheus.exporter.cadvisor "containers" {
   docker_host      = "unix:///var/run/docker.sock"
+  containerd_host  = "/run/containerd/containerd.sock"
   storage_duration = "5m"
 }
 

@@ -60,9 +60,13 @@ Grafana Cloud **Docker / Linux Node** integrations for ready-made dashboards.
 - If `observability_enabled` is true but any required value is unset, the play
   **fails fast and prints the exact env var names** to export — so a forgotten or
   misspelled variable is caught with a clear hint, not a half-started agent.
-- **Known benign log noise:** cadvisor may log `failed to identify the read-write
-  layer ID` for some containers. This only affects the per-container writable-layer
-  *size* metric; container CPU/memory/network metrics are collected normally.
+- **Docker 29+ (overlayfs):** Docker 29 made `overlayfs` the default storage driver,
+  which dropped the on-disk layer layout the old cAdvisor read. cAdvisor v0.54+
+  (bundled in Alloy >= v1.14) instead resolves each container's read-write layer
+  through containerd, so this role pins a new-enough Alloy image and mounts the host
+  `containerd.sock` into the Alloy container. On older Alloy the agent logs
+  `failed to identify the read-write layer ID` and drops **all** per-container
+  metrics (not just writable-layer size).
 - **Follow-ups (not yet wired):** Traefik Prometheus metrics (requires enabling
   Traefik's metrics endpoint), host/systemd (journald) logs, CI deployment, and
   alert rules.

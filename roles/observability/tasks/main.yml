@@ -54,6 +54,9 @@
     volumes:
       - "/etc/alloy/config.alloy:/etc/alloy/config.alloy:ro"
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      # cAdvisor reads overlayfs (Docker 29+) container layers via containerd, not
+      # /var/lib/docker. Without this socket per-container metrics are dropped.
+      - "/run/containerd/containerd.sock:/run/containerd/containerd.sock:ro"
       - "/:/rootfs:ro"
       - "/proc:/host/proc:ro"
       - "/sys:/host/sys:ro"
