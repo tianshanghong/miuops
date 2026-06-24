@@ -23,11 +23,16 @@ jobs:
       - name: Lint + CLI unit tests
         run: |
           command -v shellcheck >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y shellcheck >/dev/null; }
-          shellcheck -S error miuops
+          shellcheck -S error miuops tests/stack_policy_check_test.sh
           bash tests/cli_test.sh
 
       - name: Install Ansible
         run: pip install ansible
+
+      - name: Stack policy-check (self-test of the compose linter)
+        # PyYAML is pulled in by Ansible above; the linter rejects compose files that
+        # publish to non-loopback, set privileged, use host networking, or omit cap_drop.
+        run: bash tests/stack_policy_check_test.sh
 
       - name: Install Galaxy dependencies
         run: ansible-galaxy collection install -r requirements.yml
