@@ -63,8 +63,8 @@
   loop:
     - { re: '^DEFAULT_FORWARD_POLICY=', line: 'DEFAULT_FORWARD_POLICY="DROP"' }
     - { re: '^IPV6=', line: 'IPV6=yes' }
+  register: fw_defaults
   become: true
-  notify: Reload ufw
 
 - name: ufw default policies (deny inbound, allow outbound)
   community.general.ufw:
@@ -104,7 +104,17 @@
   register: fw_ufw_enable
   become: true
 
-# ---- Rebuild Docker chains if `ufw enable` flushed them (existing hosts only) ---------
+- name: Reload ufw to apply /etc/default/ufw changes on an already-enabled host
+  # `ufw enable` reads /etc/default/ufw, so a fresh enable already picks up the FORWARD/IPv6
+  # settings. Only an already-enabled host (where enable is a no-op) needs an explicit reload
+  # when those defaults change. Done inline (not a deferred handler) so the Docker rebuild
+  # below always runs AFTER the last ufw filter-table mutation.
+  community.general.ufw:
+    state: reloaded
+  when: fw_defaults is changed and fw_ufw_enable is not changed
+  become: true
+
+# ---- Rebuild Docker chains after a ufw enable/reload reset the filter table (existing hosts)
 - name: Check whether Docker is running
   ansible.builtin.command: systemctl is-active docker
   register: fw_docker_active
@@ -112,12 +122,13 @@
   failed_when: false
   become: true
 
-- name: Restart Docker to rebuild its chains after a ufw (re)enable
-  # `ufw enable` resets the filter table; an already-running Docker loses its chains. On a
-  # fresh host Docker starts AFTER this role (nothing to rebuild → skipped). Only fires
-  # when ufw actually changed AND Docker is already up.
+- name: Restart Docker to rebuild its chains after a ufw enable/reload
+  # `ufw enable` (and a reload of changed defaults) resets the filter table; an already-
+  # running Docker loses its chains. Restart it so they are rebuilt AFTER the last ufw
+  # mutation. On a fresh host Docker starts AFTER this role (nothing to rebuild → skipped).
+  # Fires only when ufw actually changed AND Docker is already up.
   ansible.builtin.systemd:
     name: docker
     state: restarted
-  when: fw_ufw_enable is changed and fw_docker_active.stdout == "active"
+  when: (fw_ufw_enable is changed or fw_defaults is changed) and fw_docker_active.stdout == "active"
   become: true

@@ -1,11 +1,6 @@
 ---
 # Handlers for the firewall role.
 
-- name: Reload ufw
-  community.general.ufw:
-    state: reloaded
-  become: true
-
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true

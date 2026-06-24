@@ -83,17 +83,13 @@ jobs:
             echo "::warning::Idempotency check: $changed task(s) reported changed on second run"
           fi
 
-      - name: Verify Docker is active
+      - name: Verify core services are active (Docker, cloudflared)
+        # Reuse one multiplexed SSH connection (shared ControlPath with the firewall checks
+        # below) so the whole job stays well under ufw's SSH rate-limit (6 new conns / 30s).
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
-            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
-            'systemctl is-active docker'
-
-      - name: Verify cloudflared is active
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
-            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
-            'systemctl is-active cloudflared'
+          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          $SSH 'systemctl is-active docker'
+          $SSH 'systemctl is-active cloudflared'
 
       - name: Verify host firewall (ufw default-deny inbound; legacy design retired)
         run: |
