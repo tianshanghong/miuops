@@ -1,27 +1,23 @@
 ---
-# Handlers for firewall role
+# Handlers for firewall role. Re-run the appliers when rules/units change.
+# The docker-user apply tolerates "docker not yet installed" on first bootstrap; once
+# Docker starts, the unit's WantedBy=docker.service applies DOCKER-USER (and apply_host
+# pre-seeds it before Docker publishes), so no end-of-play task is needed.
 
-# Apply the rendered rules to the running kernel. Only triggered when the
-# corresponding rules file changed, so an unchanged run reloads nothing and
-# does not restart Docker.
-- name: Reload IPv4 rules
-  command: iptables-restore /etc/iptables/rules.v4
-  become: true
-  notify: Restart Docker service
-
-- name: Reload IPv6 rules
-  command: ip6tables-restore /etc/iptables/rules.v6
-  become: true
-  notify: Restart Docker service
-
-# If docker service is installed, we will restart it when the rules change.
-# If it is not installed, the docker role will install it and start it later.
-- name: Restart Docker service
+- name: Reload systemd
   systemd:
-    name: docker
-    state: restarted
+    daemon_reload: yes
   become: true
-  when:
-    - ansible_facts.services is defined
-    - "'docker.service' in ansible_facts.services"
-    - ansible_facts.services['docker.service'].state == 'running'
+
+- name: Apply host firewall
+  command: /usr/local/sbin/miuops-firewall.sh host
+  become: true
+
+- name: Apply docker-user firewall
+  # No when-guard: the applier itself tolerates Docker absent/stopped (it seeds DOCKER-USER
+  # and skips the FORWARD-jump assert unless `systemctl is-active docker`). A guard on
+  # ansible_facts.services would also wrongly skip under `--tags firewall` (which skips the
+  # untagged service_facts pre-task), leaving changed DOCKER-USER rules unapplied until the
+  # reconcile timer fires.
+  command: /usr/local/sbin/miuops-firewall.sh docker-user
+  become: true

@@ -1,0 +1,10 @@
+# Installed by the miuops firewall role (drop-in for docker.service). Fail-closed coupling:
+# Docker must NOT start unless the host firewall applied successfully. Without this, a
+# failed firewall apply at boot would let Docker start with DOCKER-USER at its permissive
+# default RETURN, exposing published container ports to the internet. Requires (not Wants)
+# blocks Docker on a firewall failure; After ensures Docker starts only once the firewall
+# unit has finished. Trade-off: a firewall failure takes Docker (and its containers) down
+# -- intentional, since exposing container ports is worse than the services being offline.
+[Unit]
+Requires=miuops-firewall-host.service
+After=miuops-firewall-host.service

@@ -32,3 +32,8 @@ ssh_port: "22"
 firewall_ssh_ratelimit_enabled: true
 firewall_ssh_ratelimit_hits: 10
 firewall_ssh_ratelimit_seconds: 60
+
+# How often the reconcile timer re-applies DOCKER-USER (self-heals drift from
+# docker upgrades / `docker network` ops / a post-restart gap). The applier is a
+# no-op when the chain is already correct, so this is cheap.
+firewall_reconcile_interval: "5min"

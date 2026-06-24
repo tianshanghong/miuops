@@ -122,34 +122,51 @@ jobs:
             echo "ALL FIREWALL SECURITY ASSERTIONS PASSED"
           '
 
-      # Exercises the rule-change path that a normal (no-op) run never hits:
-      # force a real change, then prove the role reconciles it safely.
-      - name: Verify firewall change-path (drift → validate → reload → Docker chains → session survival)
+      # Exercises the rule-change path a no-op run never hits: drift the rendered
+      # ruleset, reconverge, and prove it reconciles WITHOUT flushing Docker's
+      # chains or restarting Docker (the whole point of the Docker-28+ rework).
+      - name: Verify firewall change-path (drift → re-apply, Docker chains intact, no Docker restart)
         run: |
           set -e
           SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
 
-          echo "::group::Tamper persisted ruleset to force a real change"
-          $SSH 'cp /etc/iptables/rules.v4 /tmp/rules.v4.pre && sed -i "/-A INPUT -i lo -j ACCEPT/d" /etc/iptables/rules.v4 && echo "drift injected: removed lo-accept from /etc/iptables/rules.v4"'
+          echo "::group::Snapshot Docker daemon start time + drift the rendered INPUT ruleset"
+          docker_pre="$($SSH 'systemctl show -p ExecMainStartTimestampMonotonic --value docker')"
+          $SSH 'sed -i "/-A INPUT -i lo -j ACCEPT/d" /etc/miuops-firewall/host.v4.rules && echo "drift injected: removed lo-accept from rendered host.v4.rules"'
           echo "::endgroup::"
 
-          echo "::group::Re-run playbook — must re-render, validate, reload, restart Docker"
+          echo "::group::Re-run playbook — must re-render + re-apply via the host applier"
           set +e
           out="$(ansible-playbook playbook.yml 2>&1)"; rc=$?
           set -e
-          echo "$out"
+          echo "$out" | tail -25
           echo "::endgroup::"
-          # rc=0 ⇒ no failed tasks AND host stayed reachable (the SSH session survived the reload)
-          [ $rc -eq 0 ] || { echo "FAIL: playbook errored or host became unreachable during reload (rc=$rc)"; exit 1; }
-          echo "$out" | grep -q "firewall : Reload IPv4 rules" || { echo "FAIL: reload handler did not fire on a real rule change"; exit 1; }
+          # rc=0 ⇒ no failed tasks AND host stayed reachable (the SSH session survived the re-apply)
+          [ $rc -eq 0 ] || { echo "FAIL: playbook errored or host unreachable during re-apply (rc=$rc)"; exit 1; }
+          echo "$out" | grep -q "Apply host firewall" || { echo "FAIL: host applier did not fire on a real rule change"; exit 1; }
 
-          echo "::group::Assert kernel reconciled + Docker chains restored"
+          echo "::group::Assert kernel reconciled, Docker chains intact, Docker NOT restarted"
           $SSH '
             set -e
             iptables -S INPUT | grep -q -- "-A INPUT -i lo -j ACCEPT" || { echo "FAIL: lo-accept not restored in running kernel"; exit 1; }
-            grep -q -- "-A INPUT -i lo -j ACCEPT" /etc/iptables/rules.v4 || { echo "FAIL: persisted ruleset not reconciled"; exit 1; }
-            iptables -S | grep -q "^-N DOCKER$" || { echo "FAIL: Docker filter chains missing after reload (containers left unprotected)"; exit 1; }
-            echo "CHANGE-PATH RECONCILED OK"
+            grep -q -- "-A INPUT -i lo -j ACCEPT" /etc/miuops-firewall/host.v4.rules || { echo "FAIL: rendered ruleset not reconciled"; exit 1; }
+            iptables -S | grep -q "^-N DOCKER-FORWARD$" || { echo "FAIL: Docker chains missing after re-apply (containers left unprotected)"; exit 1; }
+            iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: FORWARD->DOCKER-USER jump missing after re-apply"; exit 1; }
+          '
+          docker_post="$($SSH 'systemctl show -p ExecMainStartTimestampMonotonic --value docker')"
+          [ "$docker_pre" = "$docker_post" ] || { echo "FAIL: Docker daemon was restarted by the firewall converge ($docker_pre -> $docker_post)"; exit 1; }
+          echo "CHANGE-PATH OK: reconciled, Docker chains intact, Docker not restarted"
+          echo "::endgroup::"
+
+          echo "::group::Config-removal: a kernel INPUT rule absent from config is dropped on re-apply"
+          $SSH '
+            set -e
+            iptables -I INPUT 1 -p tcp --dport 65000 -j ACCEPT
+            /usr/local/sbin/miuops-firewall.sh host
+            if iptables -S INPUT | grep -q -- "--dport 65000"; then
+              echo "FAIL: stale INPUT rule (dport 65000) survived re-apply"; exit 1
+            fi
+            echo "stale INPUT rule correctly removed by re-apply ✅"
           '
           echo "::endgroup::"
 
@@ -189,6 +206,36 @@ jobs:
           echo "external IPv4 access correctly blocked ✅"
           echo "::endgroup::"
 
+      # Docker recreates DOCKER-USER empty on restart; PartOf=docker.service must
+      # re-apply our isolation rules so published ports never lose their guard.
+      - name: Verify DOCKER-USER survives a Docker restart (PartOf re-apply)
+        run: |
+          set -e
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          $SSH 'systemctl restart docker; sleep 5'
+          $SSH '
+            for i in $(seq 1 20); do
+              iptables -S DOCKER-USER | tail -1 | grep -q -- "-j DROP" && { echo "DOCKER-USER repopulated after docker restart ✅"; exit 0; }
+              sleep 1
+            done
+            echo "FAIL: DOCKER-USER not repopulated after docker restart"; iptables -S DOCKER-USER; exit 1
+          '
+
+      # The FORWARD->DOCKER-USER jump is Docker-owned; if it goes missing (the
+      # shared-prod corruption class) the applier must fail loudly, not silently
+      # leave published ports unguarded. Then the documented repair restores it.
+      - name: Verify applier detects Docker-chain corruption (missing FORWARD jump)
+        run: |
+          set -e
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          $SSH 'iptables -D FORWARD -j DOCKER-USER'
+          if $SSH '/usr/local/sbin/miuops-firewall.sh docker-user'; then
+            echo "FAIL: applier did not detect the missing FORWARD->DOCKER-USER jump"; exit 1
+          fi
+          echo "applier correctly failed loudly on missing jump ✅"
+          $SSH 'systemctl restart docker; sleep 5'   # documented repair
+          $SSH 'iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" && echo "jump restored by docker restart ✅"'
+
       # The v6 INPUT chain used to drop ICMPv6, which silently broke NDP and thus
       # all IPv6 connectivity (critical for IPv6-only-public-IP servers). Assert
       # the allow rules are present AND that IPv6 actually works end-to-end (v6
@@ -197,7 +244,7 @@ jobs:
         run: |
           # Reuse one SSH connection (ControlPersist) so the checks below count as
           # a single new SSH connection from the runner's IP — avoids tripping the
-          # firewall's own SSH rate-limit (6 new conns / 60s).
+          # firewall's own SSH rate-limit (10 new conns / 60s).
           SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=60s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           echo "::group::ICMPv6 NDP/PMTUD allow rules present in ip6tables INPUT"
           # `ip6tables -S` may render the type by name OR number; match both, and

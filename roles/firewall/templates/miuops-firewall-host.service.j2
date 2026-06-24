@@ -1,0 +1,15 @@
+[Unit]
+Description=miuops host firewall (INPUT zero-port policy), before networking/docker
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target docker.service docker.socket ssh.socket sshd.service
+After=local-fs.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Cap a pathological hang (e.g. a wedged xtables lock) so the unit fails loudly
+# rather than staying "activating" forever; normal runs complete in well under a second.
+TimeoutStartSec=180
+ExecStart=/usr/local/sbin/miuops-firewall.sh host
+[Install]
+WantedBy=multi-user.target
