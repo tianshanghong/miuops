@@ -1,7 +1,8 @@
 ---
 # Handlers for firewall role. Re-run the appliers when rules/units change.
-# DOCKER-USER apply tolerates "docker not yet installed" on first bootstrap
-# (the playbook post_task applies it once Docker is up).
+# The docker-user apply tolerates "docker not yet installed" on first bootstrap; once
+# Docker starts, the unit's WantedBy=docker.service applies DOCKER-USER (and apply_host
+# pre-seeds it before Docker publishes), so no end-of-play task is needed.
 
 - name: Reload systemd
   systemd:
