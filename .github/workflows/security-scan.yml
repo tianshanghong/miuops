@@ -1,0 +1,54 @@
+name: Security — external attack-surface scan
+
+# Detective control: confirm the host's public attack surface is SSH-only. Prevention is
+# the stacks policy (127.0.0.1 publish binds + the policy-check) and the host firewall;
+# this scheduled scan catches drift (e.g. a port accidentally exposed to the internet).
+on:
+  schedule:
+    - cron: "17 6 * * *"  # daily, 06:17 UTC
+  workflow_dispatch:
+
+# Separate from the converge CI group so a scan never cancels (or is cancelled by) a deploy.
+concurrency:
+  group: security-scan
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install nmap
+        run: sudo apt-get update -qq && sudo apt-get install -y nmap >/dev/null
+
+      - name: External TCP scan — only SSH may be open (IPv4)
+        env:
+          HOST: ${{ secrets.DEV_SERVER_HOST }}
+          ALLOWED_PORTS: "22"  # space-separated allowlist of externally-open TCP ports
+        run: |
+          set -euo pipefail
+          [ -n "${HOST:-}" ] || { echo "DEV_SERVER_HOST secret is not set"; exit 1; }
+          # Keep the host address out of the public CI log.
+          echo "::add-mask::${HOST}"
+          # Full TCP scan; -Pn treats the host as up (cloud hosts drop ICMP). Parse the
+          # greppable output for port numbers only — never echo nmap's raw output, which
+          # contains the host address.
+          scan="$(nmap -Pn -T4 -p- --open -oG - "${HOST}" 2>/dev/null || true)"
+          open="$(printf '%s\n' "${scan}" | grep -oE '[0-9]+/open/tcp' | grep -oE '^[0-9]+' | sort -un || true)"
+          echo "externally-open TCP ports: ${open:-none}"
+          if [ -z "${open}" ]; then
+            echo "OK: no externally-open TCP ports detected (IPv4)."
+            exit 0
+          fi
+          allow_re="$(printf '%s' "${ALLOWED_PORTS}" | tr ' ' '|')"
+          unexpected="$(printf '%s\n' ${open} | grep -vxE "${allow_re}" || true)"
+          if [ -n "${unexpected}" ]; then
+            echo "FAIL: unexpected externally-open TCP port(s) — only [${ALLOWED_PORTS}] allowed:"
+            printf '  - %s\n' ${unexpected}
+            exit 1
+          fi
+          echo "OK: external IPv4 attack surface is SSH-only."
+          # NOTE: GitHub-hosted runners have no IPv6 egress, so the IPv6 surface is NOT
+          # scanned here and must be checked from an IPv6-capable vantage point.
