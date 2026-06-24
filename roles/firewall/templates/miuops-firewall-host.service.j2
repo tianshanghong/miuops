@@ -7,6 +7,9 @@ After=local-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Cap a pathological hang (e.g. a wedged xtables lock) so the unit fails loudly
+# rather than staying "activating" forever; normal runs complete in well under a second.
+TimeoutStartSec=180
 ExecStart=/usr/local/sbin/miuops-firewall.sh host
 [Install]
 WantedBy=multi-user.target

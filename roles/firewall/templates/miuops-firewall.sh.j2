@@ -9,8 +9,9 @@ RULES_DIR=/etc/miuops-firewall
 
 # Serialize invocations: the reconcile timer, the PartOf=docker unit, and a converge
 # can all run this concurrently. Without a lock they race on DOCKER-USER and can
-# leave it empty/half-applied. (The -w on each iptables call additionally coordinates
-# with Docker's own iptables operations on the kernel xtables lock.)
+# leave it empty/half-applied. The bounded `-w 30` on each iptables call additionally
+# coordinates with Docker's own iptables ops on the kernel xtables lock, and is bounded
+# (not an indefinite wait) so a stuck lock fails closed+loud rather than hanging.
 exec 9>/run/miuops-firewall.lock
 flock -w 30 9 || { echo "FATAL: could not acquire /run/miuops-firewall.lock within 30s" >&2; exit 1; }
 
@@ -22,7 +23,7 @@ assert_forward_jump() {
   # transient absence (this also runs from the reconcile timer + the PartOf unit).
   local ipt="$1" fwd ln_user ln_fwd
   for _ in 1 2 3 4 5; do
-    fwd="$("$ipt" -w -S FORWARD)"
+    fwd="$("$ipt" -w 30 -S FORWARD)"
     if grep -q -- '-A FORWARD -j DOCKER-USER' <<<"$fwd"; then
       ln_user="$(grep -n -- '-A FORWARD -j DOCKER-USER'    <<<"$fwd" | head -1 | cut -d: -f1)"
       ln_fwd="$( grep -n -- '-A FORWARD -j DOCKER-FORWARD' <<<"$fwd" | head -1 | cut -d: -f1 || true)"
@@ -41,15 +42,15 @@ assert_forward_jump() {
 apply_host() {
   # Fail-closed FIRST: assert default policies before touching any rules, so any
   # later failure leaves the host CLOSED, never open.
-  iptables  -w -P INPUT DROP;  iptables  -w -P FORWARD DROP;  iptables  -w -P OUTPUT ACCEPT
-  ip6tables -w -P INPUT DROP;  ip6tables -w -P FORWARD DROP;  ip6tables -w -P OUTPUT ACCEPT
+  iptables  -w 30 -P INPUT DROP;  iptables  -w 30 -P FORWARD DROP;  iptables  -w 30 -P OUTPUT ACCEPT
+  ip6tables -w 30 -P INPUT DROP;  ip6tables -w 30 -P FORWARD DROP;  ip6tables -w 30 -P OUTPUT ACCEPT
   # Validate the exact files before applying; a broken render keeps the live INPUT.
-  iptables-restore  --wait --test --noflush "$RULES_DIR/host.v4.rules"
-  ip6tables-restore --wait --test --noflush "$RULES_DIR/host.v6.rules"
+  iptables-restore  --wait 30 --test --noflush "$RULES_DIR/host.v4.rules"
+  ip6tables-restore --wait 30 --test --noflush "$RULES_DIR/host.v6.rules"
   # Replace INPUT only. Between -F and the load the chain is empty but policy is
   # DROP -> fail-closed; --noflush leaves OUTPUT/FORWARD/Docker chains untouched.
-  iptables  -w -F INPUT;  iptables-restore  --wait --noflush "$RULES_DIR/host.v4.rules"
-  ip6tables -w -F INPUT;  ip6tables-restore --wait --noflush "$RULES_DIR/host.v6.rules"
+  iptables  -w 30 -F INPUT;  iptables-restore  --wait 30 --noflush "$RULES_DIR/host.v4.rules"
+  ip6tables -w 30 -F INPUT;  ip6tables-restore --wait 30 --noflush "$RULES_DIR/host.v6.rules"
 }
 
 reconcile_docker_user() {
@@ -66,16 +67,16 @@ reconcile_docker_user() {
   # each tick (still atomic + safe, only resets counters).
   local ipt="$1" file="$2" current desired
   desired="$(grep '^-A DOCKER-USER' "$file")"
-  current="$("$ipt" -w -S DOCKER-USER 2>/dev/null | grep '^-A DOCKER-USER' || true)"
+  current="$("$ipt" -w 30 -S DOCKER-USER 2>/dev/null | grep '^-A DOCKER-USER' || true)"
   [ "$current" = "$desired" ] && return 0
-  "$ipt"-restore --wait --test --noflush "$file"   # validate the exact file we apply
-  "$ipt"-restore --wait --noflush "$file"          # :DOCKER-USER - flush + reload, one atomic txn
+  "$ipt"-restore --wait 30 --test --noflush "$file"   # validate the exact file we apply
+  "$ipt"-restore --wait 30 --noflush "$file"          # :DOCKER-USER - flush + reload, one atomic txn
 }
 
 apply_docker_user() {
   # Ensure the chains exist (Docker normally creates them; tolerate first boot).
-  iptables  -w -N DOCKER-USER 2>/dev/null || true
-  ip6tables -w -N DOCKER-USER 2>/dev/null || true
+  iptables  -w 30 -N DOCKER-USER 2>/dev/null || true
+  ip6tables -w 30 -N DOCKER-USER 2>/dev/null || true
   reconcile_docker_user iptables  "$RULES_DIR/docker-user.rules"
   reconcile_docker_user ip6tables "$RULES_DIR/docker-user.rules"
   # The jump is Docker's; verify it's present + correctly ordered (self-heal signal,
