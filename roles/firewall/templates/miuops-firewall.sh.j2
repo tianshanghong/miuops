@@ -42,8 +42,18 @@ assert_forward_jump() {
     fi
     sleep 1
   done
-  echo "FATAL: $ipt FORWARD jump to DOCKER-USER missing/misordered after retries -- Docker chains corrupt." >&2
-  echo "       Repair: systemctl restart docker" >&2
+  # Persistent absence/misorder = Docker's chains are corrupt. Don't just alert (that would
+  # leave published ports reachable via DOCKER-FORWARD's per-port ACCEPTs until a human
+  # restarts Docker) -- emergency-restore FAIL-CLOSED: put OUR jump at the TOP of FORWARD so
+  # DOCKER-USER's catch-all DROP applies again. ADDITIVE only (one -I; never flushes Docker's
+  # chains, so it cannot reintroduce the whole-table-flush bug). Drop any stale/misordered
+  # copy first so we don't leave a too-late one.
+  while "$ipt" -w 30 -D FORWARD -j DOCKER-USER 2>/dev/null; do :; done
+  if "$ipt" -w 30 -I FORWARD 1 -j DOCKER-USER; then
+    echo "WARN: $ipt FORWARD->DOCKER-USER jump was missing/misordered; emergency-inserted at FORWARD top (fail-closed). Docker's chains are likely corrupt -- repair with: systemctl restart docker" >&2
+    return 0
+  fi
+  echo "FATAL: $ipt FORWARD->DOCKER-USER jump missing and emergency insert FAILED -- published ports may be EXPOSED. Repair: systemctl restart docker" >&2
   return 1
 }
 

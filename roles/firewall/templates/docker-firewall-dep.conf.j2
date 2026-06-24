@@ -8,3 +8,11 @@
 [Unit]
 Requires=miuops-firewall-host.service
 After=miuops-firewall-host.service
+
+[Service]
+# Re-validate + re-apply the host firewall on EVERY Docker (re)start. host.service is
+# RemainAfterExit (stays "active" after its first success), so Requires= alone only proves
+# the firewall applied ONCE -- not that it is still correct. This ExecStartPre re-runs the
+# applier before dockerd on each start; if the firewall can't be applied, Docker does not
+# start (fail-closed on every start), and any host-firewall drift is corrected at restart.
+ExecStartPre=/usr/local/sbin/miuops-firewall.sh host

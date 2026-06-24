@@ -37,13 +37,15 @@ three systemd units:
   drift (a no-op when already correct).
 
 The applier asserts the Docker-owned `FORWARD → DOCKER-USER` jump is present and ordered
-before `DOCKER-FORWARD`; if it's missing (Docker-chain corruption) it **fails loudly** —
-repair with `systemctl restart docker`.
+before `DOCKER-FORWARD`; if it's persistently missing (Docker-chain corruption) it is
+**fail-closed: it emergency-restores the jump at the top of `FORWARD`** (so published ports
+stay guarded by DOCKER-USER's DROP) and warns to repair with `systemctl restart docker`.
 
 Docker is coupled to the host firewall **fail-closed**: a `docker.service` drop-in
-(`Requires=`+`After=miuops-firewall-host.service`) means that if the host firewall can't
-be applied, Docker refuses to start — so a firewall failure takes the services offline
-rather than starting containers with their published ports unprotected.
+(`Requires=`+`After=miuops-firewall-host.service`, plus an `ExecStartPre` that re-applies
+the host firewall on every Docker start) means Docker refuses to start unless the firewall
+applies cleanly — re-validated on each start, not trusted once. A firewall failure takes
+the services offline rather than starting containers with their published ports unprotected.
 
 This role does not use `netfilter-persistent`; persistence is the systemd units above.
 (Migrating an older miuops box that used netfilter-persistent? Mask it and remove its

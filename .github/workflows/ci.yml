@@ -221,20 +221,38 @@ jobs:
             echo "FAIL: DOCKER-USER not repopulated after docker restart"; iptables -S DOCKER-USER; exit 1
           '
 
-      # The FORWARD->DOCKER-USER jump is Docker-owned; if it goes missing (the
-      # shared-prod corruption class) the applier must fail loudly, not silently
-      # leave published ports unguarded. Then the documented repair restores it.
-      - name: Verify applier detects Docker-chain corruption (missing FORWARD jump)
+      # The FORWARD->DOCKER-USER jump is Docker-owned; if it goes missing (the shared-prod
+      # corruption class) the applier must FAIL-CLOSED: emergency-restore the jump at the TOP
+      # of FORWARD so published ports stay guarded, not just alert and wait for a human.
+      - name: Verify applier auto-restores a missing FORWARD jump (fail-closed)
         run: |
           set -e
           SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-          $SSH 'iptables -D FORWARD -j DOCKER-USER'
-          if $SSH '/usr/local/sbin/miuops-firewall.sh docker-user'; then
-            echo "FAIL: applier did not detect the missing FORWARD->DOCKER-USER jump"; exit 1
-          fi
-          echo "applier correctly failed loudly on missing jump ✅"
-          $SSH 'systemctl restart docker; sleep 5'   # documented repair
-          $SSH 'iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" && echo "jump restored by docker restart ✅"'
+          $SSH 'iptables -D FORWARD -j DOCKER-USER'   # simulate corruption: drop the jump
+          $SSH 'iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" && { echo "precondition FAIL: jump still present"; exit 1; }; echo "jump removed (corruption simulated)"'
+          $SSH '/usr/local/sbin/miuops-firewall.sh docker-user'   # must RECOVER (rc=0) + restore the jump
+          $SSH '
+            set -e
+            iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: applier did not restore the FORWARD->DOCKER-USER jump"; exit 1; }
+            ln_u=$(iptables -S FORWARD | grep -n -- "-A FORWARD -j DOCKER-USER"    | head -1 | cut -d: -f1)
+            ln_f=$(iptables -S FORWARD | grep -n -- "-A FORWARD -j DOCKER-FORWARD" | head -1 | cut -d: -f1)
+            { [ -z "$ln_f" ] || [ "$ln_u" -lt "$ln_f" ]; } || { echo "FAIL: restored jump sits after DOCKER-FORWARD (too late to guard ports)"; exit 1; }
+            echo "applier emergency-restored the jump at FORWARD top (fail-closed) ✅"
+          '
+          $SSH 'systemctl restart docker; sleep 5'   # back to a clean Docker-owned state
+          $SSH 'iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" && echo "jump present after docker restart ✅"'
+
+      # P2: Docker's drop-in ExecStartPre re-applies the host firewall on EVERY start, so a
+      # runtime INPUT drift is corrected at docker restart (host.service is RemainAfterExit,
+      # so Requires= alone would not re-validate). Prove a stray INPUT rule is wiped on restart.
+      - name: Verify Docker restart re-applies the host firewall (ExecStartPre)
+        run: |
+          set -e
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          $SSH 'systemctl show docker.service -p ExecStartPre | grep -q miuops-firewall.sh || { echo "FAIL: docker ExecStartPre does not run the firewall applier"; exit 1; }'
+          $SSH 'iptables -I INPUT 1 -p tcp --dport 65001 -j ACCEPT'   # inject runtime INPUT drift
+          $SSH 'systemctl restart docker; sleep 5'
+          $SSH 'if iptables -S INPUT | grep -q -- "--dport 65001"; then echo "FAIL: stray INPUT rule survived docker restart (host firewall not re-applied)"; exit 1; fi; echo "host firewall re-applied on docker restart -- stray rule wiped ✅"'
 
       # The v6 INPUT chain used to drop ICMPv6, which silently broke NDP and thus
       # all IPv6 connectivity (critical for IPv6-only-public-IP servers). Assert
