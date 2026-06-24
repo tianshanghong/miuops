@@ -47,11 +47,11 @@
       tags: ['observability']
 
   post_tasks:
-    # The firewall role runs before docker, so its docker-user unit can't apply
-    # DOCKER-USER on a fresh host until Docker is installed + running. Apply it
-    # now (idempotent; the unit's ExecStart is the same applier).
+    # Belt-and-suspenders: the docker-user unit already auto-starts via
+    # WantedBy=docker.service (first install + boot) and PartOf=docker.service
+    # (restart); this idempotent `started` just guarantees it's up after the play.
     - name: Apply container isolation (DOCKER-USER) now that Docker is up
       systemd:
         name: miuops-firewall-docker-user.service
-        state: restarted
+        state: started
       tags: ['firewall']
