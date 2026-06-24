@@ -1,7 +1,2 @@
 ---
-# Handlers for the firewall role.
-
-- name: Reload systemd
-  ansible.builtin.systemd:
-    daemon_reload: true
-  become: true
+# This role applies ufw (and the Docker chain rebuild) inline as tasks; it has no handlers.

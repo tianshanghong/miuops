@@ -1,7 +1,7 @@
 # Firewall Role
 
-Host inbound firewall via **ufw**: zero open inbound ports except SSH. Docker owns its own
-`FORWARD`/`DOCKER-*` chains and is never touched.
+Host inbound firewall via **ufw**: zero open inbound ports except SSH. Docker manages its
+own `FORWARD`/NAT chains and is not touched.
 
 ## Model
 
@@ -10,9 +10,9 @@ Host inbound firewall via **ufw**: zero open inbound ports except SSH. Docker ow
   ufw's built-in ICMPv6/NDP allows (so `deny` does not break IPv6).
 - **OUTPUT** — `allow outgoing`.
 - **FORWARD** — left at policy `DROP` (`DEFAULT_FORWARD_POLICY="DROP"`). Docker inserts its
-  own explicit `FORWARD` jumps (`DOCKER-USER`, `DOCKER-FORWARD`) at the top and re-sets the
-  FORWARD policy to DROP itself, so container forwarding/egress is allowed by Docker's rules
-  before the default policy is reached (verified on-host). The role never adds FORWARD rules.
+  own explicit `FORWARD` ACCEPT rules at the top of the chain and re-sets the FORWARD policy
+  to DROP itself, so container forwarding/egress works before the default policy is reached
+  (verified on-host). The role never adds FORWARD rules.
 
 Container **published ports are kept off the public interface by the stacks policy**
 (`127.0.0.1:` binds + the CI policy-check), not by this firewall. ufw is not relied on to
@@ -20,15 +20,11 @@ filter Docker's published ports.
 
 ## Coexistence with Docker
 
-ufw owns INPUT; Docker owns FORWARD plus its NAT/`DOCKER-*` chains. `ufw enable` resets the
-filter table, so on a host where Docker is already running the role restarts Docker to
-rebuild its chains. On a fresh host Docker simply starts after ufw — nothing to rebuild.
-
-## Retired
-
-This role previously implemented a DOCKER-USER iptables-coexistence design (a custom applier
-+ systemd units + a `docker.service` drop-in). That is **retired**: the role removes those
-units, the applier, the rules directory, and the drop-in on converge.
+ufw owns INPUT; Docker owns FORWARD plus its NAT chains. On a fresh host this role runs
+before Docker is installed, so ufw is already enabled by the time Docker starts and builds
+its chains. `ufw enable`/`ufw reload` resets the filter table, so when the ufw config changes
+on a re-converge of a host where Docker is already running, the role restarts Docker once to
+rebuild its chains.
 
 ## Variables
 

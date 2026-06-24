@@ -1,61 +1,24 @@
 ---
 # Firewall role — host inbound default-deny via ufw.
 #
-# Owns ONLY the host INPUT edge: zero open inbound ports except SSH (+ optional
-# management networks / whitelist). Docker owns its own FORWARD/DOCKER-* chains and is
-# NOT touched (ufw's FORWARD policy is left ACCEPT so container forwarding keeps working).
-# Container published ports are kept off the public interface by the stacks policy
-# (127.0.0.1 binds + the CI policy-check), NOT by this firewall.
-#
-# Replaces the previous DOCKER-USER iptables-coexistence design (retired below).
+# Owns ONLY the host INPUT edge: zero open inbound ports except SSH (+ optional management
+# networks / whitelist). Docker manages its own FORWARD/NAT chains and is not touched; the
+# FORWARD policy is left at DROP (Docker re-adds its own FORWARD ACCEPTs, so container
+# forwarding keeps working). Container published ports are kept off the public interface by
+# the stacks policy (127.0.0.1 binds + the CI policy-check), not by this firewall.
 
-# ---- Retire the legacy DOCKER-USER firewall (drop-in FIRST, see note) ----------------
-- name: Remove legacy docker.service firewall drop-in
-  # Remove this FIRST: it made docker Require the host firewall unit, so removing the unit
-  # while the drop-in remains would stop Docker from starting.
-  ansible.builtin.file:
-    path: /etc/systemd/system/docker.service.d/10-require-firewall.conf
-    state: absent
-  become: true
-  notify: Reload systemd
-
-- name: Stop + disable legacy miuops-firewall units
-  ansible.builtin.command: "systemctl disable --now {{ item }}"
-  failed_when: false
-  changed_when: false
-  loop:
-    - miuops-firewall-host.service
-    - miuops-firewall-docker-user.service
-    - miuops-firewall-docker-user.timer
-  become: true
-
-- name: Remove legacy miuops-firewall unit files + applier + rules dir
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/systemd/system/miuops-firewall-host.service
-    - /etc/systemd/system/miuops-firewall-docker-user.service
-    - /etc/systemd/system/miuops-firewall-docker-user.timer
-    - /usr/local/sbin/miuops-firewall.sh
-    - /etc/miuops-firewall
-  become: true
-  notify: Reload systemd
-
-# ---- Host inbound firewall via ufw ---------------------------------------------------
 - name: Install ufw
   ansible.builtin.apt:
     name: ufw
     state: present
   become: true
 
-- name: ufw FORWARD policy DROP + enable IPv6
+- name: Set ufw FORWARD policy DROP + enable IPv6
   # Leave the FORWARD default at DROP (the secure value) — do NOT weaken it to ACCEPT.
-  # Docker creates its own explicit FORWARD jumps (DOCKER-USER, DOCKER-FORWARD) at the TOP
-  # of FORWARD and re-sets the FORWARD policy to DROP itself, so container forwarding/egress
-  # is ACCEPTed by Docker's own rules before the default policy is ever reached (verified
-  # on-host: containers egress fine with policy DROP). The DROP fallback then still drops
-  # any forwarded packet that neither Docker nor ufw explicitly allows.
+  # Docker inserts its own explicit FORWARD ACCEPT rules at the top of the chain and re-sets
+  # the FORWARD policy to DROP itself, so container forwarding/egress works before the
+  # default policy is reached (verified on-host). The DROP fallback then drops any forwarded
+  # packet that neither Docker nor ufw explicitly allows.
   ansible.builtin.lineinfile:
     path: /etc/default/ufw
     regexp: "{{ item.re }}"
@@ -104,17 +67,16 @@
   register: fw_ufw_enable
   become: true
 
-- name: Reload ufw to apply /etc/default/ufw changes on an already-enabled host
-  # `ufw enable` reads /etc/default/ufw, so a fresh enable already picks up the FORWARD/IPv6
-  # settings. Only an already-enabled host (where enable is a no-op) needs an explicit reload
-  # when those defaults change. Done inline (not a deferred handler) so the Docker rebuild
-  # below always runs AFTER the last ufw filter-table mutation.
+- name: Reload ufw when /etc/default/ufw changed on an already-enabled host
+  # `ufw enable` reads /etc/default/ufw, so a first enable already applies the FORWARD/IPv6
+  # settings. Only an already-enabled host (enable is a no-op) needs an explicit reload when
+  # those defaults change. Inline (not a deferred handler) so the Docker rebuild below runs
+  # AFTER the last ufw filter-table mutation.
   community.general.ufw:
     state: reloaded
   when: fw_defaults is changed and fw_ufw_enable is not changed
   become: true
 
-# ---- Rebuild Docker chains after a ufw enable/reload reset the filter table (existing hosts)
 - name: Check whether Docker is running
   ansible.builtin.command: systemctl is-active docker
   register: fw_docker_active
@@ -123,10 +85,10 @@
   become: true
 
 - name: Restart Docker to rebuild its chains after a ufw enable/reload
-  # `ufw enable` (and a reload of changed defaults) resets the filter table; an already-
-  # running Docker loses its chains. Restart it so they are rebuilt AFTER the last ufw
-  # mutation. On a fresh host Docker starts AFTER this role (nothing to rebuild → skipped).
-  # Fires only when ufw actually changed AND Docker is already up.
+  # `ufw enable`/`ufw reload` resets the filter table. On a fresh host this role runs before
+  # Docker is installed, so there is nothing to rebuild (skipped). It fires only when ufw
+  # actually changed AND Docker is already running — a re-converge that changed the ufw
+  # config — so Docker rebuilds its chains after the table reset.
   ansible.builtin.systemd:
     name: docker
     state: restarted

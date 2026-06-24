@@ -96,7 +96,7 @@ jobs:
           $SSH 'systemctl is-active docker'
           $SSH 'systemctl is-active cloudflared'
 
-      - name: Verify host firewall (ufw default-deny inbound; legacy design retired)
+      - name: Verify host firewall (ufw default-deny inbound)
         run: |
           SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           $SSH '
@@ -105,10 +105,7 @@ jobs:
             ufw status verbose | grep -q "deny (incoming)"           || { echo "FAIL: ufw default incoming is not deny"; exit 1; }
             ufw status | grep -qE "^22/tcp[[:space:]]+(ALLOW|LIMIT)" || { ufw status; echo "FAIL: SSH (22) not allowed by ufw"; exit 1; }
             iptables -S FORWARD | grep -q "^-P FORWARD DROP"         || { echo "FAIL: FORWARD policy is not DROP"; exit 1; }
-            test ! -e /usr/local/sbin/miuops-firewall.sh             || { echo "FAIL: legacy firewall applier still present"; exit 1; }
-            test ! -e /etc/systemd/system/docker.service.d/10-require-firewall.conf || { echo "FAIL: legacy docker drop-in still present"; exit 1; }
-            test ! -e /etc/miuops-firewall                           || { echo "FAIL: legacy rules dir still present"; exit 1; }
-            echo "ufw active, default-deny inbound, SSH allowed, FORWARD DROP, legacy retired"
+            echo "ufw active, default-deny inbound, SSH allowed, FORWARD DROP"
           '
 
       - name: Verify a host inbound port is blocked by ufw (IPv4)
