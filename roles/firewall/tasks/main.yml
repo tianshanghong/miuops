@@ -98,6 +98,25 @@
   become: true
   notify: Reload systemd
 
+- name: Ensure docker.service.d exists (for the fail-closed firewall drop-in)
+  file:
+    path: /etc/systemd/system/docker.service.d
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Require the host firewall before Docker (fail-closed drop-in)
+  # Docker Requires+After the host firewall unit: if the firewall can't be applied, Docker
+  # does not start (no containers, no exposed published ports) instead of starting with
+  # DOCKER-USER at its permissive default. Installed here in the firewall role (before the
+  # docker role) + daemon-reloaded below, so the first Docker start already respects it.
+  template:
+    src: docker-firewall-dep.conf.j2
+    dest: /etc/systemd/system/docker.service.d/10-require-firewall.conf
+    mode: '0644'
+  become: true
+  notify: Reload systemd
+
 - name: Reload systemd now (so enable/start below see the units)
   meta: flush_handlers
 

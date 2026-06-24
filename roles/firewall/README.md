@@ -40,6 +40,11 @@ The applier asserts the Docker-owned `FORWARD → DOCKER-USER` jump is present a
 before `DOCKER-FORWARD`; if it's missing (Docker-chain corruption) it **fails loudly** —
 repair with `systemctl restart docker`.
 
+Docker is coupled to the host firewall **fail-closed**: a `docker.service` drop-in
+(`Requires=`+`After=miuops-firewall-host.service`) means that if the host firewall can't
+be applied, Docker refuses to start — so a firewall failure takes the services offline
+rather than starting containers with their published ports unprotected.
+
 This role does not use `netfilter-persistent`; persistence is the systemd units above.
 (Migrating an older miuops box that used netfilter-persistent? Mask it and remove its
 `/etc/iptables/rules.v{4,6}` once at cutover — its whole-table restore would otherwise
