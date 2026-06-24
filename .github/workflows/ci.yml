@@ -58,6 +58,11 @@ jobs:
         run: |
           mkdir -p host_vars
           printf '%s\n' "$GROUP_VARS" > host_vars/dev.yml
+          # The runner makes many short SSH connections from one IP (converge + idempotency
+          # re-run + the external-probe verifications); ufw's SSH rate-limit (~6/30s) would
+          # throttle that and flake the job. Disable it on the CI/dev host only — real hosts
+          # keep the default (enabled).
+          printf '%s\n' "firewall_ssh_ratelimit_enabled: false" >> host_vars/dev.yml
           python3 -c "
           import yaml
           with open('host_vars/dev.yml') as f:
