@@ -1,0 +1,6 @@
+services:
+  metrics:
+    image: prom/node-exporter:v1.8.2
+    network_mode: host
+    x-miuops-allow-host-net: true
+    cap_drop: [ALL]

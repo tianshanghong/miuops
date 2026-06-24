@@ -44,3 +44,7 @@ logs/
 # Ignore ansible-generated files
 .ansible/
 ansible.cfg.bak
+
+# Python bytecode cache
+__pycache__/
+*.py[cod]

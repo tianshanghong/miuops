@@ -1,0 +1,5 @@
+services:
+  sidecar:
+    image: example/sidecar:1.0
+    cap_drop: [ALL]
+    network_mode: "container:other"

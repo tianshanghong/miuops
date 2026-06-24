@@ -1,0 +1,7 @@
+services:
+  app:
+    image: example/app:1.0
+    cap_drop: [ALL]
+    privileged: "true"
+    ports:
+      - "127.0.0.1:9000:9000"

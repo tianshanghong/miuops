@@ -1,0 +1,5 @@
+services:
+  mon:
+    image: example/mon:1.0
+    cap_drop: [ALL]
+    cgroup: host

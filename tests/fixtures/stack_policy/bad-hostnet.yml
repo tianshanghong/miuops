@@ -1,0 +1,5 @@
+services:
+  metrics:
+    image: example/node-exporter:1.0
+    network_mode: host
+    cap_drop: [ALL]

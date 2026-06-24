@@ -1,0 +1,7 @@
+services:
+  app:
+    image: example/app:1.0
+    cap_drop: [ALL]
+    cap_add: [SYS_ADMIN]
+    ports:
+      - "127.0.0.1:9000:9000"
