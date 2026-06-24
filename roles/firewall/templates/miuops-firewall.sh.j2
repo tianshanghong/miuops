@@ -51,6 +51,11 @@ apply_host() {
   # DROP -> fail-closed; --noflush leaves OUTPUT/FORWARD/Docker chains untouched.
   iptables  -w 30 -F INPUT;  iptables-restore  --wait 30 --noflush "$RULES_DIR/host.v4.rules"
   ip6tables -w 30 -F INPUT;  ip6tables-restore --wait 30 --noflush "$RULES_DIR/host.v6.rules"
+  # Seed DOCKER-USER now too: host.service runs BEFORE docker, so the container
+  # catch-all DROP is already in place when Docker starts + republishes ports at boot
+  # -- closing the brief per-reboot window. docker-user.service refreshes it after
+  # Docker (and owns the FORWARD-jump assert, which can't run before Docker exists).
+  ensure_docker_user
 }
 
 reconcile_docker_user() {
@@ -73,12 +78,20 @@ reconcile_docker_user() {
   "$ipt"-restore --wait 30 --noflush "$file"          # :DOCKER-USER - flush + reload, one atomic txn
 }
 
-apply_docker_user() {
-  # Ensure the chains exist (Docker normally creates them; tolerate first boot).
+ensure_docker_user() {
+  # Seed/reconcile the DOCKER-USER chain (both families). No jump assert here, so it
+  # is safe to call from apply_host BEFORE Docker exists/starts. Seeding the chain +
+  # its catch-all DROP before Docker publishes any port is what closes the brief
+  # per-reboot exposure window (Docker's create-if-absent leaves our existing chain
+  # intact; it goes live the instant Docker adds the FORWARD->DOCKER-USER jump).
   iptables  -w 30 -N DOCKER-USER 2>/dev/null || true
   ip6tables -w 30 -N DOCKER-USER 2>/dev/null || true
   reconcile_docker_user iptables  "$RULES_DIR/docker-user.rules"
   reconcile_docker_user ip6tables "$RULES_DIR/docker-user.rules"
+}
+
+apply_docker_user() {
+  ensure_docker_user
   # The jump is Docker's; verify it's present + correctly ordered (self-heal signal,
   # tolerant of a transient absence during a Docker restart).
   assert_forward_jump iptables

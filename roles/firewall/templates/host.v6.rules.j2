@@ -19,8 +19,10 @@
 -A INPUT -s {{ cidr }} -j ACCEPT
 {% endfor %}
 {% if firewall_ssh_ratelimit_enabled | bool %}
--A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --rcheck --seconds {{ firewall_ssh_ratelimit_seconds }} --hitcount {{ firewall_ssh_ratelimit_hits }} -j DROP
--A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --set -j ACCEPT
+# --mask /64: rate-limit per /64 (a typical single IPv6 allocation), else an attacker
+# rotates addresses within their /64 to get a fresh bucket each time and bypass the throttle.
+-A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --mask ffff:ffff:ffff:ffff:: --rcheck --seconds {{ firewall_ssh_ratelimit_seconds }} --hitcount {{ firewall_ssh_ratelimit_hits }} -j DROP
+-A INPUT -p tcp --dport {{ ssh_port }} -m recent --name ssh --mask ffff:ffff:ffff:ffff:: --set -j ACCEPT
 {% else %}
 -A INPUT -p tcp --dport {{ ssh_port }} -j ACCEPT
 {% endif %}
