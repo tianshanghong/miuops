@@ -1,23 +1,12 @@
 ---
-# Handlers for firewall role. Re-run the appliers when rules/units change.
-# The docker-user apply tolerates "docker not yet installed" on first bootstrap; once
-# Docker starts, the unit's WantedBy=docker.service applies DOCKER-USER (and apply_host
-# pre-seeds it before Docker publishes), so no end-of-play task is needed.
+# Handlers for the firewall role.
+
+- name: Reload ufw
+  community.general.ufw:
+    state: reloaded
+  become: true
 
 - name: Reload systemd
-  systemd:
-    daemon_reload: yes
-  become: true
-
-- name: Apply host firewall
-  command: /usr/local/sbin/miuops-firewall.sh host
-  become: true
-
-- name: Apply docker-user firewall
-  # No when-guard: the applier itself tolerates Docker absent/stopped (it seeds DOCKER-USER
-  # and skips the FORWARD-jump assert unless `systemctl is-active docker`). A guard on
-  # ansible_facts.services would also wrongly skip under `--tags firewall` (which skips the
-  # untagged service_facts pre-task), leaving changed DOCKER-USER rules unapplied until the
-  # reconcile timer fires.
-  command: /usr/local/sbin/miuops-firewall.sh docker-user
+  ansible.builtin.systemd:
+    daemon_reload: true
   become: true

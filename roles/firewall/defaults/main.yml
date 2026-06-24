@@ -1,39 +1,24 @@
 ---
-# Default variables for firewall role
+# Default variables for the firewall role (ufw-based host inbound firewall).
 
-# IPv4 Management network segments to allow, empty list means no management networks
+# IPv4/IPv6 management network segments allowed inbound (e.g. an office or VPN range).
+# Empty = none. These bypass the SSH rate-limit.
 firewall_management_networks_v4: []
   # - 10.0.0.0/8
-  # - 192.168.0.0/16
-
-# IPv6 Management network segments to allow, empty list means no management networks
 firewall_management_networks_v6: []
-  # - fe80::/10
+  # - 2001:db8::/32
 
-# IPv4 ports to allow (SSH port is handled separately)
+# Extra inbound ports to allow besides SSH (rare — container published ports are bound to
+# loopback by the stacks policy, not opened here). `ufw allow <port>` covers both families.
 firewall_whitelist_ports_v4: []
   # - 80
-  # - 443
-
-# IPv6 ports to allow (SSH port is handled separately)
 firewall_whitelist_ports_v6: []
-  # - 80
-  # - 443
 
-# SSH port the firewall rules open / rate-limit (was previously set in a playbook
-# pre_task). Override per server in host_vars if SSH runs on a non-default port.
+# SSH port to allow / rate-limit. Override per host if SSH runs on a non-default port.
 ssh_port: "22"
 
-# SSH brute-force protection. Default on (the only protection for users without a
-# fixed source IP). Management networks (firewall_management_networks_*) are
-# allowed before this rule, so they bypass it; an operator who allowlists may also
-# set firewall_ssh_ratelimit_enabled: false. The default 10 new conns / 60s is
-# forgiving for scp/rsync/CI bursts while still throttling brute force.
+# Rate-limit new SSH connections via `ufw limit` (blocks a source after ~6 connections in
+# 30s — brute-force protection for operators without a fixed source IP). Set false to
+# plain-allow (e.g. when management networks already restrict access). The 6/30s threshold
+# is ufw's built-in and is not separately tunable.
 firewall_ssh_ratelimit_enabled: true
-firewall_ssh_ratelimit_hits: 10
-firewall_ssh_ratelimit_seconds: 60
-
-# How often the reconcile timer re-applies DOCKER-USER (self-heals drift from
-# docker upgrades / `docker network` ops / a post-restart gap). The applier is a
-# no-op when the chain is already correct, so this is cheap.
-firewall_reconcile_interval: "5min"
