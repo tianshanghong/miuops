@@ -25,7 +25,7 @@ assert_forward_jump() {
   for _ in 1 2 3 4 5; do
     fwd="$("$ipt" -w 30 -S FORWARD)"
     if grep -q -- '-A FORWARD -j DOCKER-USER' <<<"$fwd"; then
-      ln_user="$(grep -n -- '-A FORWARD -j DOCKER-USER'    <<<"$fwd" | head -1 | cut -d: -f1)"
+      ln_user="$(grep -n -- '-A FORWARD -j DOCKER-USER'    <<<"$fwd" | head -1 | cut -d: -f1 || true)"
       ln_fwd="$( grep -n -- '-A FORWARD -j DOCKER-FORWARD' <<<"$fwd" | head -1 | cut -d: -f1 || true)"
       # OK if DOCKER-FORWARD absent, or DOCKER-USER precedes it.
       if [ -z "$ln_fwd" ] || [ "$ln_user" -lt "$ln_fwd" ]; then

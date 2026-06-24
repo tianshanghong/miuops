@@ -10,5 +10,9 @@ RemainAfterExit=yes
 # rather than staying "activating" forever; normal runs complete in well under a second.
 TimeoutStartSec=180
 ExecStart=/usr/local/sbin/miuops-firewall.sh docker-user
+# WantedBy docker.service (not multi-user.target): `systemctl enable` puts this in
+# docker.service.wants/, so it starts right after Docker on first install + every boot,
+# applying DOCKER-USER BEFORE any role publishes a container port (closes the
+# first-bootstrap exposure window). PartOf=docker.service re-runs it on every restart.
 [Install]
-WantedBy=multi-user.target
+WantedBy=docker.service

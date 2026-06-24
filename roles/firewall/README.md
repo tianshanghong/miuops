@@ -31,7 +31,7 @@ three systemd units:
   with `iptables-restore --test`, then replaces INPUT via `iptables-restore --noflush`
   (so OUTPUT/FORWARD/Docker chains are never touched).
 - `miuops-firewall-docker-user.service` — `After`/`PartOf=docker.service`; applies
-  DOCKER-USER as one atomic `nft` transaction (so the catch-all `DROP` is never
+  DOCKER-USER as one atomic `iptables-restore --noflush` transaction (so the catch-all `DROP` is never
   momentarily absent), and re-applies it after every Docker (re)start.
 - `miuops-firewall-docker-user.timer` — periodically reconciles DOCKER-USER to self-heal
   drift (a no-op when already correct).

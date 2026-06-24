@@ -53,5 +53,5 @@
     - name: Apply container isolation (DOCKER-USER) now that Docker is up
       systemd:
         name: miuops-firewall-docker-user.service
-        state: started
+        state: restarted
       tags: ['firewall']

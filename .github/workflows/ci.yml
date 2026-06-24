@@ -244,7 +244,7 @@ jobs:
         run: |
           # Reuse one SSH connection (ControlPersist) so the checks below count as
           # a single new SSH connection from the runner's IP — avoids tripping the
-          # firewall's own SSH rate-limit (6 new conns / 60s).
+          # firewall's own SSH rate-limit (10 new conns / 60s).
           SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=60s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           echo "::group::ICMPv6 NDP/PMTUD allow rules present in ip6tables INPUT"
           # `ip6tables -S` may render the type by name OR number; match both, and

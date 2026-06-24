@@ -136,5 +136,14 @@
     - /etc/iptables/rules.v6
   become: true
 
+- name: Remove the legacy netfilter-persistent before-docker override
+  # Masking neutralises the service, but drop its old override dir too so an
+  # accidental future unmask can't revive the whole-table-flush-before-docker behavior.
+  file:
+    path: /etc/systemd/system/netfilter-persistent.service.d
+    state: absent
+  become: true
+  notify: Reload systemd
+
 - name: Flush handlers
   meta: flush_handlers
