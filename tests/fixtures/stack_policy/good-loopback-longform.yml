@@ -1,0 +1,8 @@
+services:
+  api:
+    image: example/api:1.0
+    cap_drop: [ALL]
+    ports:
+      - target: 80
+        published: 8080
+        host_ip: 127.0.0.1

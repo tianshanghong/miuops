@@ -1,0 +1,5 @@
+services:
+  web:
+    image: nginx:1.27
+    ports:
+      - "127.0.0.1:8080:80"
