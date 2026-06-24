@@ -40,8 +40,10 @@ The applier asserts the Docker-owned `FORWARD → DOCKER-USER` jump is present a
 before `DOCKER-FORWARD`; if it's missing (Docker-chain corruption) it **fails loudly** —
 repair with `systemctl restart docker`.
 
-`netfilter-persistent` is masked (its whole-table restore would flush Docker's chains)
-and the legacy `/etc/iptables/rules.v{4,6}` are removed.
+This role does not use `netfilter-persistent`; persistence is the systemd units above.
+(Migrating an older miuops box that used netfilter-persistent? Mask it and remove its
+`/etc/iptables/rules.v{4,6}` once at cutover — its whole-table restore would otherwise
+flush Docker's chains on the next boot.)
 
 ## Threat-model boundary
 
@@ -66,5 +68,6 @@ whitelisted.
 
 ## Requirements
 
-- `iptables` (nft backend) + `nftables` on the target (Debian/Ubuntu).
+- `iptables` (nft backend) on the target (Debian/Ubuntu) — provides `iptables-restore`
+  and the `iptables-nft` backend.
 - Docker provides + owns the DOCKER-USER chain and its FORWARD jump.

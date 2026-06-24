@@ -3,9 +3,12 @@
 # never flushing Docker's chains. See docs/superpowers/specs/2026-06-23-firewall-*.
 
 # ========== Packages & nft backend ==========================================
-- name: Install iptables, nftables and persistence tooling
+# iptables-restore + the iptables-nft backend both come from the `iptables` package;
+# persistence is via our own systemd units (we don't use netfilter-persistent) and we
+# drive the kernel through iptables-nft (no `nft` CLI), so no extra package is needed.
+- name: Install iptables (nft backend)
   apt:
-    name: [iptables, nftables, iptables-persistent]
+    name: [iptables]
     state: present
   become: true
 
@@ -90,7 +93,7 @@
 - name: Reload systemd now (so enable/start below see the units)
   meta: flush_handlers
 
-- name: Enable + start host firewall unit (BEFORE masking netfilter-persistent)
+- name: Enable + start host firewall unit
   systemd:
     name: miuops-firewall-host.service
     enabled: yes
@@ -111,39 +114,6 @@
     name: miuops-firewall-docker-user.timer
     state: started
   become: true
-
-# ========== Neutralise the old whole-table-flush mechanism ==================
-- name: Mask netfilter-persistent (its restore flushes the whole filter table)
-  systemd:
-    name: netfilter-persistent.service
-    masked: yes
-    enabled: no
-  become: true
-
-- name: Assert netfilter-persistent is masked
-  command: systemctl is-enabled netfilter-persistent.service
-  register: nfp_state
-  changed_when: false
-  failed_when: nfp_state.stdout != "masked"
-  become: true
-
-- name: Remove stale full-table persisted rulesets
-  file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /etc/iptables/rules.v4
-    - /etc/iptables/rules.v6
-  become: true
-
-- name: Remove the legacy netfilter-persistent before-docker override
-  # Masking neutralises the service, but drop its old override dir too so an
-  # accidental future unmask can't revive the whole-table-flush-before-docker behavior.
-  file:
-    path: /etc/systemd/system/netfilter-persistent.service.d
-    state: absent
-  become: true
-  notify: Reload systemd
 
 - name: Flush handlers
   meta: flush_handlers
