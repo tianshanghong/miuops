@@ -38,6 +38,14 @@
     mode: '0755'
   become: true
 
+- name: Detect IPv6 availability on the target (gates v6 render validation)
+  # /proc/net/if_inet6 exists iff the kernel has IPv6 (absent under ipv6.disable=1). On a
+  # v4-only host the v6 `ip6tables-restore --test` validate below would fail the render, so
+  # skip the validate there (the applier's HAVE_V6 guard skips v6 at runtime the same way).
+  stat:
+    path: /proc/net/if_inet6
+  register: fw_v6_present
+
 - name: Render INPUT (v4) ruleset
   template:
     src: host.v4.rules.j2
@@ -52,7 +60,7 @@
     src: host.v6.rules.j2
     dest: /etc/miuops-firewall/host.v6.rules
     mode: '0600'
-    validate: ip6tables-restore --test --noflush %s
+    validate: "{{ 'ip6tables-restore --test --noflush %s' if fw_v6_present.stat.exists else omit }}"
   become: true
   notify: Apply host firewall
 

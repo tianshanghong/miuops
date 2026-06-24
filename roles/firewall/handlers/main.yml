@@ -14,9 +14,10 @@
   become: true
 
 - name: Apply docker-user firewall
+  # No when-guard: the applier itself tolerates Docker absent/stopped (it seeds DOCKER-USER
+  # and skips the FORWARD-jump assert unless `systemctl is-active docker`). A guard on
+  # ansible_facts.services would also wrongly skip under `--tags firewall` (which skips the
+  # untagged service_facts pre-task), leaving changed DOCKER-USER rules unapplied until the
+  # reconcile timer fires.
   command: /usr/local/sbin/miuops-firewall.sh docker-user
   become: true
-  when:
-    - ansible_facts.services is defined
-    - "'docker.service' in ansible_facts.services"
-    - ansible_facts.services['docker.service'].state == 'running'

@@ -15,10 +15,13 @@ RULES_DIR=/etc/miuops-firewall
 exec 9>/run/miuops-firewall.lock
 flock -w 30 9 || { echo "FATAL: could not acquire /run/miuops-firewall.lock within 30s" >&2; exit 1; }
 
-# Detect IPv6 usability once. On a v4-only host (ipv6.disable=1 / no ip6_tables module)
-# ip6tables errors; skip all v6 work gracefully instead of aborting under `set -e`.
-HAVE_V6=1
-ip6tables -w 30 -S >/dev/null 2>&1 || HAVE_V6=0
+# Detect IPv6 once via the KERNEL flag, NOT ip6tables' exit code: /proc/net/if_inet6
+# exists iff the kernel has IPv6 (absent only under ipv6.disable=1). Keying on this means a
+# transient ip6tables error (xtables lock, etc.) on a v6-enabled host FAILS loudly under
+# `set -e` instead of being silently mistaken for "v6 absent" -- which would skip the v6
+# DROP policy + rules and leave IPv6 EXPOSED. Only a genuinely v6-less kernel skips v6.
+HAVE_V6=0
+if [ -e /proc/net/if_inet6 ]; then HAVE_V6=1; fi
 
 assert_forward_jump() {
   # $1 = iptables|ip6tables. The FORWARD->DOCKER-USER jump is Docker-owned. A PERSISTENT
