@@ -30,18 +30,26 @@ jobs:
         run: |
           set -euo pipefail
           [ -n "${HOST:-}" ] || { echo "DEV_SERVER_HOST secret is not set"; exit 1; }
-          # Keep the host address out of the public CI log.
+          # Keep the host address — and the IPs it resolves to — out of the public CI log.
+          # add-mask is a literal match, so a hostname secret would not cover the numeric IP.
           echo "::add-mask::${HOST}"
+          getent ahosts "${HOST}" 2>/dev/null | awk '{print $1}' | sort -u | while read -r ip; do
+            [ -n "${ip}" ] && echo "::add-mask::${ip}"
+          done || true  # best-effort masking; an unresolvable host must not abort before nmap
           # Full TCP scan; -Pn treats the host as up (cloud hosts drop ICMP). Parse the
           # greppable output for port numbers only — never echo nmap's raw output, which
-          # contains the host address.
-          scan="$(nmap -Pn -T4 -p- --open -oG - "${HOST}" 2>/dev/null || true)"
+          # contains the host address. Fail loud if nmap itself errors: a scan that cannot
+          # run must NOT be mistaken for a clean host.
+          if ! scan="$(nmap -Pn -T4 -p- --open -oG - "${HOST}" 2>/dev/null)"; then
+            echo "FAIL: nmap did not complete — cannot assert the attack surface"; exit 1
+          fi
           open="$(printf '%s\n' "${scan}" | grep -oE '[0-9]+/open/tcp' | grep -oE '^[0-9]+' | sort -un || true)"
           echo "externally-open TCP ports: ${open:-none}"
-          if [ -z "${open}" ]; then
-            echo "OK: no externally-open TCP ports detected (IPv4)."
-            exit 0
-          fi
+          # Positive control: SSH (22) must be reachable from the runner, else the scan was
+          # blackholed end-to-end and a "nothing unexpected" result would be meaningless.
+          printf '%s\n' ${open} | grep -qx 22 || {
+            echo "FAIL: SSH (22) not seen externally — scan unreliable, not trusting the result"; exit 1
+          }
           allow_re="$(printf '%s' "${ALLOWED_PORTS}" | tr ' ' '|')"
           unexpected="$(printf '%s\n' ${open} | grep -vxE "${allow_re}" || true)"
           if [ -n "${unexpected}" ]; then
