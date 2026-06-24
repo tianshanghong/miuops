@@ -95,174 +95,74 @@ jobs:
             ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} \
             'systemctl is-active cloudflared'
 
-      - name: Verify firewall enforcement (security assertions)
+      - name: Verify host firewall (ufw default-deny inbound; legacy design retired)
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 \
-            ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }} '
-            set -e
-            v4=$(iptables -S); v6=$(ip6tables -S)
-            echo "$v4" | grep -q "^-P INPUT DROP"            || { echo "FAIL: IPv4 INPUT policy is not DROP"; exit 1; }
-            echo "$v4" | grep -q "^-P FORWARD DROP"          || { echo "FAIL: IPv4 FORWARD policy is not DROP"; exit 1; }
-            echo "$v4" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on INPUT"; exit 1; }
-            echo "$v4" | grep -q -- "--name ssh"             || { echo "FAIL: SSH protection rule missing"; exit 1; }
-            echo "$v4" | grep -q -- "--rcheck"               || { echo "FAIL: SSH rate-limit not using --rcheck (self-extending ban risk)"; exit 1; }
-            echo "$v4" | grep -q -- "--update"               && { echo "FAIL: SSH rate-limit reintroduced self-extending --update"; exit 1; }
-            echo "$v4" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: DOCKER-USER missing final DROP"; exit 1; }
-            echo "$v4" | grep -qE "DOCKER-USER.*ctstate INVALID.*-j DROP" || { echo "FAIL: DOCKER-USER missing INVALID drop"; exit 1; }
-            echo "$v4" | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: IPv4 FORWARD does not jump to DOCKER-USER (published ports unguarded)"; exit 1; }
-            echo "$v6" | grep -q "^-P INPUT DROP"            || { echo "FAIL: IPv6 INPUT policy is not DROP"; exit 1; }
-            echo "$v6" | grep -q "^-P FORWARD DROP"          || { echo "FAIL: IPv6 FORWARD policy is not DROP"; exit 1; }
-            echo "$v6" | grep -qE "INPUT.*ctstate.*ESTABLISHED" || { echo "FAIL: no ESTABLISHED/RELATED accept on IPv6 INPUT"; exit 1; }
-            echo "$v6" | grep -q -- "--name ssh"             || { echo "FAIL: IPv6 SSH protection rule missing"; exit 1; }
-            echo "$v6" | grep -q -- "--rcheck"               || { echo "FAIL: IPv6 SSH rate-limit not using --rcheck"; exit 1; }
-            echo "$v6" | grep -q -- "--update"               && { echo "FAIL: IPv6 SSH rate-limit reintroduced self-extending --update"; exit 1; }
-            echo "$v6" | grep -q "^-A DOCKER-USER -j DROP"   || { echo "FAIL: IPv6 DOCKER-USER missing final DROP"; exit 1; }
-            echo "$v6" | grep -qE "DOCKER-USER.*ctstate INVALID.*-j DROP" || { echo "FAIL: IPv6 DOCKER-USER missing INVALID drop"; exit 1; }
-            echo "$v6" | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: IPv6 FORWARD does not jump to DOCKER-USER (published ports unguarded)"; exit 1; }
-            echo "ALL FIREWALL SECURITY ASSERTIONS PASSED"
-          '
-
-      # Exercises the rule-change path a no-op run never hits: drift the rendered
-      # ruleset, reconverge, and prove it reconciles WITHOUT flushing Docker's
-      # chains or restarting Docker (the whole point of the Docker-28+ rework).
-      - name: Verify firewall change-path (drift → re-apply, Docker chains intact, no Docker restart)
-        run: |
-          set -e
-          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-
-          echo "::group::Snapshot Docker daemon start time + drift the rendered INPUT ruleset"
-          docker_pre="$($SSH 'systemctl show -p ExecMainStartTimestampMonotonic --value docker')"
-          $SSH 'sed -i "/-A INPUT -i lo -j ACCEPT/d" /etc/miuops-firewall/host.v4.rules && echo "drift injected: removed lo-accept from rendered host.v4.rules"'
-          echo "::endgroup::"
-
-          echo "::group::Re-run playbook — must re-render + re-apply via the host applier"
-          set +e
-          out="$(ansible-playbook playbook.yml 2>&1)"; rc=$?
-          set -e
-          echo "$out" | tail -25
-          echo "::endgroup::"
-          # rc=0 ⇒ no failed tasks AND host stayed reachable (the SSH session survived the re-apply)
-          [ $rc -eq 0 ] || { echo "FAIL: playbook errored or host unreachable during re-apply (rc=$rc)"; exit 1; }
-          echo "$out" | grep -q "Apply host firewall" || { echo "FAIL: host applier did not fire on a real rule change"; exit 1; }
-
-          echo "::group::Assert kernel reconciled, Docker chains intact, Docker NOT restarted"
+          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           $SSH '
             set -e
-            iptables -S INPUT | grep -q -- "-A INPUT -i lo -j ACCEPT" || { echo "FAIL: lo-accept not restored in running kernel"; exit 1; }
-            grep -q -- "-A INPUT -i lo -j ACCEPT" /etc/miuops-firewall/host.v4.rules || { echo "FAIL: rendered ruleset not reconciled"; exit 1; }
-            iptables -S | grep -q "^-N DOCKER-FORWARD$" || { echo "FAIL: Docker chains missing after re-apply (containers left unprotected)"; exit 1; }
-            iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" || { echo "FAIL: FORWARD->DOCKER-USER jump missing after re-apply"; exit 1; }
+            ufw status verbose | grep -q "Status: active"            || { echo "FAIL: ufw not active"; exit 1; }
+            ufw status verbose | grep -q "deny (incoming)"           || { echo "FAIL: ufw default incoming is not deny"; exit 1; }
+            ufw status | grep -qE "^22/tcp[[:space:]]+(ALLOW|LIMIT)" || { ufw status; echo "FAIL: SSH (22) not allowed by ufw"; exit 1; }
+            iptables -S FORWARD | grep -q "^-P FORWARD DROP"         || { echo "FAIL: FORWARD policy is not DROP"; exit 1; }
+            test ! -e /usr/local/sbin/miuops-firewall.sh             || { echo "FAIL: legacy firewall applier still present"; exit 1; }
+            test ! -e /etc/systemd/system/docker.service.d/10-require-firewall.conf || { echo "FAIL: legacy docker drop-in still present"; exit 1; }
+            test ! -e /etc/miuops-firewall                           || { echo "FAIL: legacy rules dir still present"; exit 1; }
+            echo "ufw active, default-deny inbound, SSH allowed, FORWARD DROP, legacy retired"
           '
-          docker_post="$($SSH 'systemctl show -p ExecMainStartTimestampMonotonic --value docker')"
-          [ "$docker_pre" = "$docker_post" ] || { echo "FAIL: Docker daemon was restarted by the firewall converge ($docker_pre -> $docker_post)"; exit 1; }
-          echo "CHANGE-PATH OK: reconciled, Docker chains intact, Docker not restarted"
-          echo "::endgroup::"
 
-          echo "::group::Config-removal: a kernel INPUT rule absent from config is dropped on re-apply"
-          $SSH '
-            set -e
-            iptables -I INPUT 1 -p tcp --dport 65000 -j ACCEPT
-            /usr/local/sbin/miuops-firewall.sh host
-            if iptables -S INPUT | grep -q -- "--dport 65000"; then
-              echo "FAIL: stale INPUT rule (dport 65000) survived re-apply"; exit 1
-            fi
-            echo "stale INPUT rule correctly removed by re-apply ✅"
-          '
-          echo "::endgroup::"
-
-          echo "::group::Stabilizing run must be idempotent again"
-          ch="$(ansible-playbook playbook.yml 2>&1 | grep -oP 'changed=\K[0-9]+' | tail -1)"
-          echo "changed on stabilizing run: $ch"
-          [ "$ch" = "0" ] || echo "::warning::firewall not idempotent after change-path (changed=$ch)"
-          echo "::endgroup::"
-
-      # A published Docker port bypasses the host INPUT firewall (DNAT/FORWARD), so
-      # DOCKER-USER is what must block external access. Prove it: publish a throwaway
-      # listener and confirm it is NOT reachable from the runner.
-      # IPv4 only — GitHub runners have no IPv6 egress, so the IPv6 path is NOT
-      # covered here and remains unverified end-to-end.
-      - name: Verify a published Docker port is not externally reachable (IPv4)
+      - name: Verify a host inbound port is blocked by ufw (IPv4)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-          HOST="${{ secrets.DEV_SERVER_HOST }}"
-          PORT=54321
-          cleanup() { $SSH "docker rm -f fw-exposure-test >/dev/null 2>&1 || true"; }
+          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          HOST="${{ secrets.DEV_SERVER_HOST }}"; PORT=54321
+          cleanup() { $SSH "pkill -f 'http.server ${PORT}' >/dev/null 2>&1 || true"; }
           trap cleanup EXIT
-
-          echo "::group::Deploy throwaway container publishing $PORT"
-          $SSH "docker rm -f fw-exposure-test >/dev/null 2>&1; docker run -d --name fw-exposure-test -p ${PORT}:${PORT} busybox httpd -f -p ${PORT} -h /tmp >/dev/null && sleep 2 && docker ps --filter name=fw-exposure-test --format 'status: {{.Status}}'"
+          echo "::group::Start a host listener on 0.0.0.0:${PORT}"
+          $SSH "nohup python3 -m http.server ${PORT} --bind 0.0.0.0 >/dev/null 2>&1 & sleep 2; ss -tln | grep -q ':${PORT} ' && echo 'listener up'"
           echo "::endgroup::"
-
-          echo "::group::Positive control — container is actually listening (server loopback)"
+          echo "::group::Positive control — reachable on host loopback"
           code="$($SSH "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${PORT}/")"
-          echo "loopback HTTP code: ${code}"
-          { [ -n "$code" ] && [ "$code" != "000" ]; } || { echo "FAIL: test container not listening — external result would be meaningless"; exit 1; }
+          { [ -n "$code" ] && [ "$code" != "000" ]; } || { echo "FAIL: host listener not actually up"; exit 1; }
           echo "::endgroup::"
-
-          echo "::group::External IPv4 probe from the runner — MUST be blocked"
+          echo "::group::External IPv4 probe from the runner — MUST be blocked by ufw"
           if curl -4 -s -o /dev/null --connect-timeout 8 --max-time 12 "http://${HOST}:${PORT}/"; then
-            echo "FAIL: published port ${PORT} is reachable over IPv4 from outside — DOCKER-USER is not blocking it"; exit 1
+            echo "FAIL: host port ${PORT} reachable from outside — ufw INPUT not denying"; exit 1
           fi
-          echo "external IPv4 access correctly blocked ✅"
+          echo "host inbound port correctly blocked by ufw"
           echo "::endgroup::"
 
-      # Docker recreates DOCKER-USER empty on restart; PartOf=docker.service must
-      # re-apply our isolation rules so published ports never lose their guard.
-      - name: Verify DOCKER-USER survives a Docker restart (PartOf re-apply)
+      # In the new model a published port is kept off the public interface by binding it to
+      # loopback (the stacks policy), not by a runtime DROP. Prove a 127.0.0.1-bound publish
+      # is reachable locally but not from outside.
+      - name: Verify a loopback-bound Docker port is not externally reachable (IPv4)
         run: |
-          set -e
-          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-          $SSH 'systemctl restart docker; sleep 5'
-          $SSH '
-            for i in $(seq 1 20); do
-              iptables -S DOCKER-USER | tail -1 | grep -q -- "-j DROP" && { echo "DOCKER-USER repopulated after docker restart ✅"; exit 0; }
-              sleep 1
-            done
-            echo "FAIL: DOCKER-USER not repopulated after docker restart"; iptables -S DOCKER-USER; exit 1
-          '
-
-      # The FORWARD->DOCKER-USER jump is Docker-owned; if it goes missing (the
-      # shared-prod corruption class) the applier must fail loudly, not silently
-      # leave published ports unguarded. Then the documented repair restores it.
-      - name: Verify applier detects Docker-chain corruption (missing FORWARD jump)
-        run: |
-          set -e
-          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-          $SSH 'iptables -D FORWARD -j DOCKER-USER'
-          if $SSH '/usr/local/sbin/miuops-firewall.sh docker-user'; then
-            echo "FAIL: applier did not detect the missing FORWARD->DOCKER-USER jump"; exit 1
-          fi
-          echo "applier correctly failed loudly on missing jump ✅"
-          $SSH 'systemctl restart docker; sleep 5'   # documented repair
-          $SSH 'iptables -S FORWARD | grep -q -- "-A FORWARD -j DOCKER-USER" && echo "jump restored by docker restart ✅"'
-
-      # The v6 INPUT chain used to drop ICMPv6, which silently broke NDP and thus
-      # all IPv6 connectivity (critical for IPv6-only-public-IP servers). Assert
-      # the allow rules are present AND that IPv6 actually works end-to-end (v6
-      # egress requires resolving the gateway via NDP, so a 200 proves NDP works).
-      - name: Verify IPv6 is functional after firewall applied (NDP)
-        run: |
-          # Reuse one SSH connection (ControlPersist) so the checks below count as
-          # a single new SSH connection from the runner's IP — avoids tripping the
-          # firewall's own SSH rate-limit (10 new conns / 60s).
-          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=60s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-          echo "::group::ICMPv6 NDP/PMTUD allow rules present in ip6tables INPUT"
-          # `ip6tables -S` may render the type by name OR number; match both, and
-          # anchor with ( |$) so a numeric type can't substring-match (2 vs 25 etc).
-          v6in="$($SSH 'ip6tables -S INPUT')"
-          echo "$v6in" | grep -Eq -- 'icmpv6-type (neighbour-advertisement|136)( |$)' || { echo "$v6in"; echo "FAIL: ICMPv6 NDP (neighbour-advertisement) accept missing"; exit 1; }
-          echo "$v6in" | grep -Eq -- 'icmpv6-type (packet-too-big|2)( |$)' || { echo "FAIL: ICMPv6 packet-too-big (PMTUD) accept missing"; exit 1; }
-          echo "ICMPv6 allow rules present ✅"
+          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          HOST="${{ secrets.DEV_SERVER_HOST }}"; PORT=54322
+          cleanup() { $SSH "docker rm -f fw-loopback-test >/dev/null 2>&1 || true"; }
+          trap cleanup EXIT
+          echo "::group::Publish a container bound to 127.0.0.1:${PORT}"
+          $SSH "docker rm -f fw-loopback-test >/dev/null 2>&1; docker run -d --name fw-loopback-test -p 127.0.0.1:${PORT}:${PORT} busybox httpd -f -p ${PORT} -h /tmp >/dev/null && sleep 2 && docker ps --filter name=fw-loopback-test --format 'status: {{.Status}}'"
           echo "::endgroup::"
-          echo "::group::IPv6 functional check (only if the host has a global v6 address)"
+          echo "::group::Positive control — reachable on loopback"
+          code="$($SSH "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${PORT}/")"
+          { [ -n "$code" ] && [ "$code" != "000" ]; } || { echo "FAIL: test container not listening"; exit 1; }
+          echo "::endgroup::"
+          echo "::group::External IPv4 probe — MUST be blocked (bound to loopback)"
+          if curl -4 -s -o /dev/null --connect-timeout 8 --max-time 12 "http://${HOST}:${PORT}/"; then
+            echo "FAIL: loopback-bound port ${PORT} reachable externally"; exit 1
+          fi
+          echo "loopback-bound container correctly not externally reachable"
+          echo "::endgroup::"
+
+      # ufw's before6.rules ship the ICMPv6/NDP allows, so default-deny does not break IPv6.
+      # GitHub runners have no IPv6 egress, so assert from the host (v6 egress needs NDP).
+      - name: Verify IPv6 egress works under ufw (NDP)
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           if [ -z "$($SSH 'ip -6 -o addr show scope global 2>/dev/null | head -1')" ]; then
-            echo "::notice::dev server has no global IPv6 address — skipping functional v6 egress test"
-          # curl exit 0 = connection + transfer succeeded over IPv6 (proves the
-          # gateway resolved via NDP); tolerant of HTTP status so a redirect isn't a fail.
+            echo "::notice::dev server has no global IPv6 address — skipping v6 egress test"
           elif $SSH "curl -6 -sS -o /dev/null --max-time 12 https://www.google.com"; then
-            echo "IPv6 egress works — gateway NDP resolves ✅"
+            echo "IPv6 egress works — gateway NDP resolves under ufw"
           else
-            echo "---- diagnostics ----"; $SSH "ip -6 route show default; ip -6 neigh show" || true
-            echo "FAIL: host has a global IPv6 address but no working v6 egress after the NDP fix"; exit 1
+            echo "---- diagnostics ----"; $SSH "ip -6 route show default; ip -6 neigh show; ufw status verbose" || true
+            echo "FAIL: global IPv6 present but no v6 egress under ufw"; exit 1
           fi
-          echo "::endgroup::"
