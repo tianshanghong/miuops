@@ -114,6 +114,3 @@
     name: miuops-firewall-docker-user.timer
     state: started
   become: true
-
-- name: Flush handlers
-  meta: flush_handlers

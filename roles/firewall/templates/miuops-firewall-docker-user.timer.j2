@@ -1,7 +1,7 @@
 [Unit]
 Description=miuops periodic DOCKER-USER reconcile (self-heal drift)
 [Timer]
-OnBootSec={{ firewall_reconcile_interval | default('5min') }}
-OnUnitActiveSec={{ firewall_reconcile_interval | default('5min') }}
+OnBootSec={{ firewall_reconcile_interval }}
+OnUnitActiveSec={{ firewall_reconcile_interval }}
 [Install]
 WantedBy=timers.target
