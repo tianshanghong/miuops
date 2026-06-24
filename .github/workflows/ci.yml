@@ -117,7 +117,7 @@ jobs:
         run: |
           SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           HOST="${{ secrets.DEV_SERVER_HOST }}"; PORT=54321
-          cleanup() { $SSH "pkill -f 'http.server ${PORT}' >/dev/null 2>&1 || true"; }
+          cleanup() { $SSH "pkill -f '[h]ttp.server ${PORT}'" >/dev/null 2>&1 || true; }  # [h] so pkill matches the listener, not its own SSH command line
           trap cleanup EXIT
           echo "::group::Start a host listener on 0.0.0.0:${PORT}"
           $SSH "nohup python3 -m http.server ${PORT} --bind 0.0.0.0 >/dev/null 2>&1 & sleep 2; ss -tln | grep -q ':${PORT} ' && echo 'listener up'"
@@ -140,7 +140,7 @@ jobs:
         run: |
           SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           HOST="${{ secrets.DEV_SERVER_HOST }}"; PORT=54322
-          cleanup() { $SSH "docker rm -f fw-loopback-test >/dev/null 2>&1 || true"; }
+          cleanup() { $SSH "docker rm -f fw-loopback-test" >/dev/null 2>&1 || true; }  # best-effort; never fail the step on a cleanup SSH hiccup
           trap cleanup EXIT
           echo "::group::Publish a container bound to 127.0.0.1:${PORT}"
           $SSH "docker rm -f fw-loopback-test >/dev/null 2>&1; docker run -d --name fw-loopback-test -p 127.0.0.1:${PORT}:${PORT} busybox httpd -f -p ${PORT} -h /tmp >/dev/null && sleep 2 && docker ps --filter name=fw-loopback-test --format 'status: {{.Status}}'"
