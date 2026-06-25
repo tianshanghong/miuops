@@ -1,0 +1,19 @@
+#!/bin/sh
+{{ ansible_managed | comment }}
+# Block containers from reaching the cloud metadata endpoint (SSRF -> credential theft).
+# DOCKER-USER is the chain Docker traverses FIRST in FORWARD, so a DROP here beats Docker's own
+# ACCEPT rules. The rule is idempotent (-C before -I) and inserted at the top of DOCKER-USER.
+# This only filters Docker FORWARD traffic — the host's own access to metadata is unaffected.
+set -eu
+
+# Insert a DROP at the top of DOCKER-USER if it is not already present.
+ensure() {  # $1 = iptables binary, $2 = destination
+  "$1" -C DOCKER-USER -d "$2" -j DROP 2>/dev/null || "$1" -I DOCKER-USER 1 -d "$2" -j DROP
+}
+
+ensure iptables {{ metadata_block_ipv4 }}
+
+# IPv6 metadata: best-effort. Skip if ip6tables or its DOCKER-USER chain is absent (IPv6 off).
+if ip6tables -L DOCKER-USER -n >/dev/null 2>&1; then
+  ensure ip6tables {{ metadata_block_ipv6 }}
+fi

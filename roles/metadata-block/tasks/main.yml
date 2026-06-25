@@ -1,0 +1,40 @@
+---
+# Block containers from the cloud metadata endpoint (SSRF -> credential theft). A focused
+# DOCKER-USER DROP rule — Docker traverses DOCKER-USER first in FORWARD, so it beats Docker's
+# own ACCEPTs — applied by a oneshot unit on boot and re-applied if Docker restarts. The host
+# itself still reaches metadata (this only filters container forwarding).
+
+- name: Install the metadata-block script
+  ansible.builtin.template:
+    src: miuops-metadata-block.sh.j2
+    dest: /usr/local/sbin/miuops-metadata-block.sh
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  notify: Reapply metadata block
+
+- name: Install the metadata-block systemd unit
+  ansible.builtin.template:
+    src: miuops-metadata-block.service.j2
+    dest: /etc/systemd/system/miuops-metadata-block.service
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Reapply metadata block
+
+- name: Enable + start the metadata-block unit
+  ansible.builtin.systemd:
+    name: miuops-metadata-block.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Verify the metadata block rule is actually applied (fail loud, not silent)
+  # The unit is a oneshot; if it failed (e.g. DOCKER-USER absent), the host would silently lack
+  # the block. Assert the rule is present so a failure surfaces at converge time.
+  ansible.builtin.command: "iptables -C DOCKER-USER -d {{ metadata_block_ipv4 }} -j DROP"
+  changed_when: false
+  become: true

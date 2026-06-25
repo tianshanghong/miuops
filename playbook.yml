@@ -41,6 +41,8 @@
       tags: ['ssh']
     - role: docker
       tags: ['docker']
+    - role: metadata-block
+      tags: ['metadata-block']
     - role: traefik
       tags: ['traefik']
     - role: cloudflared

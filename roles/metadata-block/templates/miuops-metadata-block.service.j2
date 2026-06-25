@@ -1,0 +1,16 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Block containers from the cloud metadata endpoint (miuops)
+# Docker creates the DOCKER-USER chain, so it must exist before the rule is inserted. PartOf so
+# the rule is re-applied if Docker is restarted (it normally survives, but this is fail-safe).
+After=docker.service
+Requires=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/miuops-metadata-block.sh
+
+[Install]
+WantedBy=multi-user.target
