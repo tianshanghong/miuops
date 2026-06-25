@@ -1,0 +1,10 @@
+---
+# Block containers from the link-local range that hosts every cloud metadata endpoint. A
+# compromised container could otherwise SSRF the metadata service to steal cloud credentials
+# (IAM role keys, API tokens). We block the whole 169.254.0.0/16 rather than just the well-known
+# 169.254.169.254: bridge containers get RFC1918 addresses + a default route and have NO
+# legitimate use for link-local, so this is zero-cost and also closes the AWS ECS task-role
+# credential endpoint (169.254.170.2) and any other provider service in that range.
+metadata_block_ipv4: "169.254.0.0/16"
+# AWS IPv6 metadata endpoint; blocked best-effort (skipped if IPv6 is disabled in Docker).
+metadata_block_ipv6: "fd00:ec2::254"

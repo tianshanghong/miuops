@@ -1,0 +1,7 @@
+---
+- name: Reapply metadata block
+  ansible.builtin.systemd:
+    name: miuops-metadata-block.service
+    state: restarted
+    daemon_reload: true
+  become: true
