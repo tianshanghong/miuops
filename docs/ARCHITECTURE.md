@@ -152,6 +152,18 @@ Lateral movement blocked:
 - iptables DOCKER-USER chain: blocks all direct container access from outside
 - iptables: only loopback traffic allowed to reach Docker bridges (cloudflared → Traefik)
 
+### App-level authentication
+
+Per-stack networks isolate stacks **from each other**, but containers **within** a stack's
+network can reach each other freely (Docker's `icc: false` only governs the default bridge, not
+user-defined networks). "Same network" is therefore **not** a trust boundary.
+
+So **authenticate at the application layer**, not by network position: each service that exposes
+anything to a sibling container must verify the caller itself — a token, password, or mTLS —
+exactly as it would on the public internet. miuops hardens the host and the network edges
+(Cloudflare tunnel, loopback-only publish, per-stack isolation, the publish-time policy-check),
+but intra-stack lateral movement is the application developer's responsibility.
+
 ## Backup Design
 
 Single S3 bucket, single IAM user. Prefixes separate data by type.

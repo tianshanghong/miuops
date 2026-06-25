@@ -1,0 +1,5 @@
+services:
+  app:
+    image: example/app:1.0
+    cap_drop: [ALL]
+    network_mode: bridge

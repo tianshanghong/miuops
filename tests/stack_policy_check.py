@@ -11,6 +11,8 @@ privilege at *publish time* (this gate), not with a runtime firewall. A compose 
   - shares a host namespace — `network_mode`/`pid`/`ipc`/`uts`/`cgroup: host`,
     `cgroupns: host`, `userns_mode: host`, or `network_mode/pid/ipc: "container:..."`
     (host networking can be opted in per service with `x-miuops-allow-host-net: true`),
+  - uses the shared default bridge (docker0) instead of a per-stack user-defined network —
+    via `network_mode: bridge` or an external network resolving to `bridge`/`docker0`,
   - is missing `cap_drop: [ALL]`, or re-adds a dangerous capability via `cap_add`
     (with or without the `CAP_` prefix),
   - weakens the sandbox via `security_opt` (unconfined / label:disable / no-new-privileges:false),
@@ -148,6 +150,9 @@ def check_file(path):
                               "(add `x-miuops-allow-host-net: true` to opt in if intentional)")
         elif network_mode.startswith("container:"):
             violations.append(f"{prefix} uses network_mode: container (joins another container's net ns)")
+        elif network_mode == "bridge":
+            violations.append(f"{prefix} uses network_mode: bridge (the shared default bridge / docker0); "
+                              "put the service on a per-stack user-defined network instead")
         for field in ("pid", "ipc", "uts", "cgroup"):
             value = str(svc.get(field, ""))
             if value == "host" or value.startswith("container:"):
@@ -184,6 +189,25 @@ def check_file(path):
                                   "(use `127.0.0.1:<host>:<container>`)")
             elif host_ip not in LOOPBACK_HOST_IPS:
                 violations.append(f"{prefix} publishes {port!r} to {host_ip} (must bind 127.0.0.1)")
+
+    # File-level: reject attaching to the shared default bridge (docker0) through an external
+    # network — the back door that evades the per-service `network_mode: bridge` check above.
+    networks = doc.get("networks")
+    if isinstance(networks, dict):
+        for net_name, net in networks.items():
+            if not isinstance(net, dict):
+                continue
+            ext = net.get("external")
+            # `external: true` (current) or `external: {name: ...}` (legacy) both mark it external.
+            # NB: a dict is NOT _is_truthy (that is a str/bool coercion), so check isinstance too.
+            if not (_is_truthy(ext) or isinstance(ext, dict)):
+                continue
+            backing = net.get("name")
+            if backing is None and isinstance(ext, dict):
+                backing = ext.get("name")  # legacy `external: {name: ...}` form
+            if str(backing if backing is not None else net_name).lower() in ("bridge", "docker0"):
+                violations.append(f"{path}: network '{net_name}' attaches to the shared default "
+                                  "bridge (docker0); use a per-stack network")
 
     return violations
 
