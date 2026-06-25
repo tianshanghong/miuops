@@ -1,0 +1,7 @@
+# Clean (no violations) but the image is not digest-pinned → advisory warning, still exit 0.
+services:
+  web:
+    image: nginx:latest
+    cap_drop: [ALL]
+    ports:
+      - "127.0.0.1:8080:80"
