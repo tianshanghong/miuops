@@ -68,10 +68,13 @@ The CLI handles everything:
 7. Runs the playbook
 
 The playbook provisions the server with:
-- **iptables firewall** — default-DROP on INPUT and DOCKER-USER chains, rate-limited SSH
-- **Docker CE + Compose** — hardened daemon (ICC disabled, userland proxy disabled)
-- **Traefik directories + Docker network** — ready for compose deployment
+- **ufw firewall** — default-deny inbound, only rate-limited SSH open
+- **Docker CE + Compose** — hardened daemon (loopback-published ports, `userns-remap`, ICC off, API never on TCP)
+- **Traefik** — non-root host binary reading Docker via a read-only socket-proxy
 - **cloudflared** — systemd service with tunnel config for all domains
+- **SSH hardening** — key-only login (`PasswordAuthentication no`)
+- **Metadata block** — containers blocked from the cloud metadata endpoint
+- **Unattended security upgrades** — automatic, no auto-reboot
 
 ### Dry run
 

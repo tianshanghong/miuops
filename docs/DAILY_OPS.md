@@ -39,8 +39,8 @@ docker compose logs -f SERVICE_NAME
 # cloudflared tunnel
 sudo journalctl -u cloudflared -f
 
-# Firewall (iptables)
-sudo journalctl -k | grep iptables
+# Firewall (ufw)
+sudo ufw status verbose
 ```
 
 ## Checking status

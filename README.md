@@ -2,7 +2,7 @@
 
 Ansible-based bootstrap for secure Docker infrastructure on bare metal servers.
 
-miuOps provisions a server with Docker, Traefik, Cloudflare Tunnel, and an iptables firewall — then gets out of the way. Day-to-day service deployment is handled by your own private GitOps stack repo via GitHub Actions.
+miuOps provisions a server with Docker, Traefik, Cloudflare Tunnel, and a ufw firewall — then gets out of the way. Day-to-day service deployment is handled by your own private GitOps stack repo via GitHub Actions.
 
 ## Architecture Overview
 
@@ -20,10 +20,10 @@ miuOps provisions a server with Docker, Traefik, Cloudflare Tunnel, and an iptab
                       |
                   cloudflared
                       |
-                   Traefik
+              Traefik (host binary)
                       |
    +-------------------------------------+
-   |  DOCKER-USER iptables chain         |
+   |  Per-stack bridge networks          |
    +-------------------------------------+
                       |
                 Docker Services
@@ -32,7 +32,7 @@ miuOps provisions a server with Docker, Traefik, Cloudflare Tunnel, and an iptab
 - Traffic flows through Cloudflare's network for DDoS protection and WAF
 - No ports are exposed to the internet (all ingress via Cloudflare Tunnel)
 - Traefik reverse proxy handles TLS termination and service routing
-- System and Docker networking are secured with iptables rules
+- The host firewall (ufw) denies all inbound except rate-limited SSH; containers run on isolated per-stack networks
 
 ## Quick Start
 
@@ -101,14 +101,19 @@ management-CIDR SSH allowlist).
 
 | Component | Role | Purpose |
 |---|---|---|
-| iptables firewall | `firewall` | INPUT + DOCKER-USER chains, rate-limited SSH, zero public container exposure |
-| Docker engine | `docker` | Docker CE + Compose plugin, hardened daemon config |
-| Traefik | `traefik` | Reverse proxy directories + Docker network (compose deployed via stack repo) |
-| Cloudflare Tunnel | `cloudflared` | Secure ingress, wildcard DNS records, systemd service |
+| ufw firewall | `firewall` | Default-deny inbound; only rate-limited SSH is open. No public container exposure. |
+| Docker engine | `docker` | Docker CE + Compose plugin; hardened daemon (loopback-published ports, `userns-remap`, ICC off, API never on TCP). |
+| Traefik | `traefik` | Non-root host binary; discovers services through a read-only docker-socket-proxy and routes to per-stack networks. |
+| Cloudflare Tunnel | `cloudflared` | Zero exposed ports; wildcard + root DNS records; systemd service. |
+| SSH hardening | `ssh` | Key-only login (`PasswordAuthentication no`). |
+| Metadata block | `metadata-block` | Blocks containers from reaching the cloud metadata endpoint (`169.254.0.0/16`). |
+| Observability | `observability` | Grafana Alloy host binary shipping metrics + logs to Grafana Cloud (opt-in, off by default). |
+| Volume backup | `backup` | Host `systemd` timer that tars Docker volumes to S3 — no container, no `docker.sock`. |
+| Security upgrades | `unattended-upgrades` | Automatic unattended security patches, no auto-reboot. |
 
 ## Deploy Services
 
-After bootstrap, create your private stack repo from the **[miuops-stack-template](https://github.com/tianshanghong/miuops-stack-template)** — it includes Traefik, S3 backups, and a GitHub Actions pipeline that deploys on push to `main`.
+After bootstrap, create your private stack repo from the **[miuops-stack-template](https://github.com/tianshanghong/miuops-stack-template)** — it includes example stacks and a GitHub Actions pipeline that deploys your services on push to `main`.
 
 ## Infrastructure Upgrades
 
@@ -149,9 +154,11 @@ The setup script creates a single `{project}-backup` bucket used by both the hos
 ## Security
 
 - Zero exposed ports — all traffic flows through Cloudflare Tunnel
-- iptables firewall with default-DROP on INPUT and DOCKER-USER chains
-- Rate-limited SSH by default (6 attempts / 60s, configurable); optional management-CIDR allowlist
-- Docker daemon hardened (ICC disabled, userland proxy disabled)
+- ufw firewall: default-deny inbound, only rate-limited SSH open (`ufw limit`); optional management-CIDR allowlist
+- **SSH is key-only** (`PasswordAuthentication no`) — make sure your public key is in the server's `~/.ssh/authorized_keys` before converging, or you will be locked out
+- Docker daemon hardened — ports publish to loopback by default, the API is never exposed over TCP, ICC and the userland proxy are disabled, and `userns-remap` maps container root to an unprivileged host UID
+- Containers are blocked from the cloud metadata endpoint (`169.254.0.0/16`)
+- Automatic unattended security upgrades (no auto-reboot)
 - Sensitive files excluded from version control (`.gitignore`)
 
 ## Documentation

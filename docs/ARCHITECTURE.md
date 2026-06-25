@@ -32,11 +32,15 @@ The tool. Users clone this to bootstrap their server.
 miuOps/
 ├── miuops                    # CLI entrypoint (./miuops up)
 ├── roles/                    # Ansible roles for bootstrap + upgrades
-│   ├── docker/               #   Docker engine
-│   ├── firewall/             #   iptables (IPv4 + IPv6)
+│   ├── docker/               #   Docker engine + hardened daemon
+│   ├── firewall/             #   ufw host firewall (IPv4 + IPv6)
+│   ├── ssh/                  #   Key-only SSH
 │   ├── cloudflared/          #   Cloudflare Tunnel + systemd + DNS
-│   ├── traefik/              #   Bootstrap (dirs, network) + upgrades
-│   └── backup/               #   Host-side Docker volume backup (systemd timer)
+│   ├── traefik/              #   Non-root host binary + read-only socket-proxy
+│   ├── metadata-block/       #   Block container → cloud metadata endpoint
+│   ├── observability/        #   Grafana Alloy host binary (opt-in)
+│   ├── backup/               #   Host-side Docker volume backup (systemd timer)
+│   └── unattended-upgrades/  #   Automatic security upgrades
 ├── playbook.yml
 ├── scripts/
 │   └── setup-s3-backup.sh
@@ -77,14 +81,14 @@ my-infra/
 │  GITHUB            │  │  SERVER (runtime)                  │
 │                    │  │                                    │
 │  miuOps (public)   │  │  [infra — Ansible-owned]           │
-│  - Ansible roles   │  │  ├─ iptables firewall              │
+│  - Ansible roles   │  │  ├─ ufw firewall                   │
 │  - scripts         │  │  ├─ Docker engine                  │
 │                    │  │  ├─ cloudflared (systemd)          │
-│                    │  │  ├─ /opt/traefik (dirs, acme.json) │
-│  my-infra (private)│  │                                    │
+│                    │  │  ├─ Traefik (host binary)          │
+│  my-infra (private)│  │  └─ docker-socket-proxy (RO)       │
 │  - compose files   │  │  [apps — GitOps-owned]             │
-│  - GH Actions  ───────▶  ├─ Traefik (compose)              │
-│  - .env (secrets)  │SSH│  ├─ App containers                 │
+│  - GH Actions  ───────▶  ├─ App containers                 │
+│  - .env (secrets)  │SSH│  │   (per-stack networks)         │
 │                    │  │  ├─ PG + WAL-G ──────┐              │
 │                    │  │  ├─ volume backup ───┤  (systemd    │
 │                    │  │  │                   │   timer,     │

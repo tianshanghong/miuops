@@ -22,7 +22,7 @@ each server's `files/<tunnel_id>.json`, then retire the old clones.
 ## Per-server firewall posture
 
 Each server's exposure is data in its `host_vars`. Defaults are generic-safe (SSH
-rate-limited, 10 attempts / 60s). To harden a specific server:
+rate-limited via `ufw limit`). To harden a specific server:
 
 ```yaml
 # host_vars/prod-a.yml
