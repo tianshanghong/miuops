@@ -1,0 +1,36 @@
+---
+# Unattended SECURITY upgrades, with NO automatic reboot. A fresh host patches itself from
+# the security pocket on the apt-daily timer; it never reboots unattended — the operator
+# reboots on their own schedule (a surprise reboot would drop the tunnel + every stack).
+
+- name: Install unattended-upgrades
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+    update_cache: true
+  become: true
+
+- name: Configure unattended security upgrades (security only, no auto-reboot)
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52-miuops-unattended.conf
+    content: |
+      // Managed by Ansible (roles/unattended-upgrades). Unattended security upgrades, no reboot.
+      // Allowed-Origins is left at the distro default: the -security pocket plus the base release
+      // pocket, and NOT -updates. -security carries the security fixes; the base pocket changes
+      // only at point releases, so in normal operation only security upgrades are applied. (apt.conf
+      // list semantics let a drop-in only append origins, never remove them, so we rely on the
+      // default rather than rewriting it.)
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      Unattended-Upgrade::Automatic-Reboot "false";
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+
+- name: Enable the apt-daily-upgrade timer (drives unattended-upgrades)
+  ansible.builtin.systemd:
+    name: apt-daily-upgrade.timer
+    enabled: true
+    state: started
+  become: true
