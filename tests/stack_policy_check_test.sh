@@ -48,6 +48,10 @@ expect_fail bad-cap-prefix.yml
 expect_fail bad-cgroup-host.yml
 expect_fail bad-userns-host.yml
 expect_fail bad-netmode-container.yml
+expect_fail bad-netmode-bridge.yml
+expect_fail bad-external-bridge.yml
+expect_fail bad-external-bridge-legacy.yml
+expect_fail bad-external-default-bridge.yml
 expect_fail bad-mount-etc.yml
 expect_fail bad-security-opt-equals.yml
 expect_pass good-localtime.yml

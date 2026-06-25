@@ -1,0 +1,9 @@
+services:
+  app:
+    image: example/app:1.0
+    cap_drop: [ALL]
+    networks: [shared]
+networks:
+  shared:
+    external:
+      name: bridge
