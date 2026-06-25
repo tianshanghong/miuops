@@ -1,0 +1,14 @@
+---
+- name: Restart docker-socket-proxy
+  ansible.builtin.systemd:
+    name: docker-socket-proxy.service
+    state: restarted
+    daemon_reload: true
+  become: true
+
+- name: Restart traefik
+  ansible.builtin.systemd:
+    name: traefik.service
+    state: restarted
+    daemon_reload: true
+  become: true

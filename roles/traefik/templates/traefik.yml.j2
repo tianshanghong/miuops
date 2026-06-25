@@ -1,0 +1,35 @@
+{{ ansible_managed | comment }}
+# Static configuration — mirrors the previous stack-repo Traefik command flags, adapted for the
+# host binary + read-only proxy. Per-app routers, services and middlewares still come from each
+# stack's container labels (the Docker provider).
+
+entryPoints:
+  # cloudflared reaches this on loopback (https, noTLSVerify). A high non-privileged port so
+  # Traefik needs no CAP_NET_BIND_SERVICE. TLS is on at the entrypoint, so app routers need no
+  # per-router tls (matches the previous `--entrypoints.websecure.http.tls=true`).
+  websecure:
+    address: "{{ traefik_bind_address }}"
+    http:
+      tls: true
+
+providers:
+  docker:
+    # The read-only docker-socket-proxy — Traefik never touches the raw docker.sock.
+    endpoint: "tcp://{{ traefik_proxy_bind }}"
+    exposedByDefault: false
+
+# No ACME: public TLS terminates at Cloudflare, and cloudflared connects to the entrypoint with
+# noTLSVerify, so Traefik's built-in default self-signed cert is sufficient (the previous config
+# also had no certresolver). The previous `web` (:80) -> https redirect is dropped: the host is
+# tunnel-only and Cloudflare already does public HTTP->HTTPS at the edge.
+
+api:
+  dashboard: false
+
+# Access logs for 4xx/5xx only (matches the previous `--accesslog.filters.statusCodes=400-599`).
+accessLog:
+  filters:
+    statusCodes: "400-599"
+
+log:
+  level: INFO
