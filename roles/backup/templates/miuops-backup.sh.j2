@@ -41,9 +41,6 @@ AGE_RECIPIENTS=(
 {% endfor %}
 )
 
-# Docker's volume storage root. Each named volume lives at <root>/<name>/_data.
-DOCKER_VOLUME_ROOT="/var/lib/docker/volumes"
-
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() { log "ERROR: $*"; exit 1; }
 
@@ -194,11 +191,15 @@ backup_volume() {
   local name="$1"
   shift
   local stop_list=("$@")
-  local data_dir="${DOCKER_VOLUME_ROOT}/${name}/_data"
+  # Resolve the volume's on-disk path from the daemon, not a hardcoded /var/lib/docker/volumes:
+  # userns-remap relocates the data-root (e.g. to /var/lib/docker/100000.100000/volumes), and
+  # `docker volume inspect` always returns the real mountpoint.
+  local data_dir
+  data_dir=$(docker volume inspect "$name" --format '{% raw %}{{ .Mountpoint }}{% endraw %}' 2>/dev/null)
 
-  if [ ! -d "$data_dir" ]; then
+  if [ -z "$data_dir" ] || [ ! -d "$data_dir" ]; then
     # Nothing stopped yet, so nothing to restart.
-    log "ERROR: volume data dir not found: $data_dir (is '$name' a real docker volume?)"
+    log "ERROR: volume data dir not found for '$name' (is it a real docker volume?)"
     return 1
   fi
 

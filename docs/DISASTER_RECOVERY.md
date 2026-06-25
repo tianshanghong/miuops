@@ -171,9 +171,11 @@ docker compose exec postgres psql -U postgres -c "SELECT pg_is_in_recovery();"
 Restore Docker volume data from the host-side volume tarballs stored in S3. Run all commands **on the server** — download directly from S3 to avoid double-transferring large backups through your laptop.
 
 Each Docker volume has its own prefix (`vol/{volume}/`), and each run uploads one
-tarball keyed by UTC timestamp. The tar is rooted at the volume's contents (it is
-created with `tar -C /var/lib/docker/volumes/<volume>/_data --numeric-owner -cf - .`),
-so it extracts directly into the target volume's root — there is no wrapper
+tarball keyed by UTC timestamp. The tar is rooted at the volume's contents (it is created with
+`tar -C "$(docker volume inspect <volume> --format '{{.Mountpoint}}')" --numeric-owner -cf - .`
+— the daemon's real `_data` mountpoint, which `userns-remap` relocates under
+`/var/lib/docker/<subuid>.<subgid>/volumes/`), so it extracts directly into the target
+volume's root — there is no wrapper
 directory. The archive is **not gzip-compressed** (extract with `tar -xf`, not
 `-xzf`). Extract with `--numeric-owner` too (below) so UIDs/GIDs are restored as
 numbers — deterministic ownership even when the restore host has a different
