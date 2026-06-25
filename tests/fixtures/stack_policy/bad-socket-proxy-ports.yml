@@ -1,0 +1,12 @@
+# A read-only proxy must not publish a host port (it is reached over the internal network).
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.4.2
+    x-miuops-docker-socket-proxy: true
+    cap_drop: [ALL]
+    environment:
+      POST: 0
+    ports:
+      - "127.0.0.1:2375:2375"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

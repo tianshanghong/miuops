@@ -54,6 +54,17 @@ expect_pass good-localtime.yml
 expect_fail bad-mount-dotdot.yml
 expect_fail bad-mount-dotslash.yml
 
+# docker-socket-proxy exception: a read-only, opted-in proxy may bind docker.sock; anything
+# short of fully read-only (POST=1, a :rw mount, or a secret-exposing section) is rejected.
+expect_pass good-socket-proxy.yml
+expect_fail bad-socket-proxy-writable.yml
+expect_fail bad-socket-proxy-rw.yml
+expect_fail bad-socket-proxy-secrets.yml
+expect_fail bad-socket-proxy-post-float.yml
+expect_fail bad-socket-proxy-post-strnum.yml
+expect_fail bad-socket-proxy-ports.yml
+expect_fail bad-socket-proxy-annotation-string.yml
+
 # A batch containing any violating file must fail as a whole.
 if "$PY" "$CHECK" "$FIX/good.yml" "$FIX/bad-privileged.yml" >/dev/null 2>&1; then
   echo "FAIL (reject): a batch containing a bad file should be rejected"; fail=1

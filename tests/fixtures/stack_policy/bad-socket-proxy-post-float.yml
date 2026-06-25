@@ -1,0 +1,10 @@
+# POST: 1.0 (YAML float) is writable; the proxy reads "1.0" as on, so the linter must too.
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.4.2
+    x-miuops-docker-socket-proxy: true
+    cap_drop: [ALL]
+    environment:
+      POST: 1.0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

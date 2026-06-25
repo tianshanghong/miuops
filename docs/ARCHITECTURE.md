@@ -9,7 +9,7 @@ Design rationale and internal architecture of miuOps.
 | Ansible | Keep for day-0 bootstrap + infra upgrades | Firewall, Docker, cloudflared, and Traefik upgrades are infrastructure — not appropriate for GitOps. |
 | GitHub Actions | GitOps for service deployment | Sync compose files via SSH + rsync, `docker compose up -d`. Server never pulls from git. |
 | Cloudflare Tunnel | Zero exposed ports | All ingress flows through Cloudflare. No public-facing ports on the server. |
-| Traefik | Stateless reverse proxy | Label-based service discovery, no config files to manage per-service. |
+| Traefik | Stateless reverse proxy | Label-based service discovery via a read-only docker-socket-proxy (never the raw socket — see [DOCKER_SOCKET_PROXY.md](DOCKER_SOCKET_PROXY.md)), no config files to manage per-service. |
 | WAL-G | PostgreSQL backup | Physical backup + continuous WAL archiving to S3, baked into a custom PG image. |
 | Single S3 bucket | Backup storage | One bucket, one IAM user, prefixes separate data types. Simplifies lifecycle and Object Lock config. |
 | Two repos | Public tool + private config | miuOps is open-source; user infrastructure is private. Different lifecycles, different audiences. |

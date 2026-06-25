@@ -1,0 +1,11 @@
+# Quoted numeric-leading string: the proxy's read_int64 parses "2.9" -> 2 -> writable,
+# so the linter must treat it as writable too (mirror, not the fixed word-set).
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.4.2
+    x-miuops-docker-socket-proxy: true
+    cap_drop: [ALL]
+    environment:
+      POST: "2.9"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

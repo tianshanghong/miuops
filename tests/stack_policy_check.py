@@ -14,14 +14,16 @@ privilege at *publish time* (this gate), not with a runtime firewall. A compose 
   - is missing `cap_drop: [ALL]`, or re-adds a dangerous capability via `cap_add`
     (with or without the `CAP_` prefix),
   - weakens the sandbox via `security_opt` (unconfined / label:disable / no-new-privileges:false),
-  - bind-mounts the docker socket, a whole system directory (/, /etc, /usr, ...), or a
-    sensitive host path (/proc, /sys, /dev, /var/run, ...),
+  - bind-mounts the docker socket (allowed ONLY for a read-only docker-socket-proxy that
+    opts in with `x-miuops-docker-socket-proxy: true`, `POST=0`, and a `:ro` mount), a
+    whole system directory (/, /etc, /usr, ...), or a sensitive host path (/proc, /sys, ...),
   - passes through host `devices:`.
 
 Usage: stack_policy_check.py <compose.yml> [more.yml ...]
 Requires PyYAML (`pip install pyyaml`).
 """
 import posixpath
+import re
 import sys
 
 try:
@@ -57,7 +59,16 @@ SENSITIVE_MOUNT_FILES = frozenset({"/etc/shadow", "/etc/gshadow", "/etc/passwd",
 def _is_truthy(value):
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() in {"true", "yes", "on", "1"}
+    if isinstance(value, (int, float)):
+        return value != 0  # POST: 1.0 / 2 are truthy; the proxy reads them as "on"
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "on"}:
+        return True
+    # Mirror the proxy's HAProxy `-m bool` parse (read_int64): an optional sign + leading
+    # decimal digits, nonzero => enabled. So "1", "01", "2.9", "-1", "1abc" are all truthy,
+    # matching the running proxy — a writable value can't read as "read-only" here.
+    leading_int = re.match(r"[+-]?\d+", text)
+    return bool(leading_int) and int(leading_int.group()) != 0
 
 
 def _norm_cap(cap):
@@ -116,6 +127,51 @@ def _published_host_ip(port):
     return None  # "host:container" or "container" — no explicit host IP
 
 
+def _env_map(environment):
+    """compose `environment` as a dict; accepts a mapping or a ['KEY=value', ...] list.
+
+    A bare `KEY` (host-env pass-through) maps to "" — its real value is unknown here, so
+    the read-only checks treat it as not-enabled. This is a publish-time guardrail, not a
+    defence against a deliberately obfuscated compose.
+    """
+    if isinstance(environment, dict):
+        return {str(k): ("" if v is None else v) for k, v in environment.items()}
+    result = {}
+    for item in _as_list(environment):
+        key, sep, value = str(item).partition("=")
+        result[key.strip()] = value.strip() if sep else ""
+    return result
+
+
+def _mount_is_read_only(vol):
+    """True if a compose volume mount is read-only (`:ro` short syntax / `read_only: true`)."""
+    if isinstance(vol, dict):
+        return bool(vol.get("read_only"))
+    parts = str(vol).split(":")
+    return len(parts) >= 3 and "ro" in parts[2].split(",")
+
+
+def _is_approved_socket_proxy(svc):
+    """True iff this service is an explicitly-opted-in, read-only docker-socket-proxy.
+
+    The docker socket is root-equivalent, so it is the one host path a service may bind —
+    and only when (a) the service is marked `x-miuops-docker-socket-proxy: true`, (b) it
+    publishes no host port (it is reached only over the internal Docker network, never
+    re-exposed), and (c) it is configured read-only: `POST` is off (GET/HEAD only) and no
+    secret- or exec-exposing section (SECRETS / CONFIGS / AUTH / EXEC) is enabled. Combined
+    with the read-only mount flag checked at the call site, a compromised proxy can only
+    LIST/READ the Docker API — never start/exec/modify or read swarm secrets.
+    """
+    if svc.get("x-miuops-docker-socket-proxy") is not True:
+        return False
+    if _as_list(svc.get("ports")):
+        return False  # reached over the internal network only — it must never publish a port
+    env = _env_map(svc.get("environment"))
+    if _is_truthy(env.get("POST")):
+        return False
+    return not any(_is_truthy(env.get(section)) for section in ("SECRETS", "CONFIGS", "AUTH", "EXEC"))
+
+
 def check_file(path):
     """Return a list of policy-violation strings for one compose file (empty = clean)."""
     try:
@@ -169,10 +225,16 @@ def check_file(path):
             if "unconfined" in normalised or normalised in {"label:disable", "no-new-privileges:false"}:
                 violations.append(f"{prefix} weakens the sandbox via security_opt: {opt!r}")
 
+        proxy_ok = _is_approved_socket_proxy(svc)
         for vol in _as_list(svc.get("volumes")):
             source = vol.get("source") if isinstance(vol, dict) else str(vol).split(":", 1)[0]
-            if source and _is_sensitive_mount(source):
-                violations.append(f"{prefix} bind-mounts a sensitive host path: {source!r}")
+            if not source or not _is_sensitive_mount(source):
+                continue
+            # The docker socket on an approved, read-only docker-socket-proxy is the one
+            # permitted sensitive mount — Traefik et al. reach Docker through it, not raw.
+            if "docker.sock" in str(source) and proxy_ok and _mount_is_read_only(vol):
+                continue
+            violations.append(f"{prefix} bind-mounts a sensitive host path: {source!r}")
 
         if _as_list(svc.get("devices")):
             violations.append(f"{prefix} passes through host devices (raw device access)")

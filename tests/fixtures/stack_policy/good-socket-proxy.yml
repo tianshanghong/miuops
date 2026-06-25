@@ -1,0 +1,13 @@
+# A read-only docker-socket-proxy: the one service permitted to bind docker.sock.
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.4.2
+    x-miuops-docker-socket-proxy: true
+    cap_drop: [ALL]
+    environment:
+      CONTAINERS: 1
+      EVENTS: 1
+      PING: 1
+      POST: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
