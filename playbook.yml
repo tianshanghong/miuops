@@ -47,3 +47,5 @@
       tags: ['observability']
     - role: backup
       tags: ['backup']
+    - role: unattended-upgrades
+      tags: ['unattended-upgrades']
