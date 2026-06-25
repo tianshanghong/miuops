@@ -5,16 +5,16 @@
 
 // Host metrics (CPU, memory, disk, network) — node_exporter equivalent.
 prometheus.exporter.unix "host" {
-  rootfs_path = "/rootfs"
-  procfs_path = "/host/proc"
-  sysfs_path  = "/host/sys"
+  rootfs_path = "/"
+  procfs_path = "/proc"
+  sysfs_path  = "/sys"
 }
 
 // Per-container metrics. On Docker 29+ the default storage driver is overlayfs;
 // cAdvisor (v0.54+, bundled in Alloy >= v1.14) resolves each container's read-write
-// layer through containerd rather than /var/lib/docker, so the host containerd
-// socket is mounted into this container (see roles/observability/tasks/main.yml).
-// containerd_host below matches the containerd.io package installed by roles/docker.
+// layer through containerd rather than /var/lib/docker. Alloy runs as a host process
+// (root) and reads the containerd + docker sockets directly. containerd_host matches the
+// containerd.io package installed by roles/docker.
 prometheus.exporter.cadvisor "containers" {
   docker_host      = "unix:///var/run/docker.sock"
   containerd_host  = "/run/containerd/containerd.sock"

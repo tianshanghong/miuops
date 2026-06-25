@@ -1,8 +1,8 @@
 # Observability — Grafana Alloy → Grafana Cloud
 
-Optional, opt-in per host. Each enabled server runs a **Grafana Alloy** container that
-ships **metrics + logs** to **Grafana Cloud**. It is egress-only (no inbound port; the
-agent pushes out), so it fits the tunnel-only model.
+Optional, opt-in per host. Each enabled server runs **Grafana Alloy** as a host systemd
+service that ships **metrics + logs** to **Grafana Cloud**. It is egress-only (no inbound
+port; the agent pushes out), so it fits the tunnel-only model.
 
 **Collected:** host metrics (CPU/mem/disk/net), per-container metrics (cAdvisor),
 cloudflared metrics (`127.0.0.1:2000`), and all Docker container logs (apps + Traefik).
@@ -62,11 +62,11 @@ Grafana Cloud **Docker / Linux Node** integrations for ready-made dashboards.
   misspelled variable is caught with a clear hint, not a half-started agent.
 - **Docker 29+ (overlayfs):** Docker 29 made `overlayfs` the default storage driver,
   which dropped the on-disk layer layout the old cAdvisor read. cAdvisor v0.54+
-  (bundled in Alloy >= v1.14) instead resolves each container's read-write layer
-  through containerd, so this role pins a new-enough Alloy image and mounts the host
-  `containerd.sock` into the Alloy container. On older Alloy the agent logs
-  `failed to identify the read-write layer ID` and drops **all** per-container
-  metrics (not just writable-layer size).
+  (bundled in Alloy >= 1.14) instead resolves each container's read-write layer
+  through containerd, so this role pins a new-enough Alloy package version. Alloy runs
+  as a host process (root) and reads the host `containerd.sock` directly. On older Alloy
+  the agent logs `failed to identify the read-write layer ID` and drops **all**
+  per-container metrics (not just writable-layer size).
 - **Follow-ups (not yet wired):** Traefik Prometheus metrics (requires enabling
   Traefik's metrics endpoint), host/systemd (journald) logs, CI deployment, and
   alert rules.

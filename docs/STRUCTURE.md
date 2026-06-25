@@ -28,7 +28,7 @@
 - **docker** — Installs Docker CE + Compose plugin via signed apt repo. Hardens daemon (ICC disabled, userland proxy disabled).
 - **traefik** — Bootstraps Traefik directories and Docker network. Pulls latest image when stack is deployed.
 - **cloudflared** — Installs cloudflared via apt repo, deploys tunnel credentials and config, creates wildcard + root CNAME DNS records, runs as systemd service.
-- **observability** *(opt-in, off by default)* — Deploys a Grafana Alloy container that ships host + container + cloudflared metrics and Docker container logs to Grafana Cloud. Enabled per host via `observability_enabled`; egress-only (no inbound port). See [OBSERVABILITY.md](OBSERVABILITY.md).
+- **observability** *(opt-in, off by default)* — Runs Grafana Alloy as a host systemd service that ships host + container + cloudflared metrics and Docker container logs to Grafana Cloud. Enabled per host via `observability_enabled`; egress-only (no inbound port). See [OBSERVABILITY.md](OBSERVABILITY.md).
 
 ## Images
 

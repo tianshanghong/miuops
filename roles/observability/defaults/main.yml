@@ -3,13 +3,13 @@
 # set `observability_enabled: true` in that host's host_vars.
 observability_enabled: false
 
-# Pin the Alloy image (supply chain). Verify/bump at hub.docker.com/r/grafana/alloy/tags
-# Must be >= v1.14.0: that release bundles the cAdvisor v0.54.x fork which reads
-# per-container metrics through containerd. Docker 29 switched the default storage
-# driver to overlayfs and dropped the image/<driver>/layerdb/mounts layout the old
-# cAdvisor relied on; older Alloy fails container registration ("failed to identify
-# the read-write layer ID") and silently ships zero per-container metrics.
-observability_alloy_image: "grafana/alloy:v1.17.0"
+# Pin the Alloy apt package version (supply chain). List available versions with
+# `apt-cache madison alloy` (Grafana apt repo). Must be >= 1.14: that release bundles the
+# cAdvisor v0.54.x fork which reads per-container metrics through containerd. Docker 29
+# switched the default storage driver to overlayfs and dropped the image/<driver>/layerdb/
+# mounts layout the old cAdvisor relied on; older Alloy fails container registration
+# ("failed to identify the read-write layer ID") and silently ships zero per-container metrics.
+observability_alloy_version: "1.17.0-1"
 
 observability_scrape_interval: "60s"
 

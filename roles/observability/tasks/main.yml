@@ -1,8 +1,9 @@
 ---
-# Grafana Alloy -> Grafana Cloud. Entire role is a no-op unless observability_enabled.
+# Grafana Alloy -> Grafana Cloud, run as a host systemd service.
+# No-op unless observability_enabled.
 
 - name: Ensure Grafana Cloud connection is configured
-  assert:
+  ansible.builtin.assert:
     that:
       - grafana_cloud_prometheus_url | length > 0
       - grafana_cloud_prometheus_user | length > 0
@@ -18,50 +19,129 @@
   when: observability_enabled | bool
   tags: ['observability']
 
-- name: Create Alloy config directory
-  file:
-    path: /etc/alloy
+# ---- Install Alloy from Grafana's apt repository -------------------------------------
+# Self-contained prerequisites (do not rely on the docker role having run first, so a
+# `--tags observability` run works on its own — mirrors the cloudflared role).
+- name: Install python3-debian (required by the deb822_repository module)
+  ansible.builtin.apt:
+    name: python3-debian
+    state: present
+    update_cache: true
+  when: observability_enabled | bool
+  tags: ['observability']
+
+- name: Create apt keyrings directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
     state: directory
     mode: '0755'
   when: observability_enabled | bool
   tags: ['observability']
 
-- name: Deploy Alloy config (contains the Grafana Cloud token)
-  template:
-    src: config.alloy.j2
-    dest: /etc/alloy/config.alloy
-    mode: '0600'
-  no_log: true
-  notify: Restart Alloy
+- name: Add Grafana apt signing key
+  ansible.builtin.get_url:
+    url: https://apt.grafana.com/gpg-full.key
+    dest: /etc/apt/keyrings/grafana.asc
+    mode: '0644'
   when: observability_enabled | bool
   tags: ['observability']
 
-- name: Run Grafana Alloy container
-  community.docker.docker_container:
+- name: Add Grafana apt repository
+  ansible.builtin.deb822_repository:
+    name: grafana
+    types: deb
+    uris: https://apt.grafana.com
+    suites: stable
+    components: main
+    signed_by: /etc/apt/keyrings/grafana.asc
+    state: present
+  when: observability_enabled | bool
+  tags: ['observability']
+
+- name: Install Alloy (pinned)
+  ansible.builtin.apt:
+    name: "alloy={{ observability_alloy_version }}"
+    state: present
+    update_cache: true
+  when: observability_enabled | bool
+  tags: ['observability']
+
+# ---- Run Alloy as root ----------------------------------------------------------------
+# Per-container cAdvisor metrics (Docker 29 overlayfs) require reading the root-owned
+# containerd socket, which the package's unprivileged `alloy` user cannot. Override the unit
+# to root; Alloy then reads the containerd + docker sockets and the host /proc //sys directly.
+- name: Create Alloy systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/alloy.service.d
+    state: directory
+    mode: '0755'
+  when: observability_enabled | bool
+  tags: ['observability']
+
+- name: Run Alloy as root, constrained by a systemd sandbox
+  # Root is needed to read the root-owned containerd socket (per-container cAdvisor metrics).
+  # The sandbox blunts a compromised root process: no new privileges, read-only kernel
+  # tunables/cgroups, no module loading, restricted address families + syscalls. Verified
+  # on-host that none of these block Alloy's socket / /proc / /sys / cgroup reads.
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/alloy.service.d/10-miuops.conf
+    content: |
+      [Service]
+      User=root
+      Group=root
+      NoNewPrivileges=true
+      ProtectKernelModules=true
+      ProtectKernelTunables=true
+      ProtectControlGroups=true
+      RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+      RestrictRealtime=true
+      RestrictSUIDSGID=true
+      LockPersonality=true
+      SystemCallFilter=@system-service
+      SystemCallErrorNumber=EPERM
+    mode: '0644'
+  when: observability_enabled | bool
+  notify: Restart Alloy
+  tags: ['observability']
+
+- name: Bind Alloy's HTTP server to loopback
+  ansible.builtin.lineinfile:
+    path: /etc/default/alloy
+    regexp: '^CUSTOM_ARGS='
+    line: 'CUSTOM_ARGS="--server.http.listen-addr=127.0.0.1:12345"'
+  when: observability_enabled | bool
+  notify: Restart Alloy
+  tags: ['observability']
+
+- name: Deploy Alloy config (contains the Grafana Cloud token)
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: /etc/alloy/config.alloy
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  when: observability_enabled | bool
+  notify: Restart Alloy
+  tags: ['observability']
+
+- name: Ensure Alloy data dir is owned by root (matches the User=root override)
+  # The package creates /var/lib/alloy{,/data} as alloy:alloy; align it with the root
+  # service so WAL/state ownership stays consistent.
+  ansible.builtin.file:
+    path: /var/lib/alloy/data
+    state: directory
+    owner: root
+    group: root
+    mode: '0770'
+  when: observability_enabled | bool
+  tags: ['observability']
+
+- name: Enable + start Alloy
+  ansible.builtin.systemd:
     name: alloy
-    image: "{{ observability_alloy_image }}"
+    enabled: true
     state: started
-    pull: true
-    restart_policy: unless-stopped
-    # host networking: reach cloudflared on 127.0.0.1:2000; Alloy listens on nothing
-    # inbound (its own HTTP server is bound to loopback below).
-    network_mode: host
-    command:
-      - run
-      - /etc/alloy/config.alloy
-      - --storage.path=/var/lib/alloy/data
-      - --server.http.listen-addr=127.0.0.1:12345
-    volumes:
-      - "/etc/alloy/config.alloy:/etc/alloy/config.alloy:ro"
-      - "/var/run/docker.sock:/var/run/docker.sock:ro"
-      # cAdvisor reads overlayfs (Docker 29+) container layers via containerd, not
-      # /var/lib/docker. Without this socket per-container metrics are dropped.
-      - "/run/containerd/containerd.sock:/run/containerd/containerd.sock:ro"
-      - "/:/rootfs:ro"
-      - "/proc:/host/proc:ro"
-      - "/sys:/host/sys:ro"
-      - "/sys/fs/cgroup:/sys/fs/cgroup:ro"
-      - "/var/lib/docker:/var/lib/docker:ro"
-      - "/run/udev:/run/udev:ro"
+    daemon_reload: true
   when: observability_enabled | bool
   tags: ['observability']
