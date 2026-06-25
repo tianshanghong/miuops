@@ -103,11 +103,11 @@ All compose stacks follow a three-tier network model with per-stack ingress isol
 
 | Network | Type | Scope | Purpose |
 |---|---|---|---|
-| `ingress` | normal bridge | Per-stack (e.g. `app1_ingress`) | HTTP ingress. Traefik connects via deploy workflow. Isolates stacks from each other. |
+| `ingress` | normal bridge | Per-stack (e.g. `app1_ingress`) | HTTP ingress. The host Traefik reaches it over the bridge. Isolates stacks from each other. |
 | `internal` | `internal: true` | Per-stack (e.g. `app1_internal`) | Backend isolation. DB, cache, queues. No internet, no cross-stack. |
 | `egress` | normal bridge | Per-stack (e.g. `app1_egress`) | Outbound internet. Only for containers that must call external APIs. |
 
-Traefik uses its compose-managed default network (`traefik_default`). No external network is required — cloudflared reaches Traefik via host port binding (`ports: 80:80, 443:443`) and the iptables loopback-to-bridge rule (`-i lo -o br+`), which matches any bridge interface.
+Traefik runs as a **host binary**, not on any Docker network. cloudflared reaches it on loopback (`https://127.0.0.1:8443`), and it routes to each stack's containers by their per-stack bridge IP — the host is the gateway for every bridge, so no `docker network connect` is needed.
 
 Docker Compose scopes non-external networks by project name, so each stack's `ingress`, `internal`, and `egress` are automatically isolated from other stacks.
 
@@ -115,42 +115,42 @@ Docker Compose scopes non-external networks by project name, so each stack's `in
 
 A shared ingress network allows any container on the network to reach any other container — on any port. Docker's `icc: false` setting only applies to the default bridge (`docker0`), not user-defined networks. If one service is compromised, the attacker can pivot laterally to all other services on the same network.
 
-Per-stack ingress networks eliminate this risk. Each stack gets its own bridge network. Traefik joins each via `docker network connect` (handled automatically by the deploy workflow). A compromised container can only see Traefik on its own isolated network — not other stacks.
+Per-stack ingress networks eliminate this risk. Each stack gets its own bridge network, and the host Traefik reaches each stack's containers over that bridge directly (the host is the bridge gateway, so no `docker network connect` is needed). A compromised container is confined to its own per-stack networks — it cannot pivot laterally to other stacks.
 
 ### Rules
 
-1. **Web-facing services join a per-stack `ingress` network** — the deploy workflow connects Traefik to each stack's ingress network via `docker network connect`.
+1. **Web-facing services join a per-stack `ingress` network** — the host Traefik reaches them over that bridge directly (no `docker network connect`).
 2. **Backend services (DB, cache) go on `internal` only** — `internal: true` blocks outbound internet and isolates from other stacks.
 3. **Containers needing outbound internet join `egress`** — a normal bridge with NAT. Most services don't need this.
 4. **Dual-network for mixed needs** — a container needing both DB access and outbound internet joins both `internal` and `egress`.
-5. **Every application service MUST have explicit `networks:`** — no implicit defaults. Traefik is the exception — it uses compose default (`traefik_default`) since its network connections are managed by the deploy workflow.
-6. **No `ports:` except Traefik** — all other ingress goes through Traefik labels.
+5. **Every application service MUST have explicit `networks:`** — no implicit defaults. (Traefik is not a stack service; it is a host binary managed by Ansible.)
+6. **No `ports:`** — ingress goes through Traefik labels; Traefik is a host process binding loopback, not a published container port.
 7. **Some images default to binding on `localhost`** — if a container is unreachable from Traefik, set `HOST=0.0.0.0` in its environment. This is safe within a per-stack ingress network because only Traefik can reach the container.
 
 ### Topology
 
 ```
-cloudflared (host) → 127.0.0.1:443
-    ↓ (host port binding, iptables: -i lo -o br+ -j RETURN)
-Traefik (traefik_default, ports 80/443)
-    ├── docker network connect app_ingress
-    ├── docker network connect crawler_ingress
+cloudflared (host) → https://127.0.0.1:8443 (noTLSVerify)
+    ↓
+Traefik (host binary, non-root, systemd-sandboxed)
+    ├── discovers labels via the read-only docker-socket-proxy (127.0.0.1:2375, POST=0)
+    └── routes to each container's per-stack bridge IP (the host is the bridge gateway)
     ↓
 app (app_ingress + app_internal)         crawler (crawler_ingress + crawler_internal + crawler_egress)
     ↓                                        ↓                  ↓
 db (app_internal only)                   db (crawler_internal)  internet (crawler_egress)
 
 Lateral movement blocked:
-  app ✕──► crawler  (different ingress networks)
-  crawler ✕──► app  (different ingress networks)
+  app ✕──► crawler  (separate per-stack bridges; only the host reaches them all)
+  crawler ✕──► app  (separate per-stack bridges)
 ```
 
 ### Defense in depth (Ansible-managed)
 
 - Per-stack ingress networks: lateral movement between stacks blocked at Docker network level
 - Docker daemon: `icc: false`, `userland-proxy: false`
-- iptables DOCKER-USER chain: blocks all direct container access from outside
-- iptables: only loopback traffic allowed to reach Docker bridges (cloudflared → Traefik)
+- ufw default-deny inbound: the only open port is SSH (rate-limited); no container port is ever publicly reachable
+- Traefik is a non-root host binary and reaches Docker only via a read-only docker-socket-proxy (POST=0, loopback) — it never holds the raw docker.sock
 
 ### App-level authentication
 
