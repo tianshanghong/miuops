@@ -26,8 +26,9 @@ relies on the default rather than rewriting it — and the default already exclu
 
 Because the host never reboots itself, a security upgrade that needs a reboot (kernel, glibc)
 or a service restart leaves it patched-on-disk but still running the old code until the
-operator acts. `unattended-upgrades` writes `/var/run/reboot-required` when a reboot is owed —
-check it (or alert on it via the observability role) and reboot in a maintenance window.
+operator acts. Such an upgrade leaves `/var/run/reboot-required` behind (the package postinst
+writes it; `unattended-upgrades` only reads it to decide whether to reboot) — check that file,
+or alert on it via the observability role, and reboot in a maintenance window.
 
 ## Requirements
 
