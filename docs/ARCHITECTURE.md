@@ -15,6 +15,7 @@ Design rationale and internal architecture of miuOps.
 | Single S3 bucket | Backup storage | One bucket, one IAM user, prefixes separate data types. Simplifies lifecycle and Object Lock config. |
 | Two repos | Public tool + private config | miuOps is open-source; user infrastructure is private. Different lifecycles, different audiences. |
 | Registry auth | Stack repo deploy workflow, not Ansible | Registry credentials are deployment-specific (which registries, which tokens). The bootstrap layer shouldn't know about private image registries. Credentials live in `.env` on the server. |
+| userns-remap | Container root ≠ host root | Containers run with `userns-remap: default`, so a container breakout maps to an unprivileged host UID (100000+), not real root. Stacks must use **named volumes** — a remapped container cannot read a root-owned host bind-mount. The read-only docker-socket-proxy is the one component that opts out (`--userns=host`) so it can read the root-owned `docker.sock`. |
 | No backward compat | Clean break | No migration paths, shims, or old-structure support. |
 
 ## Two-Repo Architecture
@@ -151,6 +152,18 @@ Lateral movement blocked:
 - Docker daemon: `icc: false`, `userland-proxy: false`
 - ufw default-deny inbound: the only open port is SSH (rate-limited); no container port is ever publicly reachable
 - Traefik is a non-root host binary and reaches Docker only via a read-only docker-socket-proxy (POST=0, loopback) — it never holds the raw docker.sock
+
+### App-level authentication
+
+Per-stack networks isolate stacks **from each other**, but containers **within** a stack's
+network can reach each other freely (Docker's `icc: false` only governs the default bridge, not
+user-defined networks). "Same network" is therefore **not** a trust boundary.
+
+So **authenticate at the application layer**, not by network position: each service that exposes
+anything to a sibling container must verify the caller itself — a token, password, or mTLS —
+exactly as it would on the public internet. miuops hardens the host and the network edges
+(Cloudflare tunnel, loopback-only publish, per-stack isolation, the publish-time policy-check),
+but intra-stack lateral movement is the application developer's responsibility.
 
 ## Backup Design
 

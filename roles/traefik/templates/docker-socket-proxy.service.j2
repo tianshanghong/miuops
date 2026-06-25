@@ -9,12 +9,16 @@ Requires=docker.service
 # read endpoints Traefik needs (containers, networks, plus the default version/events/ping) are
 # enabled. Bound to loopback so only host processes (Traefik) can reach it. Run as a managed
 # container so the docker.sock access is isolated from the internet-facing Traefik process.
+# --userns=host opts this one container out of userns-remap so it can read the root-owned
+# docker.sock (a remapped container's root is host UID 100000 and cannot read it). User stacks
+# may NOT do this — the policy-check rejects `userns_mode: host`.
 ExecStartPre=-/usr/bin/docker rm -f docker-socket-proxy
 ExecStart=/usr/bin/docker run --rm --name docker-socket-proxy \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -p {{ traefik_proxy_bind }}:2375 \
   -e POST=0 -e CONTAINERS=1 -e NETWORKS=1 \
   --security-opt no-new-privileges \
+  --userns=host \
   {{ traefik_proxy_image }}
 ExecStop=/usr/bin/docker stop docker-socket-proxy
 Restart=on-failure
