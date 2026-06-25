@@ -1,78 +1,43 @@
 # Firewall Role
 
-Manages **only host-owned netfilter state** and never touches Docker's chains — this is
-what lets it coexist with Docker 28+ (which restructured its iptables integration into
-`DOCKER-FORWARD`, `DOCKER-CT`, `DOCKER-BRIDGE`, … chains).
+Host inbound firewall via **ufw**: zero open inbound ports except SSH. Docker manages its
+own `FORWARD`/NAT chains and is not touched.
 
-## Ownership model
+## Model
 
-- **INPUT** — zero open inbound ports: default `DROP`, established/related accept, lo,
-  management nets, SSH rate-limit, optional whitelist, trailing `DROP`. The IPv6 INPUT
-  also carries the required ICMPv6/NDP allow block (without it `DROP` silently breaks
-  all IPv6).
-- **OUTPUT / FORWARD policy** — `OUTPUT ACCEPT`, `FORWARD DROP` (policy only; the role
-  never adds rules to or flushes the FORWARD chain).
-- **DOCKER-USER** — container isolation. Docker owns the chain itself and the
-  `FORWARD → DOCKER-USER` jump; this role owns the *contents*. The catch-all `DROP`
-  blocks all external ingress to published ports **regardless of bind address** (so a
-  `-p 8080:80` / `0.0.0.0` publish is still not reachable from the internet).
+- **INPUT** — `ufw default deny incoming`; only SSH is allowed (rate-limited via `ufw limit`),
+  plus optional management networks and a port whitelist. IPv6 inbound is denied too, with
+  ufw's built-in ICMPv6/NDP allows (so `deny` does not break IPv6).
+- **OUTPUT** — `allow outgoing`.
+- **FORWARD** — left at policy `DROP` (`DEFAULT_FORWARD_POLICY="DROP"`). Docker inserts its
+  own explicit `FORWARD` ACCEPT rules at the top of the chain and re-sets the FORWARD policy
+  to DROP itself, so container forwarding/egress works before the default policy is reached
+  (verified on-host). The role never adds FORWARD rules.
 
-Everything else in the `filter` table (`DOCKER`, `DOCKER-FORWARD`, `DOCKER-CT`,
-`DOCKER-BRIDGE`, `DOCKER-INTERNAL`, `DOCKER-ISOLATION-*`) is **Docker-owned and never
-modified**.
+Container **published ports are kept off the public interface by the stacks policy**
+(`127.0.0.1:` binds + the CI policy-check), not by this firewall. ufw is not relied on to
+filter Docker's published ports.
 
-## How it's applied
+## Coexistence with Docker
 
-A small applier (`/usr/local/sbin/miuops-firewall.sh <host|docker-user>`) is run by
-three systemd units:
-
-- `miuops-firewall-host.service` — ordered before networking/docker; sets the INPUT
-  zero-port ruleset + policies. Fail-closed: it sets `-P INPUT DROP` first, validates
-  with `iptables-restore --test`, then replaces INPUT via `iptables-restore --noflush`
-  (so OUTPUT/FORWARD/Docker chains are never touched).
-- `miuops-firewall-docker-user.service` — `After`/`PartOf=docker.service`; applies
-  DOCKER-USER as one atomic `iptables-restore --noflush` transaction (so the catch-all `DROP` is never
-  momentarily absent), and re-applies it after every Docker (re)start.
-- `miuops-firewall-docker-user.timer` — periodically reconciles DOCKER-USER to self-heal
-  drift (a no-op when already correct).
-
-The applier asserts the Docker-owned `FORWARD → DOCKER-USER` jump is present and ordered
-before `DOCKER-FORWARD`; if it's missing (Docker-chain corruption) it **fails loudly** —
-repair with `systemctl restart docker`.
-
-Docker is coupled to the host firewall **fail-closed**: a `docker.service` drop-in
-(`Requires=`+`After=miuops-firewall-host.service`) means that if the host firewall can't
-be applied, Docker refuses to start — so a firewall failure takes the services offline
-rather than starting containers with their published ports unprotected.
-
-This role does not use `netfilter-persistent`; persistence is the systemd units above.
-(Migrating an older miuops box that used netfilter-persistent? Mask it and remove its
-`/etc/iptables/rules.v{4,6}` once at cutover — its whole-table restore would otherwise
-flush Docker's chains on the next boot.)
-
-## Threat-model boundary
-
-DOCKER-USER protects **bridge-networked** published ports. `network_mode: host` and
-macvlan/ipvlan containers bypass FORWARD/DOCKER-USER and are governed by **INPUT
-(default DROP)** — bind such services to loopback unless a port is intentionally
-whitelisted.
+ufw owns INPUT; Docker owns FORWARD plus its NAT chains. On a fresh host this role runs
+before Docker is installed, so ufw is already enabled by the time Docker starts and builds
+its chains. `ufw enable`/`ufw reload` resets the filter table, so when the ufw config changes
+on a re-converge of a host where Docker is already running, the role restarts Docker once to
+rebuild its chains.
 
 ## Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `firewall_management_networks_v4` | IPv4 management network segments to allow | `[]` |
-| `firewall_management_networks_v6` | IPv6 management network segments to allow | `[]` |
-| `firewall_whitelist_ports_v4` | IPv4 ports to allow (besides SSH) | `[]` |
-| `firewall_whitelist_ports_v6` | IPv6 ports to allow (besides SSH) | `[]` |
-| `ssh_port` | SSH port opened / rate-limited | `"22"` |
-| `firewall_ssh_ratelimit_enabled` | Rate-limit new SSH connections | `true` |
-| `firewall_ssh_ratelimit_hits` | New conns allowed per window | `10` |
-| `firewall_ssh_ratelimit_seconds` | Rate-limit window (seconds) | `60` |
-| `firewall_reconcile_interval` | How often the DOCKER-USER reconcile timer runs | `"5min"` |
+| `firewall_management_networks_v4` | IPv4 management nets allowed inbound (bypass rate-limit) | `[]` |
+| `firewall_management_networks_v6` | IPv6 management nets allowed inbound | `[]` |
+| `firewall_whitelist_ports_v4` | Extra inbound ports to allow besides SSH | `[]` |
+| `firewall_whitelist_ports_v6` | Extra inbound ports (`ufw allow` covers both families) | `[]` |
+| `ssh_port` | SSH port allowed / rate-limited | `"22"` |
+| `firewall_ssh_ratelimit_enabled` | Use `ufw limit` (~6/30s) for SSH instead of plain allow | `true` |
 
 ## Requirements
 
-- `iptables` (nft backend) on the target (Debian/Ubuntu) — provides `iptables-restore`
-  and the `iptables-nft` backend.
-- Docker provides + owns the DOCKER-USER chain and its FORWARD jump.
+- Debian/Ubuntu with `ufw` available.
+- `community.general` collection (provides the `ufw` module).
