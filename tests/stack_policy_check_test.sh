@@ -46,6 +46,7 @@ expect_fail bad-security-opt.yml
 expect_fail bad-devices.yml
 expect_fail bad-cap-prefix.yml
 expect_fail bad-cgroup-host.yml
+expect_fail bad-userns-host.yml
 expect_fail bad-netmode-container.yml
 expect_fail bad-mount-etc.yml
 expect_fail bad-security-opt-equals.yml
