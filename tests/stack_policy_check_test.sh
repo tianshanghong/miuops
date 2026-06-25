@@ -27,6 +27,24 @@ expect_fail() {
     echo "ok   (reject): $1"
   fi
 }
+# Passes (exit 0) AND prints an advisory warning whose text matches $2.
+expect_warn() {
+  out="$("$PY" "$CHECK" "$FIX/$1" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q "$2"; then
+    echo "ok   (warn):   $1"
+  else
+    echo "FAIL (warn):   expected $1 to pass(0) with warning matching '$2' (rc=$rc)"; fail=1
+  fi
+}
+# Passes (exit 0) AND prints NO image warning.
+expect_nowarn() {
+  out="$("$PY" "$CHECK" "$FIX/$1" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -qiE "digest|:latest|untagged"; then
+    echo "ok   (nowarn): $1"
+  else
+    echo "FAIL (nowarn): expected $1 to pass(0) with no image warning (rc=$rc)"; fail=1
+  fi
+}
 
 expect_pass good.yml
 expect_pass good-loopback-longform.yml
@@ -58,6 +76,10 @@ expect_pass good-localtime.yml
 
 expect_fail bad-mount-dotdot.yml
 expect_fail bad-mount-dotslash.yml
+
+# Image pin: an un-pinned image warns (but still passes); a digest-pinned image is silent.
+expect_warn warn-unpinned-image.yml "digest"
+expect_nowarn good-pinned-image.yml
 
 # A batch containing any violating file must fail as a whole.
 if "$PY" "$CHECK" "$FIX/good.yml" "$FIX/bad-privileged.yml" >/dev/null 2>&1; then

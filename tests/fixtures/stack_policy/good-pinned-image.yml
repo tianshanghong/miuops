@@ -1,0 +1,7 @@
+# Digest-pinned image → clean AND no advisory warning.
+services:
+  web:
+    image: nginx@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+    cap_drop: [ALL]
+    ports:
+      - "127.0.0.1:8080:80"

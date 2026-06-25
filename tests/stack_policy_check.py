@@ -20,6 +20,10 @@ privilege at *publish time* (this gate), not with a runtime firewall. A compose 
     sensitive host path (/proc, /sys, /dev, /var/run, ...),
   - passes through host `devices:`.
 
+It also prints a non-fatal WARNING (still exit 0) for any service whose `image:` is not
+digest-pinned — `:latest`, no tag, or a tag without an `@sha256:` digest. Pin a digest for
+reproducible, immutable deploys.
+
 Usage: stack_policy_check.py <compose.yml> [more.yml ...]
 Requires PyYAML (`pip install pyyaml`).
 """
@@ -118,28 +122,56 @@ def _published_host_ip(port):
     return None  # "host:container" or "container" — no explicit host IP
 
 
+def _image_pin_warning(image):
+    """Return an advisory string if an image reference is not digest-pinned, else None.
+
+    A digest-pinned image (`name@sha256:...`) is immutable and reproducible. A bare
+    `:latest`, no tag, or a mutable version tag can change between deploys.
+    """
+    ref = str(image).strip()
+    if "@sha256:" in ref:
+        return None  # digest-pinned — immutable
+    _repo, sep, tag = ref.rpartition(":")
+    has_tag = bool(sep) and "/" not in tag  # a trailing `:port/path` is a registry port, not a tag
+    if not has_tag:
+        return f"image '{ref}' is untagged — pin a digest (image@sha256:...) for an immutable deploy"
+    if tag == "latest":
+        return f"image '{ref}' uses the mutable ':latest' tag — pin a digest (image@sha256:...)"
+    return f"image '{ref}' is not digest-pinned — consider a digest (image@sha256:...) for immutability"
+
+
 def check_file(path):
-    """Return a list of policy-violation strings for one compose file (empty = clean)."""
+    """Return (violations, warnings) for one compose file — both lists of strings.
+
+    Violations cause a non-zero exit; warnings are advisory (e.g. an un-pinned image).
+    """
     try:
         with open(path) as handle:
             doc = yaml.safe_load(handle)
     except (OSError, yaml.YAMLError) as exc:
-        return [f"{path}: cannot read/parse compose file: {exc}"]
+        return [f"{path}: cannot read/parse compose file: {exc}"], []
     if not isinstance(doc, dict):
-        return [f"{path}: not a valid compose mapping"]
+        return [f"{path}: not a valid compose mapping"], []
 
     services = doc.get("services")
     if services is None:
-        return []  # no services → nothing to publish or privilege
+        return [], []  # no services → nothing to publish or privilege
     if not isinstance(services, dict):
-        return [f"{path}: `services` is not a mapping"]
+        return [f"{path}: `services` is not a mapping"], []
 
     violations = []
+    warnings = []
     for name, svc in services.items():
         prefix = f"{path}: service '{name}'"
         if not isinstance(svc, dict):
             violations.append(f"{prefix} is not a mapping")
             continue
+
+        image = svc.get("image")
+        if image is not None:
+            warn = _image_pin_warning(image)
+            if warn:
+                warnings.append(f"{prefix} {warn}")
 
         if _is_truthy(svc.get("privileged")):
             violations.append(f"{prefix} sets privileged")
@@ -209,7 +241,7 @@ def check_file(path):
                 violations.append(f"{path}: network '{net_name}' attaches to the shared default "
                                   "bridge (docker0); use a per-stack network")
 
-    return violations
+    return violations, warnings
 
 
 def main(argv):
@@ -217,8 +249,15 @@ def main(argv):
         sys.stderr.write(__doc__)
         return 2
     all_violations = []
+    all_warnings = []
     for path in argv:
-        all_violations.extend(check_file(path))
+        violations, warnings = check_file(path)
+        all_violations.extend(violations)
+        all_warnings.extend(warnings)
+    if all_warnings:
+        sys.stderr.write("Stack policy-check warnings (advisory, non-blocking):\n")
+        for item in all_warnings:
+            sys.stderr.write(f"  ! {item}\n")
     if all_violations:
         sys.stderr.write("Stack policy-check FAILED:\n")
         for item in all_violations:
