@@ -144,7 +144,7 @@ ansible-playbook playbook.yml --tags docker
 - `scripts/setup-s3-backup.sh` — Create an S3 bucket (Object Lock + lifecycle) and IAM user for backups
 - `images/postgres-walg/` — Custom PostgreSQL 17 + WAL-G image for continuous WAL archiving to S3
 
-The setup script creates a single `{project}-backup` bucket used by both offen (volume tarballs under `vol/`) and WAL-G (database backups under `db/`). Object Lock (Governance, 30 days) prevents deletion; S3 lifecycle transitions to Glacier at 30 days and expires at 90 days.
+The setup script creates a single `{project}-backup` bucket used by both the host-side `backup` role (volume tarballs under `vol/`) and WAL-G (database backups under `db/`). The volume backup is a host `systemd` timer — no container, no `docker.sock` mount; see [roles/backup/README.md](roles/backup/README.md). Object Lock (Governance, 30 days) prevents deletion; S3 lifecycle transitions to Glacier at 30 days and expires at 90 days.
 
 ## Security
 

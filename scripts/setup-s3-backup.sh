@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Setup S3 backup bucket with Object Lock, lifecycle rules, and IAM user
-# Creates a single bucket for both WAL-G database and offen volume backups
+# Creates a single bucket for both WAL-G database and host-side volume backups
 # Idempotent — safe to re-run if a previous run failed partway through
 
 set -e
@@ -170,6 +170,14 @@ aws s3api put-bucket-lifecycle-configuration \
                 "NoncurrentVersionExpiration": {
                     "NoncurrentDays": 90
                 }
+            },
+            {
+                "ID": "abort-incomplete-multipart-uploads",
+                "Status": "Enabled",
+                "Filter": {},
+                "AbortIncompleteMultipartUpload": {
+                    "DaysAfterInitiation": 7
+                }
             }
         ]
     }'
@@ -254,29 +262,39 @@ echo "Secret Key:      $SECRET_ACCESS_KEY"
 echo ""
 echo "Save these credentials now — the secret key cannot be retrieved again."
 echo ""
-echo "--- .env configuration ---"
+echo "--- AWS credentials ---"
 echo ""
-echo "# AWS credentials (shared by offen + WAL-G)"
-echo "AWS_ACCESS_KEY_ID=$ACCESS_KEY_ID"
-echo "AWS_SECRET_ACCESS_KEY=$SECRET_ACCESS_KEY"
-echo "AWS_REGION=$AWS_REGION"
+echo "# Host-side volume backup (Ansible 'backup' role): export these in the"
+echo "# shell you run miuOps from -- they stay env-only and are never committed."
+echo "export AWS_ACCESS_KEY_ID=$ACCESS_KEY_ID"
+echo "export AWS_SECRET_ACCESS_KEY=$SECRET_ACCESS_KEY"
+echo "export AWS_REGION=$AWS_REGION"
 echo ""
-echo "# Offen volume backup (stacks/backup)"
-echo "BACKUP_S3_BUCKET=$BUCKET_NAME"
-echo "BACKUP_S3_PATH=vol"
+echo "# Then in host_vars/<host>.yml:"
+echo "#   backup_enabled: true"
+echo "#   backup_s3_bucket: \"$BUCKET_NAME\""
+echo "#   backup_s3_prefix: \"vol\""
+echo "#   backup_volumes: [ { name: <volume>, stop: [<container>] }, ... ]"
 echo ""
-echo "# WAL-G database backup (set per stack, replace <app-name>)"
-echo "# WALG_S3_PREFIX=s3://${BUCKET_NAME}/db/<app-name>"
+echo "# WAL-G database backup still reads these from the server's .env"
+echo "# (/opt/stacks/.env), per stack:"
+echo "#   AWS_ACCESS_KEY_ID=$ACCESS_KEY_ID"
+echo "#   AWS_SECRET_ACCESS_KEY=$SECRET_ACCESS_KEY"
+echo "#   AWS_REGION=$AWS_REGION"
+echo "#   WALG_S3_PREFIX=s3://${BUCKET_NAME}/db/<app-name>"
 echo ""
 echo "=============================================="
 echo "        Next Steps                            "
 echo "=============================================="
 echo ""
-echo "1. SSH into the server and add the .env values above to /opt/stacks/.env"
-echo "2. Use the pre-built postgres-walg image in your compose file:"
+echo "1. Configure + apply the volume backup role (see roles/backup/README.md):"
+echo "   set backup_* in host_vars/<host>.yml, export the AWS creds above, then"
+echo "   ./miuops apply <host>"
+echo "2. For PostgreSQL, add the .env values above to /opt/stacks/.env and use"
+echo "   the pre-built postgres-walg image in your compose file:"
 echo "   image: ghcr.io/tianshanghong/postgres-walg:17"
 echo "3. Add a host cron job for daily base backups:"
 echo "   0 3 * * * cd /opt/stacks/<app-name> && docker compose exec -T -u postgres db walg-backup.sh"
-echo "4. Set up backup encryption — see docs/BACKUP_ENCRYPTION.md"
-echo "   Strongly recommended: backups include .env (secrets)"
+echo "4. Set up volume backup encryption -- see docs/BACKUP_ENCRYPTION.md"
+echo "   Strongly recommended: volumes may contain secrets/personal data"
 echo "=============================================="

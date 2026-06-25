@@ -1,0 +1,9 @@
+{#
+  Managed by Ansible (roles/backup). Do not edit by hand.
+  The backup job reads this with jq. Each item:
+    { "name": "<docker volume>", "stop": ["<container>", ...] }
+  `stop` may be absent or empty -> hot copy (the script defaults it to []).
+  Rendered via to_nice_json so it is always valid JSON regardless of how the
+  volume / container names are written in host_vars.
+#}
+{{ backup_volumes | to_nice_json }}

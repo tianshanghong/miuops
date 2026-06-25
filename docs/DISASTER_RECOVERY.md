@@ -1,21 +1,27 @@
 # Disaster Recovery
 
-Procedures for restoring services after failures. The backup system uses WAL-G (PostgreSQL continuous archiving) and offen (Docker volume tarballs), both writing to a single S3 bucket with Object Lock protection.
+Procedures for restoring services after failures. The backup system uses WAL-G (PostgreSQL continuous archiving) and a host-side Docker-volume backup (volume tarballs), both writing to a single S3 bucket with Object Lock protection.
 
 ## Backup architecture
 
 ```
 S3 bucket: {project}-backup
-├── db/                    # WAL-G: base backups + WAL segments
+├── db/                          # WAL-G: base backups + WAL segments
 │   ├── basebackups_005/
 │   └── wal_005/
-└── vol/                   # offen: volume tarballs
-    └── backup-YYYYMMDDTHHMMSS.tar.gz
+└── vol/                         # host-side volume tarballs (backup role)
+    └── {volume}/                #   one prefix per Docker volume
+        └── backup-YYYYMMDDTHHMMSSZ.tar[.age]
 ```
 
+- **Volume tarballs** are produced by the Ansible `backup` role: a host `systemd`
+  timer stops each volume's writers, tars the volume, optionally encrypts it, and
+  streams it to S3. One object per volume per run, keyed by UTC timestamp.
+  See [roles/backup/README.md](../roles/backup/README.md).
 - **Object Lock** (Governance, 30 days) prevents deletion of any backup
 - **Lifecycle**: transition to Glacier at 30 days, expire at 90 days
-- **IAM policy**: PutObject + GetObject + ListBucket only (no DeleteObject)
+- **IAM policy**: PutObject + GetObject + ListBucket only (no DeleteObject); the
+  backup job never deletes — retention is enforced by S3 alone
 
 ## Scenario 1: Full server rebuild
 
@@ -75,7 +81,7 @@ git commit --allow-empty -m "Redeploy to new server" && git push
 
 See [Scenario 2](#scenario-2-postgresql-point-in-time-recovery) below.
 
-### 7. Restore volume data from offen
+### 7. Restore volume data
 
 See [Scenario 3](#scenario-3-volume-data-restore) below.
 
@@ -162,70 +168,93 @@ docker compose exec postgres psql -U postgres -c "SELECT pg_is_in_recovery();"
 
 ## Scenario 3: Volume data restore
 
-Restore Docker volume data from offen backup tarballs stored in S3. Run all commands **on the server** — download directly from S3 to avoid double-transferring large backups through your laptop.
+Restore Docker volume data from the host-side volume tarballs stored in S3. Run all commands **on the server** — download directly from S3 to avoid double-transferring large backups through your laptop.
 
-**1. List available backups:**
+Each Docker volume has its own prefix (`vol/{volume}/`), and each run uploads one
+tarball keyed by UTC timestamp. The tar is rooted at the volume's contents (it is
+created with `tar -C /var/lib/docker/volumes/<volume>/_data --numeric-owner -cf - .`),
+so it extracts directly into the target volume's root — there is no wrapper
+directory. The archive is **not gzip-compressed** (extract with `tar -xf`, not
+`-xzf`). Extract with `--numeric-owner` too (below) so UIDs/GIDs are restored as
+numbers — deterministic ownership even when the restore host has a different
+`/etc/passwd` than the source.
+
+**1. List backups for the volume:**
 
 ```bash
-aws s3 ls s3://PROJECT-backup/vol/ --region REGION
+aws s3 ls s3://PROJECT-backup/vol/VOLUME_NAME/ --region REGION
 ```
 
-If encrypted, files will have a `.gpg` or `.age` extension (e.g. `backup-YYYYMMDDTHHMMSS.tar.gz.gpg`).
+If encrypted, files have a `.age` extension (e.g. `backup-YYYYMMDDTHHMMSSZ.tar.age`).
 
 **2. Download the backup:**
 
 ```bash
 # Unencrypted
-aws s3 cp s3://PROJECT-backup/vol/backup-YYYYMMDDTHHMMSS.tar.gz . --region REGION
+aws s3 cp s3://PROJECT-backup/vol/VOLUME_NAME/backup-YYYYMMDDTHHMMSSZ.tar . --region REGION
 
-# Encrypted (include the .gpg or .age extension)
-aws s3 cp s3://PROJECT-backup/vol/backup-YYYYMMDDTHHMMSS.tar.gz.gpg . --region REGION
+# Encrypted (include the .age extension)
+aws s3 cp s3://PROJECT-backup/vol/VOLUME_NAME/backup-YYYYMMDDTHHMMSSZ.tar.age . --region REGION
 ```
 
 **3. Decrypt the backup (if encrypted):**
 
 ```bash
-# GPG (symmetric or asymmetric)
-gpg --decrypt backup-YYYYMMDDTHHMMSS.tar.gz.gpg > backup-YYYYMMDDTHHMMSS.tar.gz
-
-# Age (symmetric — passphrase)
-age --decrypt -o backup-YYYYMMDDTHHMMSS.tar.gz backup-YYYYMMDDTHHMMSS.tar.gz.age
-
-# Age (asymmetric — identity file)
-age --decrypt -i key.txt -o backup-YYYYMMDDTHHMMSS.tar.gz backup-YYYYMMDDTHHMMSS.tar.gz.age
+# age (asymmetric — identity file, SSH private key, or YubiKey-backed identity)
+age --decrypt -i key.txt -o backup-YYYYMMDDTHHMMSSZ.tar backup-YYYYMMDDTHHMMSSZ.tar.age
 ```
 
-If using Age: `apt install age` (Debian/Ubuntu) or download from [github.com/FiloSottile/age](https://github.com/FiloSottile/age). GPG is pre-installed on most systems. For asymmetric methods, you'll need the private key or identity file — transfer it to the server temporarily and remove it after decryption.
+Install age with `apt install age` (Debian/Ubuntu) or download it from
+[github.com/FiloSottile/age](https://github.com/FiloSottile/age). The role
+encrypts to a public key only, so decryption needs the matching private key or
+identity file — transfer it to the server temporarily and remove it afterward, or
+keep the key off the host and decrypt on your laptop while streaming the plaintext
+over SSH (see [Backup Encryption](BACKUP_ENCRYPTION.md)). For a YubiKey-backed
+recipient, decrypt where the key is plugged in, with `age-plugin-yubikey`
+installed.
 
-See [Backup Encryption](BACKUP_ENCRYPTION.md) for details on each method.
-
-**4. Stop the affected services:**
+**4. Stop the consumers of the volume:**
 
 ```bash
-cd /path/to/stack
-docker compose stop
+docker stop CONTAINER [CONTAINER...]
 ```
 
-**5. Extract to the target volume:**
+**5. Extract into the target volume:**
+
+`--numeric-owner` keeps the restored files' UIDs/GIDs as numbers, so ownership is
+correct even when this host's `/etc/passwd` differs from the source host's.
 
 ```bash
 docker run --rm \
-  -v STACK_volume_name:/restore \
-  -v $(pwd)/backup-YYYYMMDDTHHMMSS.tar.gz:/backup.tar.gz \
-  alpine sh -c "cd /restore && tar xzf /backup.tar.gz"
+  -v VOLUME_NAME:/restore \
+  -v "$(pwd)/backup-YYYYMMDDTHHMMSSZ.tar:/backup.tar:ro" \
+  alpine sh -c "cd /restore && tar --numeric-owner -xf /backup.tar"
 ```
 
-**6. Restart services:**
+To restore into a clean volume, clear it first (inside the same `alpine` shell:
+`rm -rf /restore/* /restore/..?* 2>/dev/null; tar --numeric-owner -xf /backup.tar`).
+
+**6. Restart the consumers:**
 
 ```bash
-docker compose up -d
+docker start CONTAINER [CONTAINER...]
 ```
 
-**Note:** The `.env` file (containing all secrets) is included in the backup tarball under `dotenv/.env`. If you need to recover it, extract it from the tarball:
+### Notes on the backup job (`stop` list, downtime, restart policy)
 
-```bash
-tar xzf backup-YYYYMMDDTHHMMSS.tar.gz dotenv/.env
-```
+- A container listed in a volume's `stop` is **down for that whole volume's**
+  stop + tar + encrypt + upload + restart — a window proportional to
+  **volume size ÷ upload bandwidth**, not seconds. Don't put a large,
+  customer-facing writer volume in `stop` expecting sub-minute downtime; use a
+  snapshot/replication approach for those instead.
+- Give every backed-up container `restart: unless-stopped`. The backup script's
+  trap restarts containers it stopped, but it **cannot** catch `SIGKILL` or a
+  host reboot mid-backup; with `restart: unless-stopped`, Docker brings the
+  container back on its own after such an event.
+- A failure on one volume no longer aborts the run: the job restarts that
+  volume's containers, logs the error, continues with the remaining volumes, and
+  exits non-zero at the end. Check `journalctl -u miuops-backup.service` for any
+  per-volume `ERROR` lines after a non-zero run.
 
 ## Scenario 4: Credential rotation
 
@@ -283,9 +312,15 @@ Backups that haven't been tested are not backups. Periodically verify:
 
 2. **WAL-G restore test** — Spin up a throwaway container from the latest backup and run a query against it.
 
-3. **offen backup list** — Confirm volume tarballs exist in S3:
+3. **Volume backup list** — Confirm recent volume tarballs exist in S3 (one
+   prefix per volume):
    ```bash
-   aws s3 ls s3://PROJECT-backup/vol/ --region REGION
+   aws s3 ls s3://PROJECT-backup/vol/ --recursive --region REGION
+   ```
+   You can also trigger a run on demand and watch it:
+   ```bash
+   systemctl start miuops-backup.service
+   journalctl -u miuops-backup.service -f
    ```
 
 4. **Object Lock verification** — Confirm backups cannot be deleted:

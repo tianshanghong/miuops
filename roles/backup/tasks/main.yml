@@ -1,0 +1,143 @@
+---
+# Host-side, stop-consistent Docker volume backup to S3, driven by a systemd
+# timer. No-op unless `backup_enabled`. Self-contained: installs its own
+# dependencies so a `--tags backup` run works on its own (mirrors the
+# observability / cloudflared roles).
+
+# ---- Validate configuration up front -----------------------------------------
+- name: Ensure backup destination + credentials are configured
+  ansible.builtin.assert:
+    that:
+      - backup_s3_bucket | length > 0
+      - backup_aws_access_key_id | length > 0
+      - backup_aws_secret_access_key | length > 0
+      - backup_aws_region | length > 0
+    fail_msg: >-
+      backup_enabled is true but the destination/credentials are incomplete.
+      Set backup_s3_bucket in host_vars and export the AWS credentials before
+      running (see roles/backup/README.md):
+      AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION.
+    quiet: true
+  when: backup_enabled | bool
+  tags: ['backup']
+
+- name: Validate encryption mode
+  ansible.builtin.assert:
+    that:
+      - backup_encryption in ['none', 'age']
+      - not (backup_encryption == 'age' and (backup_age_recipients | length == 0))
+    fail_msg: >-
+      Invalid encryption config. backup_encryption must be one of none|age;
+      age requires backup_age_recipients.
+    quiet: true
+  when: backup_enabled | bool
+  tags: ['backup']
+
+# ---- Dependencies (self-contained) -------------------------------------------
+# awscli streams the upload (`aws s3 cp - s3://...`); jq parses the volume list;
+# tar is base. age is installed only when that encryption mode is used.
+- name: Install backup dependencies (awscli, jq, tar)
+  ansible.builtin.apt:
+    name:
+      - awscli
+      - jq
+      - tar
+    state: present
+    update_cache: true
+  when: backup_enabled | bool
+  tags: ['backup']
+
+- name: Install age (only when encryption=age)
+  ansible.builtin.apt:
+    name: age
+    state: present
+    update_cache: true
+  when:
+    - backup_enabled | bool
+    - backup_encryption == 'age'
+  tags: ['backup']
+
+# ---- Config + secrets --------------------------------------------------------
+- name: Create backup config directory
+  ansible.builtin.file:
+    path: "{{ backup_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0700'
+  when: backup_enabled | bool
+  tags: ['backup']
+
+- name: Deploy AWS credentials env file (sourced by the script; root-only)
+  ansible.builtin.template:
+    src: backup.env.j2
+    dest: "{{ backup_config_dir }}/backup.env"
+    owner: root
+    group: root
+    mode: '0600'
+  no_log: true
+  when: backup_enabled | bool
+  notify: Restart backup timer
+  tags: ['backup']
+
+- name: Deploy volume list
+  ansible.builtin.template:
+    src: volumes.json.j2
+    dest: "{{ backup_config_dir }}/volumes.json"
+    owner: root
+    group: root
+    mode: '0600'
+  when: backup_enabled | bool
+  notify: Restart backup timer
+  tags: ['backup']
+
+# ---- Backup script -----------------------------------------------------------
+- name: Deploy backup script
+  ansible.builtin.template:
+    src: miuops-backup.sh.j2
+    dest: "{{ backup_script_path }}"
+    owner: root
+    group: root
+    mode: '0700'
+  when: backup_enabled | bool
+  notify: Restart backup timer
+  tags: ['backup']
+
+# ---- systemd service + timer -------------------------------------------------
+- name: Deploy backup systemd service
+  ansible.builtin.template:
+    src: miuops-backup.service.j2
+    dest: /etc/systemd/system/miuops-backup.service
+    owner: root
+    group: root
+    mode: '0644'
+  when: backup_enabled | bool
+  notify:
+    - Reload systemd
+    - Restart backup timer
+  tags: ['backup']
+
+- name: Deploy backup systemd timer
+  ansible.builtin.template:
+    src: miuops-backup.timer.j2
+    dest: /etc/systemd/system/miuops-backup.timer
+    owner: root
+    group: root
+    mode: '0644'
+  when: backup_enabled | bool
+  notify:
+    - Reload systemd
+    - Restart backup timer
+  tags: ['backup']
+
+- name: Enable + start the backup timer
+  ansible.builtin.systemd:
+    name: miuops-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: backup_enabled | bool
+  tags: ['backup']
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

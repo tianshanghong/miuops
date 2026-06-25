@@ -1,0 +1,14 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Schedule for miuOps host-side Docker volume backup
+
+[Timer]
+OnCalendar={{ backup_schedule }}
+# Smear the start across a window so a fleet does not all hit S3 at once and to
+# avoid exactly-on-the-hour contention.
+RandomizedDelaySec={{ backup_randomized_delay_sec }}
+# If the machine was off at the scheduled time, run as soon as it is back up.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
