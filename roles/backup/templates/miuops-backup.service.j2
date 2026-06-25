@@ -1,0 +1,37 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=miuOps host-side Docker volume backup to S3
+Documentation=https://github.com/tianshanghong/miuops
+# Only run once the container runtime and network are up.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={{ backup_script_path }}
+
+# --- Sandbox -----------------------------------------------------------------
+# The job legitimately needs: root, the docker CLI (talks to the daemon socket),
+# outbound network (S3), and READ access to /var/lib/docker/volumes. The sandbox
+# blunts a compromised process without breaking any of that. Deliberately NOT
+# using ProtectSystem=strict (it would hide /var/lib/docker behind a read-only
+# overlay and require an explicit allow-list); the looser ProtectSystem=full
+# keeps /etc, /boot and /usr read-only while leaving /var writable for docker.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -45,3 +45,5 @@
       tags: ['cloudflared']
     - role: observability
       tags: ['observability']
+    - role: backup
+      tags: ['backup']

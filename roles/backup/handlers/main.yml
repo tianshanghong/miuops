@@ -1,0 +1,12 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: backup_enabled | bool
+
+- name: Restart backup timer
+  ansible.builtin.systemd:
+    name: miuops-backup.timer
+    state: restarted
+    daemon_reload: true
+  when: backup_enabled | bool
