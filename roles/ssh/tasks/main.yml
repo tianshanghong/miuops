@@ -1,0 +1,40 @@
+---
+# Host SSH hardening: key-only authentication. A fresh host refuses password logins out of
+# the box, so the constant internet-wide SSH password brute-force against the public port is
+# pointless (keys only). Deployed as a drop-in so the distro's base sshd_config is untouched.
+# SSH rate-limiting (ufw limit) lives in roles/firewall, which runs just before this.
+
+- name: Check the deploy user has an authorized key (lockout guard)
+  ansible.builtin.stat:
+    path: "{{ ansible_env.HOME }}/.ssh/authorized_keys"
+  register: ssh_authorized_keys
+
+- name: Refuse to enforce key-only SSH without a key present
+  ansible.builtin.assert:
+    that:
+      - ssh_authorized_keys.stat.exists
+      - (ssh_authorized_keys.stat.size | default(0)) > 0
+    fail_msg: >-
+      The deploy user has no ~/.ssh/authorized_keys on the host — enforcing key-only would
+      lock you out. Add your public key to the host first.
+    quiet: true
+
+- name: Deploy SSH key-only drop-in
+  # 10- so it sorts BEFORE a cloud image's 50-cloud-init.conf: sshd uses the FIRST value it
+  # sees for each keyword and reads sshd_config.d/*.conf in lexical order, so a cloud-init
+  # drop-in setting `PasswordAuthentication yes` would otherwise silently win.
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-miuops-ssh.conf
+    content: |
+      # Managed by Ansible (roles/ssh). Key-only SSH.
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
+      PubkeyAuthentication yes
+      AuthenticationMethods publickey
+    owner: root
+    group: root
+    mode: '0644'
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload sshd
+  become: true

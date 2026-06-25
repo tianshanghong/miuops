@@ -37,6 +37,8 @@
   roles:
     - role: firewall
       tags: ['firewall']
+    - role: ssh
+      tags: ['ssh']
     - role: docker
       tags: ['docker']
     - role: traefik
