@@ -1,0 +1,44 @@
+{{ ansible_managed | comment }}
+[Unit]
+Description=Traefik reverse proxy (miuops host binary)
+After=network-online.target docker-socket-proxy.service
+Wants=network-online.target
+# Traefik discovers stacks through the proxy; without it there is nothing to route.
+Requires=docker-socket-proxy.service
+
+[Service]
+Type=simple
+User={{ traefik_user }}
+Group={{ traefik_group }}
+ExecStart={{ traefik_bin }} --configfile={{ traefik_config_dir }}/traefik.yml
+Restart=on-failure
+RestartSec=5
+
+# Sandbox. Traefik is the most internet-exposed component (it parses internet HTTP arriving
+# via cloudflared), so it runs as a dedicated NON-root user with NO capabilities — the
+# loopback entrypoint is a high port, so CAP_NET_BIND_SERVICE is not needed.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths={{ traefik_data_dir }}
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+SystemCallErrorNumber=EPERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

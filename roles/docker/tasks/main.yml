@@ -108,8 +108,8 @@
 - name: Assert the Docker API is not exposed over TCP (unix socket only)
   # The Docker API over TCP = unauthenticated root on the host. Check every path it can be
   # enabled on, not just daemon.json: the systemd unit/socket (-H/--host tcp, or a TCP
-  # ListenStream incl. a bare port = all interfaces) and any real listener on the API ports
-  # (2375/2376). Fails loud if `ss` is unavailable rather than silently passing. miuops only
+  # ListenStream incl. a bare port = all interfaces) and any non-loopback listener on the API
+  # ports (2375/2376). Fails loud if `ss` is unavailable rather than silently passing. miuops only
   # ever uses the unix socket. (Runs as root — the play sets become.)
   shell: |
     set -e
@@ -121,8 +121,13 @@
       echo "FAIL: docker systemd unit/socket exposes the API over TCP"; exit 1
     fi
     listeners=$(ss -H -tln 2>/dev/null) || { echo "FAIL: ss unavailable; cannot verify the Docker API is not on TCP"; exit 1; }
-    if printf '%s\n' "$listeners" | grep -Eq -- ':(2375|2376)([[:space:]]|$)'; then
-      echo "FAIL: a process is listening on the Docker API TCP port"; exit 1
+    # Only a non-loopback bind on 2375/2376 is the API-over-TCP risk. A loopback-only
+    # read-only docker-socket-proxy (127.0.0.1:2375, used by the traefik role) is allowed: the
+    # daemon.json/unit checks above already prove the daemon itself is not on TCP, and no
+    # container or off-host packet can reach the host loopback.
+    exposed=$(printf '%s\n' "$listeners" | grep -E -- ':(2375|2376)([[:space:]]|$)' | grep -vE -- '(^|[[:space:]])(127\.[0-9.]+|\[::1\]):(2375|2376)([[:space:]]|$)') || true
+    if [ -n "$exposed" ]; then
+      echo "FAIL: a process exposes a Docker API TCP port on a non-loopback address: $exposed"; exit 1
     fi
   changed_when: false
   tags: ['docker']
