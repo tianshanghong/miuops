@@ -1,45 +1,122 @@
 ---
-# Traefik role: bootstrap server directories and upgrade Traefik image
-# Compose deployment is handled by the user's GitOps stack repo
+# Traefik as a non-root host binary + a read-only docker-socket-proxy. Replaces the old
+# container-in-the-stack-repo model — nothing about Traefik lives in /opt/stacks anymore, and
+# the host process reaches each stack's containers directly over the per-stack bridges (no
+# `docker network connect` dance).
 
-# ========== Bootstrap tasks (run on first setup) =============================
+- name: Assert the host architecture is supported
+  ansible.builtin.assert:
+    that: ansible_architecture in traefik_arch_map
+    fail_msg: >-
+      Unsupported architecture '{{ ansible_architecture }}'. Add it to traefik_arch_map and pin
+      its checksum in traefik_sha256 before deploying Traefik on this host.
+    quiet: true
 
+- name: Create traefik group
+  ansible.builtin.group:
+    name: "{{ traefik_group }}"
+    system: true
+  become: true
+
+- name: Create traefik system user
+  ansible.builtin.user:
+    name: "{{ traefik_user }}"
+    group: "{{ traefik_group }}"
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+  become: true
+
+- name: Create traefik config + data directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ traefik_group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ traefik_config_dir }}", owner: root, mode: '0755' }
+    - { path: "{{ traefik_data_dir }}", owner: "{{ traefik_user }}", mode: '0750' }
+  become: true
+
+- name: Download Traefik binary archive (checksum-verified)
+  ansible.builtin.get_url:
+    url: "https://github.com/traefik/traefik/releases/download/v{{ traefik_version }}/traefik_v{{ traefik_version }}_linux_{{ traefik_arch }}.tar.gz"
+    dest: "/tmp/traefik_v{{ traefik_version }}_linux_{{ traefik_arch }}.tar.gz"
+    checksum: "sha256:{{ traefik_sha256[traefik_arch] }}"
+    mode: '0644'
+  become: true
+
+- name: Install Traefik binary
+  ansible.builtin.unarchive:
+    src: "/tmp/traefik_v{{ traefik_version }}_linux_{{ traefik_arch }}.tar.gz"
+    dest: /usr/local/bin
+    include: [traefik]
+    remote_src: true
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  notify: Restart traefik
+
+- name: Deploy Traefik static config
+  ansible.builtin.template:
+    src: traefik.yml.j2
+    dest: "{{ traefik_config_dir }}/traefik.yml"
+    owner: root
+    group: "{{ traefik_group }}"
+    mode: '0640'
+  become: true
+  notify: Restart traefik
+
+- name: Deploy docker-socket-proxy systemd unit
+  ansible.builtin.template:
+    src: docker-socket-proxy.service.j2
+    dest: /etc/systemd/system/docker-socket-proxy.service
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Restart docker-socket-proxy
+
+- name: Deploy Traefik systemd unit
+  ansible.builtin.template:
+    src: traefik.service.j2
+    dest: /etc/systemd/system/traefik.service
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Restart traefik
+
+- name: Enable + start docker-socket-proxy
+  ansible.builtin.systemd:
+    name: docker-socket-proxy.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+- name: Enable + start Traefik
+  ansible.builtin.systemd:
+    name: traefik.service
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+
+# User-stack scaffolding (unchanged): the GitOps repo deploys app stacks under /opt/stacks.
 - name: Create stacks directory
-  file:
+  ansible.builtin.file:
     path: /opt/stacks
     state: directory
     mode: '0755'
-  tags: ['traefik']
+  become: true
 
 - name: Create stacks .env file
-  copy:
+  ansible.builtin.copy:
     content: ""
     dest: /opt/stacks/.env
     mode: '0600'
-    force: no
-  tags: ['traefik']
-
-# ========== Upgrade tasks (idempotent — skipped if stack not yet deployed) ====
-
-- name: Check if Traefik stack is deployed
-  ansible.builtin.stat:
-    path: /opt/stacks/traefik/docker-compose.yml
-  register: traefik_stack_compose
-  tags: ['traefik']
-
-- name: Pull latest Traefik image and recreate container
-  shell: >
-    docker compose -f /opt/stacks/traefik/docker-compose.yml pull &&
-    docker compose -f /opt/stacks/traefik/docker-compose.yml up -d
-  when: traefik_stack_compose.stat.exists
-  tags: ['traefik']
-
-- name: Reconnect Traefik to per-stack ingress networks
-  shell: |
-    for stack in /opt/stacks/*/; do
-      stack="$(basename "$stack")"
-      [ "$stack" = "traefik" ] && continue
-      docker network connect "${stack}_ingress" traefik 2>/dev/null || true
-    done
-  when: traefik_stack_compose.stat.exists
-  tags: ['traefik']
+    force: false
+  become: true

@@ -6,11 +6,11 @@ credentials-file: {{ credentials_file }}
 ingress:
 {% for domain in domains %}
   - hostname: "{{ domain }}"
-    service: https://127.0.0.1:443
+    service: https://127.0.0.1:8443
     originRequest:
       noTLSVerify: true
   - hostname: "*.{{ domain }}"
-    service: https://127.0.0.1:443
+    service: https://127.0.0.1:8443
     originRequest:
       noTLSVerify: true
 {% endfor %}
