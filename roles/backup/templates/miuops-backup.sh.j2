@@ -1,0 +1,270 @@
+#!/usr/bin/env bash
+#
+# Managed by Ansible (roles/backup). Do not edit by hand.
+#
+# Host-side, stop-consistent Docker volume backup to S3.
+#
+# For each volume in the config it: stops the listed containers (so the
+# on-disk data is at rest), streams a tar of the volume's _data directory
+# through optional client-side encryption straight to S3, then restarts the
+# containers. Nothing is staged on local disk and no plaintext copy is written
+# anywhere. Retention is enforced by S3 (Object Lock + lifecycle), so this job
+# never deletes anything.
+#
+# Safety model:
+#   * `set -euo pipefail` + an explicit pipe-status check, so a failure in any
+#     stage of `tar | encrypt | upload` fails the whole job (a naive pipeline
+#     would report only the last command's status and hide a tar/encrypt error).
+#   * A trap restarts every container this run stopped, even on error, signal,
+#     or early exit -- a backup must never leave a service down.
+#   * AWS credentials are sourced from a root-only env file, never passed on the
+#     command line, so they do not appear in `ps` / the process table.
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Configuration (rendered by Ansible)
+# ---------------------------------------------------------------------------
+CONFIG_DIR="{{ backup_config_dir }}"
+ENV_FILE="${CONFIG_DIR}/backup.env"
+VOLUMES_FILE="${CONFIG_DIR}/volumes.json"
+
+S3_BUCKET="{{ backup_s3_bucket }}"
+S3_PREFIX="{{ backup_s3_prefix }}"
+ENCRYPTION="{{ backup_encryption }}"
+ENDPOINT_URL="{{ backup_s3_endpoint_url }}"
+
+# age recipients (one -r flag per recipient).
+AGE_RECIPIENTS=(
+{% for r in backup_age_recipients %}
+  {{ r | quote }}
+{% endfor %}
+)
+
+# Docker's volume storage root. Each named volume lives at <root>/<name>/_data.
+DOCKER_VOLUME_ROOT="/var/lib/docker/volumes"
+
+log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+die() { log "ERROR: $*"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Restart-on-exit safety net
+# ---------------------------------------------------------------------------
+# Every container we stop is appended here. The trap restarts them all on ANY
+# exit path. Idempotent: `docker start` on an already-running container is a
+# no-op, so a normal-path restart followed by the trap is harmless.
+STOPPED_CONTAINERS=()
+
+restart_stopped() {
+  # Preserve the real exit code; this trap must not mask it.
+  local rc=$?
+  # Snapshot the list through a `set -u`-safe guard (an unguarded expansion of a
+  # possibly-empty array is an unbound-variable error on some bash builds).
+  local -a pending=(${STOPPED_CONTAINERS[@]+"${STOPPED_CONTAINERS[@]}"})
+  if [ -n "${pending[*]:-}" ]; then
+    log "Restarting containers stopped during this run: ${pending[*]}"
+    local c
+    for c in "${pending[@]}"; do
+      # Best-effort: never let a failed restart hide the original error, but do
+      # surface it so a stuck container is visible in the journal.
+      if ! docker start "$c" >/dev/null 2>&1; then
+        log "WARNING: failed to restart container '$c' -- check it manually"
+      fi
+    done
+  fi
+  exit "$rc"
+}
+trap restart_stopped EXIT INT TERM
+
+# ---------------------------------------------------------------------------
+# Preconditions
+# ---------------------------------------------------------------------------
+[ -n "$S3_BUCKET" ] || die "S3 bucket is not configured"
+[ -r "$ENV_FILE" ]  || die "credentials file not readable: $ENV_FILE"
+[ -r "$VOLUMES_FILE" ] || die "volume list not readable: $VOLUMES_FILE"
+
+command -v docker >/dev/null 2>&1 || die "docker CLI not found"
+command -v aws    >/dev/null 2>&1 || die "aws CLI not found"
+command -v jq     >/dev/null 2>&1 || die "jq not found"
+command -v tar    >/dev/null 2>&1 || die "tar not found"
+
+case "$ENCRYPTION" in
+  none) ;;
+  age)
+    command -v age >/dev/null 2>&1 || die "encryption=age but 'age' not found"
+    [ -n "${AGE_RECIPIENTS[*]}" ] || die "encryption=age but no recipients configured"
+    ;;
+  *) die "unknown encryption mode: $ENCRYPTION (expected none|age)" ;;
+esac
+
+# Load AWS credentials into the environment (file is 0600 root). Sourcing keeps
+# them out of argv (the file path, not the secrets, is all that is ever passed).
+set -a
+# shellcheck source=/dev/null  # runtime-only path; nothing to follow at lint time
+. "$ENV_FILE"
+set +a
+
+# Endpoint override only when configured (empty arg would break the CLI).
+AWS_ENDPOINT_ARGS=()
+[ -n "$ENDPOINT_URL" ] && AWS_ENDPOINT_ARGS=(--endpoint-url "$ENDPOINT_URL")
+
+# ---------------------------------------------------------------------------
+# Per-volume backup
+# ---------------------------------------------------------------------------
+# Run the tar|encrypt|upload pipeline and fail if ANY stage failed. We capture
+# every stage's status via PIPESTATUS rather than trusting the pipeline's final
+# exit code (which would only reflect the upload).
+#
+# Returns 0 on success and non-zero on a real failure (it does NOT call `die`),
+# so the caller can isolate a single volume's failure without aborting the run.
+#
+# tar exit-code handling: stage 0 is GNU tar. tar exits 1 for "some files differ"
+# / "file changed as we read it" -- benign here (a writer touched a file mid-read;
+# the archive is still valid and complete), so we LOG A WARNING and proceed. Only
+# tar exit >=2 (a real, fatal archiver error) fails the volume. Every other stage
+# (age, aws) is fatal on ANY non-zero status.
+#
+# Empty arrays (AWS_ENDPOINT_ARGS, AGE_ARGS) are expanded with the
+# `${arr[@]+"${arr[@]}"}` guard so they vanish cleanly instead of tripping
+# `set -u` -- an unguarded `"${empty[@]}"` is an unbound-variable error on some
+# bash builds.
+run_pipeline() {
+  local data_dir="$1" key="$2"
+  local -a statuses
+
+  case "$ENCRYPTION" in
+    none)
+      tar -C "$data_dir" --numeric-owner -cf - . \
+        | aws ${AWS_ENDPOINT_ARGS[@]+"${AWS_ENDPOINT_ARGS[@]}"} s3 cp - "s3://${S3_BUCKET}/${key}"
+      statuses=("${PIPESTATUS[@]}")
+      ;;
+    age)
+      tar -C "$data_dir" --numeric-owner -cf - . \
+        | age ${AGE_ARGS[@]+"${AGE_ARGS[@]}"} \
+        | aws ${AWS_ENDPOINT_ARGS[@]+"${AWS_ENDPOINT_ARGS[@]}"} s3 cp - "s3://${S3_BUCKET}/${key}"
+      statuses=("${PIPESTATUS[@]}")
+      ;;
+  esac
+
+  local idx st
+  for idx in "${!statuses[@]}"; do
+    st="${statuses[$idx]}"
+    [ "$st" -eq 0 ] && continue
+    if [ "$idx" -eq 0 ] && [ "$st" -eq 1 ]; then
+      # tar stage, exit 1: "file changed as we read it" -- archive still valid.
+      log "WARNING: tar reported a benign change-during-read (exit 1) for ${key}; archive is intact, continuing"
+      continue
+    fi
+    log "ERROR: backup pipeline stage $idx exited ${st} for ${key}"
+    return 1
+  done
+  return 0
+}
+
+# Pre-build the age recipient flags (-r <recipient> per recipient).
+AGE_ARGS=()
+if [ "$ENCRYPTION" = "age" ]; then
+  for r in "${AGE_RECIPIENTS[@]}"; do
+    AGE_ARGS+=(-r "$r")
+  done
+fi
+
+ext=".tar"
+[ "$ENCRYPTION" = "age" ] && ext=".tar.age"
+
+# Restart the containers this volume stopped and clear the global stop list, so
+# the run can continue to the next volume without leaving this one's services
+# down (and without the EXIT trap redundantly restarting them). Used by BOTH the
+# success path and the per-volume failure path -- the global trap is only the
+# catastrophic backstop, not the normal restart mechanism.
+restart_volume_containers() {
+  local c
+  for c in "$@"; do
+    log "Restarting container '$c'"
+    docker start "$c" >/dev/null || log "WARNING: failed to restart '$c'"
+  done
+  STOPPED_CONTAINERS=()
+}
+
+# Back up a single volume. Returns non-zero on any failure (it does NOT call
+# `die`) so the main loop can isolate one volume's failure and still process the
+# rest. On every return path this volume's stopped containers are restarted here
+# -- we do not rely on the global EXIT trap, because the run continues.
+backup_volume() {
+  local name="$1"
+  shift
+  local stop_list=("$@")
+  local data_dir="${DOCKER_VOLUME_ROOT}/${name}/_data"
+
+  if [ ! -d "$data_dir" ]; then
+    # Nothing stopped yet, so nothing to restart.
+    log "ERROR: volume data dir not found: $data_dir (is '$name' a real docker volume?)"
+    return 1
+  fi
+
+  # Stop writers for a consistent on-disk snapshot. Record each BEFORE issuing
+  # the stop so the trap restarts it even if `docker stop` itself is interrupted.
+  # `stop_list` is empty for a hot-copy volume; the guard keeps `set -u` happy.
+  local c
+  for c in ${stop_list[@]+"${stop_list[@]}"}; do
+    log "Stopping container '$c' for volume '$name'"
+    STOPPED_CONTAINERS+=("$c")
+    if ! docker stop "$c" >/dev/null; then
+      log "ERROR: failed to stop container '$c' for volume '$name'"
+      restart_volume_containers ${stop_list[@]+"${stop_list[@]}"}
+      return 1
+    fi
+  done
+
+  local ts key
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  key="${S3_PREFIX}/${name}/backup-${ts}${ext}"
+
+  log "Archiving volume '$name' -> s3://${S3_BUCKET}/${key}"
+  if ! run_pipeline "$data_dir" "$key"; then
+    log "ERROR: backup failed for volume '$name'"
+    restart_volume_containers ${stop_list[@]+"${stop_list[@]}"}
+    return 1
+  fi
+  log "Uploaded s3://${S3_BUCKET}/${key}"
+
+  # Success: restart this volume's containers now (don't keep services down
+  # across the whole run) and clear the global stop list.
+  restart_volume_containers ${stop_list[@]+"${stop_list[@]}"}
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+volume_count="$(jq 'length' "$VOLUMES_FILE")"
+[ "$volume_count" -gt 0 ] || { log "No volumes configured; nothing to do."; exit 0; }
+
+log "Starting backup of ${volume_count} volume(s) to s3://${S3_BUCKET}/${S3_PREFIX}/ (encryption=${ENCRYPTION})"
+
+# Per-volume failure isolation: a failure backing up ONE volume must not skip the
+# others. `backup_volume` returns non-zero (instead of `die`-ing) and restarts
+# its own containers on the failure path; here we count the failure and move on.
+# `if ! ...` keeps the non-zero return from aborting the script under
+# `set -e`. After the loop we exit non-zero iff any volume failed. The global
+# `trap restart_stopped EXIT INT TERM` remains the catastrophic backstop.
+failures=0
+
+# Read each volume as a TSV row: <name>\t<space-joined stop list>. A missing or
+# empty `stop` defaults to [] (jq's `// []`), yielding an empty field -> hot copy.
+# The guarded expansion of `stop_arr` keeps `set -u` happy when that field is
+# empty. Container names cannot contain whitespace, so a space split is safe.
+while IFS=$'\t' read -r vol_name stop_joined; do
+  stop_arr=()
+  [ -n "$stop_joined" ] && read -r -a stop_arr <<< "$stop_joined"
+  if ! backup_volume "$vol_name" ${stop_arr[@]+"${stop_arr[@]}"}; then
+    failures=$((failures + 1))
+    log "Continuing to next volume after failure on '$vol_name'."
+  fi
+done < <(jq -r '.[] | [.name, ((.stop // []) | join(" "))] | @tsv' "$VOLUMES_FILE")
+
+if [ "$failures" -gt 0 ]; then
+  die "Backup run finished with ${failures} failed volume(s)."
+fi
+
+log "Backup run complete."

@@ -11,6 +11,7 @@ Design rationale and internal architecture of miuOps.
 | Cloudflare Tunnel | Zero exposed ports | All ingress flows through Cloudflare. No public-facing ports on the server. |
 | Traefik | Stateless reverse proxy | Label-based service discovery, no config files to manage per-service. |
 | WAL-G | PostgreSQL backup | Physical backup + continuous WAL archiving to S3, baked into a custom PG image. |
+| Host-side volume backup | Docker volume backup | A host `systemd` timer (Ansible `backup` role) tars each volume and streams it to S3. No container, no `docker.sock` mount — the daemon socket is root-equivalent, so nothing gets it. |
 | Single S3 bucket | Backup storage | One bucket, one IAM user, prefixes separate data types. Simplifies lifecycle and Object Lock config. |
 | Two repos | Public tool + private config | miuOps is open-source; user infrastructure is private. Different lifecycles, different audiences. |
 | Registry auth | Stack repo deploy workflow, not Ansible | Registry credentials are deployment-specific (which registries, which tokens). The bootstrap layer shouldn't know about private image registries. Credentials live in `.env` on the server. |
@@ -33,7 +34,8 @@ miuOps/
 │   ├── docker/               #   Docker engine
 │   ├── firewall/             #   iptables (IPv4 + IPv6)
 │   ├── cloudflared/          #   Cloudflare Tunnel + systemd + DNS
-│   └── traefik/              #   Bootstrap (dirs, network) + upgrades
+│   ├── traefik/              #   Bootstrap (dirs, network) + upgrades
+│   └── backup/               #   Host-side Docker volume backup (systemd timer)
 ├── playbook.yml
 ├── scripts/
 │   └── setup-s3-backup.sh
@@ -83,12 +85,13 @@ my-infra/
 │  - GH Actions  ───────▶  ├─ Traefik (compose)              │
 │  - .env (secrets)  │SSH│  ├─ App containers                 │
 │                    │  │  ├─ PG + WAL-G ──────┐              │
-│                    │  │  ├─ Backup sidecar ──┤              │
-└────────────────────┘  │  └─ Docker volumes   │              │
-                        │                      ▼              │
+│                    │  │  ├─ volume backup ───┤  (systemd    │
+│                    │  │  │                   │   timer,     │
+│                    │  │  └─ Docker volumes   │   host-side) │
+└────────────────────┘  │                      ▼              │
                         │        S3: {project}-backup         │
                         │        ├─ db/* (WAL-G)              │
-                        │        └─ vol/* (offen)             │
+                        │        └─ vol/* (volume tarballs)   │
                         └────────────────────────────────────┘
 ```
 
@@ -155,15 +158,36 @@ Single S3 bucket, single IAM user. Prefixes separate data by type.
 
 ```
 s3://{project}-backup/
-  ├── db/{app-name}/    ← WAL-G (base backups + WAL segments)
-  └── vol/              ← offen/docker-volume-backup (volume tarballs)
+  ├── db/{app-name}/        ← WAL-G (base backups + WAL segments)
+  └── vol/{volume}/         ← host-side volume tarballs (backup role)
 ```
+
+**Volume backups run on the host, not in a container.** The Ansible `backup`
+role installs a `systemd` timer that runs a bash script directly on the host.
+For each configured volume it stops the volume's writing containers (so the
+on-disk data is at rest), tars the volume's `_data` directory, streams it
+through optional client-side encryption, and uploads it straight to S3, then
+restarts the containers.
+
+**Why host-side, no socket?** A backup container has to be told which volumes to
+read and when to stop the writers — historically by mounting the Docker socket
+into the container. The socket is root-equivalent: anything holding it can start
+a privileged container and own the host. Running the job as a host process using
+the host's own `docker` CLI keeps that authority on the host and grants it to no
+container. The job needs no inbound network and stages nothing on disk (it
+streams `tar → encrypt → S3`).
+
+**Consistency.** Stopping the writer before tarring yields an at-rest snapshot.
+Volumes whose writers tolerate a fuzzy copy (append-only logs, rebuildable
+caches) can be listed with an empty stop-set for a hot copy. PostgreSQL is best
+handled by WAL-G (continuous archiving) rather than a stop-the-world tar of its
+data volume.
 
 **Why one bucket?** All credentials live on the same server — separate buckets with separate IAM users don't improve security if the server is compromised (the attacker gets all credentials). One lifecycle policy, one Object Lock config, one bucket to manage. Adding a database means picking a new `WALG_S3_PREFIX`, no AWS operations needed.
 
-**Why one IAM user?** Same reasoning. The IAM user gets Put, Get, List permissions only — no Delete. Object Lock (Governance, 30 days) prevents deletion by anyone without the `s3:BypassGovernanceRetention` permission. Backups can optionally be encrypted client-side (GPG or Age) before upload — see [Backup Encryption](BACKUP_ENCRYPTION.md).
+**Why one IAM user?** Same reasoning. The IAM user gets Put, Get, List permissions only — no Delete. The backup job itself never deletes; retention is enforced entirely by S3 (Object Lock + lifecycle), so a compromised host cannot erase history. Object Lock (Governance, 30 days) prevents deletion by anyone without the `s3:BypassGovernanceRetention` permission. Volume backups can optionally be encrypted client-side (age) before upload — see [Backup Encryption](BACKUP_ENCRYPTION.md).
 
-For restore procedures, see [Disaster Recovery](DISASTER_RECOVERY.md).
+For role configuration see [roles/backup/README.md](../roles/backup/README.md); for restore procedures, see [Disaster Recovery](DISASTER_RECOVERY.md).
 
 ## Known Limitations
 

@@ -84,10 +84,15 @@ cd $STACK_DIR
 docker compose exec postgres walg-backup.sh
 ```
 
-### Volume backup (offen)
+### Volume backup (host-side `backup` role)
 
 ```bash
-docker exec backup backup
+# Trigger a run now (does not wait for the timer)
+systemctl start miuops-backup.service
+journalctl -u miuops-backup.service -f   # watch it
+
+# When does it next fire?
+systemctl list-timers miuops-backup.timer
 ```
 
 ### List existing backups
@@ -96,8 +101,8 @@ docker exec backup backup
 # PostgreSQL base backups
 docker compose exec postgres wal-g backup-list
 
-# Volume tarballs in S3 (run locally, not on server)
-aws s3 ls s3://PROJECT-backup/vol/ --region REGION
+# Volume tarballs in S3 (one prefix per volume)
+aws s3 ls s3://PROJECT-backup/vol/ --recursive --region REGION
 ```
 
 ## Deploying changes

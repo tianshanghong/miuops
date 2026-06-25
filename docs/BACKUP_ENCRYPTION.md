@@ -1,294 +1,172 @@
 # Backup Encryption
 
-Client-side encryption for Docker volume backups. Encrypts the entire tarball **before** uploading to S3, so backups are unreadable even if AWS credentials are compromised.
+Client-side encryption for the host-side Docker volume backups (the Ansible
+`backup` role). The volume's tar stream is encrypted **before** it is uploaded to
+S3, so backups are unreadable even if AWS credentials — or the objects
+themselves — are compromised.
 
 ## Why encrypt backups?
 
-- **Defense in depth**: S3 has server-side encryption (SSE-S3), but a compromised AWS credential can still read objects. Client-side encryption adds a second layer.
-- **Secrets in backups**: The `.env` file (containing all credentials) is included in the backup tarball. Without encryption, anyone with S3 access can read every secret.
+- **Defense in depth**: S3 has server-side encryption (SSE-S3), but a compromised AWS credential can still read objects. Client-side encryption adds a second layer that the cloud provider's keys do not unlock.
+- **Secrets in backups**: A backed-up volume may contain secrets, tokens, or personal data. Without encryption, anyone with S3 read access sees it in the clear.
 - **Compliance**: Some environments require data-at-rest encryption under the application's control, not just the cloud provider's.
 
 ## How it works
 
-The backup sidecar ([offen/docker-volume-backup](https://github.com/offen/docker-volume-backup)) supports four encryption methods via environment variables. Set **exactly one** — they are mutually exclusive. Setting more than one will cause the backup to fail with an error. When none is set, backups are uploaded unencrypted.
+The backup script pipes the volume tar through an encryption stage before the
+upload: `tar → age → aws s3 cp`. Nothing is staged on disk and no plaintext copy
+is written anywhere. Encrypted objects get a `.age` extension; the object key is
+`vol/<volume>/backup-<UTC>.tar[.age]`.
 
-The sidecar encrypts the tarball after compression and before upload. Encrypted backups get a `.gpg` or `.age` file extension appended automatically.
+Encryption is selected with `backup_encryption` in host_vars (`none` | `age`).
+The `age` mode is **asymmetric (public-key) by design**: only a public key (the
+recipient) lives on the server, so a host compromise yields the backups but not
+the means to decrypt them. There is deliberately no passphrase-on-the-server
+mode — a key the server holds is a key an attacker who owns the server also
+holds.
 
-## Methods
+## age (`backup_encryption: age`)
 
-### GPG symmetric (`GPG_PASSPHRASE`)
+[age](https://github.com/FiloSottile/age) encrypts the tar stream to one or more
+recipients with ChaCha20-Poly1305. List every recipient that should be able to
+decrypt; the backup is readable by any **one** of them (so you can add a break-glass
+key alongside your day-to-day one). The role installs `age` on the host
+automatically when this mode is selected.
 
-Encrypts with AES-256 using a passphrase. Simplest to set up.
+A recipient can be any of:
 
-**Trade-off**: The passphrase lives on the server (in `.env`). If the server is compromised, the attacker has both the backups and the key to decrypt them. Still protects against S3-only credential leaks.
+- a **native age public key** (`age1...`), generated with `age-keygen`;
+- an **SSH public key** (`ssh-ed25519 ...` or `ssh-rsa ...`) — age accepts these
+  directly, and you decrypt with the matching SSH **private** key. Handy for teams
+  that already manage SSH keys and don't want a second key type;
+- a **hardware-backed key** via the
+  [`age-plugin-yubikey`](https://github.com/str4d/age-plugin-yubikey) plugin —
+  the recipient is an `age1yubikey1...` string and the private key never leaves
+  the YubiKey.
 
-**Setup**:
+Because age covers both SSH keys and YubiKey (hardware) keys, the SSH- and
+hardware-token workflows are supported here without needing gpg.
 
-```bash
-# Generate a strong passphrase
-openssl rand -base64 32
-```
+### Setup — native age key
 
-Add to your `.env`:
-
-```
-GPG_PASSPHRASE=your-generated-passphrase
-```
-
-**Decrypt**:
-
-```bash
-gpg --decrypt --batch --passphrase "your-passphrase" backup.tar.gz.gpg > backup.tar.gz
-```
-
-### GPG asymmetric (`GPG_PUBLIC_KEY_RING_FILE`)
-
-Encrypts with a GPG public key. The private key never touches the server — only someone with the private key can decrypt.
-
-**Best for**: Maximum security. Compatible with YubiKey and other hardware security keys for private key storage.
-
-**Note**: This method uses a key **file** (not an env var) because PGP keys are multiline and `.env` files don't support multiline values.
-
-**Setup**:
+Generate a key pair and keep the private half **off** the server:
 
 ```bash
-# Generate a key pair (if you don't already have one)
-gpg --full-generate-key
-
-# Export the public key to a file
-gpg --armor --export your-key-id > public_key.asc
-
-# Copy the key file to the server
-scp public_key.asc user@server:/opt/stacks/gpg-public-key.asc
+age-keygen -o key.txt
+# Public key: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
 ```
 
-Then edit `stacks/backup/docker-compose.yml` in your stack repo to add the env var and volume mount:
+Store `key.txt` somewhere safe (password manager, offline media). Configure the
+public half in `host_vars/<host>.yml`:
 
 ```yaml
-services:
-  backup:
-    environment:
-      GPG_PUBLIC_KEY_RING_FILE: /keys/public_key.asc
-    volumes:
-      - /opt/stacks/gpg-public-key.asc:/keys/public_key.asc:ro
+backup_encryption: age
+backup_age_recipients:
+  - "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
 ```
 
-**Decrypt**:
+### Setup — SSH public key
+
+No new key material needed: use the public key you already have. Only the public
+key goes on the server; the matching private key decrypts.
+
+```yaml
+backup_encryption: age
+backup_age_recipients:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@laptop"
+```
+
+### Setup — YubiKey (hardware-backed key)
+
+Install the plugin and generate an identity that lives on the YubiKey, then use
+its recipient string on the server. The private key never exists as a file.
 
 ```bash
-# With the private key in your local GPG keyring
-gpg --decrypt backup.tar.gz.gpg > backup.tar.gz
-
-# With a YubiKey (private key on hardware)
-gpg --decrypt backup.tar.gz.gpg > backup.tar.gz
-# GPG will prompt for the YubiKey PIN
+# On your workstation, YubiKey plugged in
+age-plugin-yubikey            # interactive: creates an identity on the key
+age-plugin-yubikey --list     # prints the recipient: age1yubikey1q...
 ```
 
-### Age symmetric (`AGE_PASSPHRASE`)
+```yaml
+backup_encryption: age
+backup_age_recipients:
+  - "age1yubikey1qwt50d05nh5vutpdzmlg5wn80xq8aysptv7n8q6jvncxw3kn9x6qzhgz4n"
+```
 
-Encrypts with ChaCha20-Poly1305 using a passphrase. Modern alternative to GPG symmetric.
+Decryption later requires the YubiKey (and `age-plugin-yubikey` installed on the
+machine doing the restore).
 
-**Trade-off**: Same as GPG symmetric — passphrase lives on the server.
+## Decrypt
 
-**Setup**:
+Run on a machine that holds the matching identity:
 
 ```bash
-# Generate a strong passphrase
-openssl rand -base64 32
+# native age identity file
+age --decrypt -i key.txt -o backup.tar backup.tar.age
+
+# SSH private key
+age --decrypt -i ~/.ssh/id_ed25519 -o backup.tar backup.tar.age
+
+# YubiKey-backed identity (age-plugin-yubikey installed; touch/PIN as configured)
+age --decrypt -i <(age-plugin-yubikey --identity) -o backup.tar backup.tar.age
 ```
 
-Add to your `.env`:
+If you lose the only identity that can decrypt a backup, **that backup is
+unrecoverable**. Keep a second recipient (a break-glass age key, or a printed
+copy of `key.txt`) in a secure offline location, and add it to
+`backup_age_recipients` so every object is encrypted to both.
 
-```
-AGE_PASSPHRASE=your-generated-passphrase
-```
+## Restoring on a large volume
 
-**Decrypt**:
+For a big backup, avoid round-tripping it through your laptop. Two options:
 
-```bash
-age --decrypt -o backup.tar.gz backup.tar.gz.age
-# age will prompt for the passphrase
-```
+- **Decrypt on the server with a transferred identity.** Copy the age identity
+  file (or SSH private key) to the server temporarily, decrypt in place, then
+  remove it. Simple, but the key briefly lives on the host.
+- **Decrypt on your laptop, stream to the server.** If the identity must never
+  touch the server (e.g. a YubiKey), pull the object to your laptop, decrypt
+  there, and pipe the plaintext tar back over SSH:
 
-### Age asymmetric (`AGE_PUBLIC_KEYS`)
+  ```bash
+  aws s3 cp s3://PROJECT-backup/vol/VOLUME/backup-TS.tar.age - --region REGION \
+    | age --decrypt -i ~/.ssh/id_ed25519 \
+    | ssh user@server 'cat > /tmp/backup-TS.tar'
+  ```
 
-Encrypts with an Age public key. Supports native Age keys and SSH keys (`ssh-ed25519`, `ssh-rsa`).
-
-**Best for**: Teams already using SSH keys. No GPG keyring management needed.
-
-**Setup with Age keys**:
-
-```bash
-# Generate an Age key pair
-age-keygen -o key.txt
-# Output: public key: age1...
-```
-
-Add the public key to your `.env`:
-
-```
-AGE_PUBLIC_KEYS=age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
-```
-
-**Setup with SSH keys**:
-
-```bash
-# Use an existing SSH public key
-cat ~/.ssh/id_ed25519.pub
-```
-
-Add the SSH public key to your `.env`:
-
-```
-AGE_PUBLIC_KEYS=ssh-ed25519 AAAA...
-```
-
-**Decrypt**:
-
-```bash
-# With Age identity file
-age --decrypt -i key.txt -o backup.tar.gz backup.tar.gz.age
-
-# With SSH private key
-age --decrypt -i ~/.ssh/id_ed25519 -o backup.tar.gz backup.tar.gz.age
-```
-
-## Choosing a method
-
-| | GPG symmetric | GPG asymmetric | Age symmetric | Age asymmetric |
-|---|---|---|---|---|
-| Env var | `GPG_PASSPHRASE` | `GPG_PUBLIC_KEY_RING_FILE` | `AGE_PASSPHRASE` | `AGE_PUBLIC_KEYS` |
-| Config via | `.env` | Key file + compose edit | `.env` | `.env` |
-| Algorithm | AES-256 | AES-256 | ChaCha20-Poly1305 | ChaCha20-Poly1305 |
-| Secret on server | Passphrase | Public key only | Passphrase | Public key only |
-| Hardware key support | No | YubiKey | No | SSH keys |
-| Setup complexity | Low | Medium | Low | Low |
-| Decrypt tooling | `gpg` | `gpg` | `age` | `age` |
-| Best for | Simple setups | Maximum security | Simple setups | SSH-based teams |
-
-**Recommendation**: Use **GPG asymmetric** if you want maximum security (private key never on server, YubiKey compatible). Use **Age asymmetric with SSH keys** if your team already has SSH keys and wants minimal setup.
-
-## YubiKey integration
-
-GPG asymmetric encryption works with YubiKey (or other OpenPGP smartcards). The private key lives on the YubiKey and never exists as a file — only the public key is needed on the server for encryption.
-
-### How it works
-
-- **Encryption** (automated daily backup): Uses only the public key file on the server. No YubiKey involved.
-- **Decryption** (manual disaster recovery): Requires the YubiKey. GPG talks to the smartcard to perform the decryption operation.
-
-### Setup
-
-Follow the [GPG asymmetric setup](#gpg-asymmetric-gpg_public_key_ring_file) above. If your key pair already lives on a YubiKey, just export the public key:
-
-```bash
-gpg --armor --export your-key-id > public_key.asc
-scp public_key.asc user@server:/opt/stacks/gpg-public-key.asc
-```
-
-### Decrypting with a YubiKey
-
-You have two options for decryption during a restore:
-
-**Option A: Decrypt on your laptop, transfer the tarball**
-
-Simplest approach. Download the encrypted backup to your laptop, decrypt locally (YubiKey plugged in), then upload the decrypted tarball to the server:
-
-```bash
-# On your laptop
-aws s3 cp s3://PROJECT-backup/vol/backup.tar.gz.gpg . --region REGION
-gpg --decrypt backup.tar.gz.gpg > backup.tar.gz   # YubiKey prompts for PIN
-scp backup.tar.gz user@server:/tmp/
-```
-
-Trade-off: the backup transits through your laptop. Impractical for very large backups.
-
-**Option B: GPG agent forwarding over SSH (recommended for large backups)**
-
-Forward your local `gpg-agent` socket to the server so `gpg --decrypt` on the server uses the YubiKey plugged into your laptop. The backup data stays on the server — only the crypto operations travel over SSH.
-
-1. **Import your public key on the server** (one-time setup, so GPG knows which smartcard to ask for):
-
-   ```bash
-   # On the server
-   gpg --import /opt/stacks/gpg-public-key.asc
-   ```
-
-2. **Enable agent forwarding in the server's sshd_config** (one-time setup):
-
-   ```
-   # /etc/ssh/sshd_config
-   StreamLocalBindUnlink yes
-   ```
-
-   Restart sshd: `sudo systemctl restart sshd`
-
-3. **SSH in with agent forwarding**:
-
-   ```bash
-   # Find your local agent socket
-   gpgconf --list-dir agent-extra-socket
-   # e.g. /Users/you/.gnupg/S.gpg-agent.extra
-
-   # Find the remote agent socket
-   ssh user@server gpgconf --list-dir agent-socket
-   # e.g. /run/user/1000/gnupg/S.gpg-agent
-
-   # Connect with forwarding
-   ssh -R /run/user/1000/gnupg/S.gpg-agent:/Users/you/.gnupg/S.gpg-agent.extra user@server
-   ```
-
-4. **Decrypt on the server** (YubiKey prompts for PIN on your laptop):
-
-   ```bash
-   gpg --decrypt backup.tar.gz.gpg > backup.tar.gz
-   ```
-
-**Tip**: Add the forwarding to your `~/.ssh/config` so you don't have to type the socket paths each time:
-
-```
-Host myserver
-    HostName 203.0.113.10
-    User admin
-    RemoteForward /run/user/1000/gnupg/S.gpg-agent /Users/you/.gnupg/S.gpg-agent.extra
-```
-
-### Notes
-
-- If your YubiKey has a touch policy for decryption, you'll need to touch the key when GPG prompts during `--decrypt`.
-- The YubiKey PIN stays on your laptop: `pinentry` prompts for it locally, passes it to `gpg-agent`, which sends it to the YubiKey over USB. Only the decryption request and result travel over the SSH tunnel — the PIN never crosses the network.
-- If you lose the YubiKey and have no backup of the private key, **encrypted backups are unrecoverable**. Keep a backup key in a secure offline location (e.g. a second YubiKey or a printed paperkey stored in a safe).
+  Only the (encrypted) object and the resulting plaintext cross the wire; the
+  private key stays on the laptop / YubiKey.
 
 ## Verifying encryption
 
-After setting an encryption variable, trigger a manual backup and confirm the output file has the expected extension:
+After setting the encryption variable and applying the role, trigger a run and
+confirm the uploaded object has the expected extension:
 
 ```bash
-# Trigger a manual backup
-docker exec backup backup
+# Trigger a backup run on the server (don't wait for the timer)
+systemctl start miuops-backup.service
+journalctl -u miuops-backup.service -f
 
-# Check S3 for the encrypted file
-aws s3 ls s3://PROJECT-backup/vol/
-# Should show: backup-YYYYMMDDTHHMMSS.tar.gz.gpg (or .age)
+# Check S3 for the encrypted object
+aws s3 ls s3://PROJECT-backup/vol/ --recursive --region REGION
+# Should show: vol/<volume>/backup-YYYYMMDDTHHMMSSZ.tar.age
 ```
 
 ## Restoring encrypted backups
 
-1. Download the backup from S3
-2. Decrypt (see the method-specific instructions above)
-3. Extract the tarball as usual
+1. Download the backup from S3.
+2. Decrypt it (see [Decrypt](#decrypt) above).
+3. Extract the tar (it is **not** gzip-compressed).
 
 ```bash
 # Download
-aws s3 cp s3://PROJECT-backup/vol/backup-YYYYMMDDTHHMMSS.tar.gz.gpg . --region REGION
+aws s3 cp s3://PROJECT-backup/vol/VOLUME/backup-YYYYMMDDTHHMMSSZ.tar.age . --region REGION
 
-# Decrypt (example: GPG symmetric)
-gpg --decrypt --batch --passphrase "your-passphrase" backup-YYYYMMDDTHHMMSS.tar.gz.gpg > backup-YYYYMMDDTHHMMSS.tar.gz
+# Decrypt (age — identity file, SSH private key, or YubiKey)
+age --decrypt -i key.txt -o backup-YYYYMMDDTHHMMSSZ.tar backup-YYYYMMDDTHHMMSSZ.tar.age
 
-# Extract
-tar xzf backup-YYYYMMDDTHHMMSS.tar.gz
+# Extract (the tar is rooted at the volume's contents; --numeric-owner keeps
+# ownership deterministic across hosts)
+tar --numeric-owner -xf backup-YYYYMMDDTHHMMSSZ.tar
 ```
 
-The `.env` file is in the tarball at `dotenv/.env`.
-
-For full restore procedures, see [Disaster Recovery](DISASTER_RECOVERY.md).
+For full restore procedures (extracting straight into a Docker volume), see [Disaster Recovery](DISASTER_RECOVERY.md).
