@@ -1,143 +1,96 @@
 ---
-# Firewall role — host-owned chains only (INPUT + DOCKER-USER + FORWARD policy),
-# never flushing Docker's chains. See docs/superpowers/specs/2026-06-23-firewall-*.
+# Firewall role — host inbound default-deny via ufw.
+#
+# Owns ONLY the host INPUT edge: zero open inbound ports except SSH (+ optional management
+# networks / whitelist). Docker manages its own FORWARD/NAT chains and is not touched; the
+# FORWARD policy is left at DROP (Docker re-adds its own FORWARD ACCEPTs, so container
+# forwarding keeps working). Container published ports are kept off the public interface by
+# the stacks policy (127.0.0.1 binds + the CI policy-check), not by this firewall.
 
-# ========== Packages & nft backend ==========================================
-# iptables-restore + the iptables-nft backend both come from the `iptables` package;
-# persistence is via our own systemd units (we don't use netfilter-persistent) and we
-# drive the kernel through iptables-nft (no `nft` CLI), so no extra package is needed.
-- name: Install iptables (nft backend)
-  apt:
-    name: [iptables]
+- name: Install ufw
+  ansible.builtin.apt:
+    name: ufw
     state: present
   become: true
 
-- name: Select nft backend (IPv4/IPv6)
-  community.general.alternatives:
-    name: "{{ item.name }}"
-    path: "{{ item.path }}"
+- name: Set ufw FORWARD policy DROP + enable IPv6
+  # Leave the FORWARD default at DROP (the secure value) — do NOT weaken it to ACCEPT.
+  # Docker inserts its own explicit FORWARD ACCEPT rules at the top of the chain and re-sets
+  # the FORWARD policy to DROP itself, so container forwarding/egress works before the
+  # default policy is reached (verified on-host). The DROP fallback then drops any forwarded
+  # packet that neither Docker nor ufw explicitly allows.
+  ansible.builtin.lineinfile:
+    path: /etc/default/ufw
+    regexp: "{{ item.re }}"
+    line: "{{ item.line }}"
   loop:
-    - { name: iptables,  path: /usr/sbin/iptables-nft }
-    - { name: ip6tables, path: /usr/sbin/ip6tables-nft }
+    - { re: '^DEFAULT_FORWARD_POLICY=', line: 'DEFAULT_FORWARD_POLICY="DROP"' }
+    - { re: '^IPV6=', line: 'IPV6=yes' }
+  register: fw_defaults
   become: true
 
-- name: Ensure generic restore links exist (fallback)
-  file:
-    src: "/usr/sbin/{{ item }}-nft-restore"
-    dest: "/usr/sbin/{{ item }}-restore"
-    state: link
-    force: yes
-  loop: [iptables, ip6tables]
-  become: true
-
-# ========== Rendered rule artifacts =========================================
-- name: Create miuops-firewall rules directory
-  file:
-    path: /etc/miuops-firewall
-    state: directory
-    mode: '0755'
-  become: true
-
-- name: Detect IPv6 availability on the target (gates v6 render validation)
-  # /proc/net/if_inet6 exists iff the kernel has IPv6 (absent under ipv6.disable=1). On a
-  # v4-only host the v6 `ip6tables-restore --test` validate below would fail the render, so
-  # skip the validate there (the applier's HAVE_V6 guard skips v6 at runtime the same way).
-  stat:
-    path: /proc/net/if_inet6
-  register: fw_v6_present
-
-- name: Render INPUT (v4) ruleset
-  template:
-    src: host.v4.rules.j2
-    dest: /etc/miuops-firewall/host.v4.rules
-    mode: '0600'
-    validate: iptables-restore --test --noflush %s
-  become: true
-  notify: Apply host firewall
-
-- name: Render INPUT (v6) ruleset
-  template:
-    src: host.v6.rules.j2
-    dest: /etc/miuops-firewall/host.v6.rules
-    mode: '0600'
-    validate: "{{ 'ip6tables-restore --test --noflush %s' if fw_v6_present.stat.exists else omit }}"
-  become: true
-  notify: Apply host firewall
-
-- name: Render DOCKER-USER ruleset
-  template:
-    src: docker-user.rules.j2
-    dest: /etc/miuops-firewall/docker-user.rules
-    mode: '0600'
-    # No render-time validate: on a fresh host the DOCKER-USER chain doesn't exist
-    # yet (this role runs before docker). The applier validates the SAME file with
-    # `iptables-restore --test` at apply time, after `-N DOCKER-USER` — validated==applied.
-  become: true
-  notify: Apply docker-user firewall
-
-- name: Install the applier
-  template:
-    src: miuops-firewall.sh.j2
-    dest: /usr/local/sbin/miuops-firewall.sh
-    mode: '0755'
-  become: true
-  notify:
-    - Apply host firewall
-    - Apply docker-user firewall
-
-# ========== systemd units ===================================================
-- name: Install systemd units
-  template:
-    src: "{{ item }}.j2"
-    dest: "/etc/systemd/system/{{ item }}"
-    mode: '0644'
+- name: ufw default policies (deny inbound, allow outbound)
+  community.general.ufw:
+    direction: "{{ item.direction }}"
+    policy: "{{ item.policy }}"
   loop:
-    - miuops-firewall-host.service
-    - miuops-firewall-docker-user.service
-    - miuops-firewall-docker-user.timer
-  become: true
-  notify: Reload systemd
-
-- name: Ensure docker.service.d exists (for the fail-closed firewall drop-in)
-  file:
-    path: /etc/systemd/system/docker.service.d
-    state: directory
-    mode: '0755'
+    - { direction: incoming, policy: deny }
+    - { direction: outgoing, policy: allow }
   become: true
 
-- name: Require the host firewall before Docker (fail-closed drop-in)
-  # Docker Requires+After the host firewall unit: if the firewall can't be applied, Docker
-  # does not start (no containers, no exposed published ports) instead of starting with
-  # DOCKER-USER at its permissive default. Installed here in the firewall role (before the
-  # docker role) + daemon-reloaded below, so the first Docker start already respects it.
-  template:
-    src: docker-firewall-dep.conf.j2
-    dest: /etc/systemd/system/docker.service.d/10-require-firewall.conf
-    mode: '0644'
-  become: true
-  notify: Reload systemd
-
-- name: Reload systemd now (so enable/start below see the units)
-  meta: flush_handlers
-
-- name: Enable + start host firewall unit
-  systemd:
-    name: miuops-firewall-host.service
-    enabled: yes
-    state: started
+- name: Allow management networks (these bypass the SSH rate-limit)
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ item }}"
+  loop: "{{ (firewall_management_networks_v4 | default([])) + (firewall_management_networks_v6 | default([])) }}"
   become: true
 
-- name: Enable docker-user unit + reconcile timer
-  systemd:
-    name: "{{ item }}"
-    enabled: yes
-  loop:
-    - miuops-firewall-docker-user.service
-    - miuops-firewall-docker-user.timer
+- name: Allow SSH (rate-limited unless disabled)
+  community.general.ufw:
+    rule: "{{ 'limit' if (firewall_ssh_ratelimit_enabled | bool) else 'allow' }}"
+    port: "{{ ssh_port }}"
+    proto: tcp
   become: true
 
-- name: Start reconcile timer
-  systemd:
-    name: miuops-firewall-docker-user.timer
-    state: started
+- name: Allow whitelisted inbound ports
+  community.general.ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop: "{{ (firewall_whitelist_ports_v4 | default([])) + (firewall_whitelist_ports_v6 | default([])) }}"
+  become: true
+
+- name: Enable ufw with logging (LAST — all allow rules are in place, so no lockout)
+  community.general.ufw:
+    state: enabled
+    logging: "on"
+  register: fw_ufw_enable
+  become: true
+
+- name: Reload ufw when /etc/default/ufw changed on an already-enabled host
+  # `ufw enable` reads /etc/default/ufw, so a first enable already applies the FORWARD/IPv6
+  # settings. Only an already-enabled host (enable is a no-op) needs an explicit reload when
+  # those defaults change. Inline (not a deferred handler) so the Docker rebuild below runs
+  # AFTER the last ufw filter-table mutation.
+  community.general.ufw:
+    state: reloaded
+  when: fw_defaults is changed and fw_ufw_enable is not changed
+  become: true
+
+- name: Check whether Docker is running
+  ansible.builtin.command: systemctl is-active docker
+  register: fw_docker_active
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Restart Docker to rebuild its chains after a ufw enable/reload
+  # `ufw enable`/`ufw reload` resets the filter table. On a fresh host this role runs before
+  # Docker is installed, so there is nothing to rebuild (skipped). It fires only when ufw
+  # actually changed AND Docker is already running — a re-converge that changed the ufw
+  # config — so Docker rebuilds its chains after the table reset.
+  ansible.builtin.systemd:
+    name: docker
+    state: restarted
+  when: (fw_ufw_enable is changed or fw_defaults is changed) and fw_docker_active.stdout == "active"
   become: true

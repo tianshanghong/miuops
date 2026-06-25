@@ -91,6 +91,7 @@
   copy:
     content: |
       {
+        "ip": "127.0.0.1",
         "icc": false,
         "userland-proxy": false,
         "no-new-privileges": true,
@@ -102,6 +103,28 @@
     dest: /etc/docker/daemon.json
     mode: '0644'
   notify: Restart Docker
+  tags: ['docker']
+
+- name: Assert the Docker API is not exposed over TCP (unix socket only)
+  # The Docker API over TCP = unauthenticated root on the host. Check every path it can be
+  # enabled on, not just daemon.json: the systemd unit/socket (-H/--host tcp, or a TCP
+  # ListenStream incl. a bare port = all interfaces) and any real listener on the API ports
+  # (2375/2376). Fails loud if `ss` is unavailable rather than silently passing. miuops only
+  # ever uses the unix socket. (Runs as root — the play sets become.)
+  shell: |
+    set -e
+    if [ -f /etc/docker/daemon.json ] && grep -q 'tcp://' /etc/docker/daemon.json; then
+      echo "FAIL: tcp:// configured in /etc/docker/daemon.json"; exit 1
+    fi
+    units=$(systemctl cat docker.service docker.socket 2>/dev/null) || true
+    if printf '%s\n' "$units" | grep -Eq -- '(-H|--host)[ =]*tcp|ListenStream=[[:space:]]*([^/]*:)?(2375|2376)([[:space:]]|$)|ListenStream=.*0\.0\.0\.0'; then
+      echo "FAIL: docker systemd unit/socket exposes the API over TCP"; exit 1
+    fi
+    listeners=$(ss -H -tln 2>/dev/null) || { echo "FAIL: ss unavailable; cannot verify the Docker API is not on TCP"; exit 1; }
+    if printf '%s\n' "$listeners" | grep -Eq -- ':(2375|2376)([[:space:]]|$)'; then
+      echo "FAIL: a process is listening on the Docker API TCP port"; exit 1
+    fi
+  changed_when: false
   tags: ['docker']
 
 - name: Ensure Docker is enabled and started

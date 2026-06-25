@@ -1,0 +1,6 @@
+services:
+  proxy:
+    image: example/proxy:1.0
+    cap_drop: [ALL]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro

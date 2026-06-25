@@ -1,0 +1,6 @@
+services:
+  app:
+    image: example/app:1.0
+    cap_drop: [ALL]
+    security_opt:
+      - seccomp:unconfined

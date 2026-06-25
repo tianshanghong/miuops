@@ -1,0 +1,8 @@
+services:
+  web:
+    image: nginx:1.27
+    cap_drop: [ALL]
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "127.0.0.1:8080:80"
