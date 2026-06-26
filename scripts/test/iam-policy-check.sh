@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Oracle for the per-server backup IAM policy emitted by scripts/setup-s3-backup.sh.
+# Check for the per-server backup IAM policy emitted by scripts/setup-s3-backup.sh.
 #
 # It GENERATES the inline policy for a sample bucket + server (by sourcing the
 # setup script and calling its gen_iam_policy function), then asserts the exact
@@ -130,7 +130,7 @@ assert_false_jq "no other-server (${OTHER_SERVER}/*) object resource" "$POLICY" 
 # --- negative fixtures: prove each assertion CAN fail ------------------------
 # A bad policy that regressed to bucket-wide + added Delete + a Deny + s3:*.
 # Running the SAME filters against it must flip every result; if any of these
-# "negative" checks passes against the bad fixture, the oracle itself is broken.
+# "negative" checks passes against the bad fixture, the check itself is broken.
 echo "== negative fixtures (each must trip the matching assertion) =="
 BAD_POLICY=$(cat <<EOF
 {
@@ -185,8 +185,8 @@ echo "== summary =="
 echo "positive assertions: ${pass} ok, ${fail} fail"
 echo "negative fixtures:   ${neg_ok} ok, ${neg_bad} fail"
 if [ "$fail" -ne 0 ] || [ "$neg_bad" -ne 0 ]; then
-  echo "ORACLE: FAIL"
+  echo "IAM POLICY CHECK: FAIL"
   exit 1
 fi
-echo "ORACLE: PASS"
+echo "IAM POLICY CHECK: PASS"
 exit 0

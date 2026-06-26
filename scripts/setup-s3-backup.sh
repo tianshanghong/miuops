@@ -63,7 +63,7 @@ gen_iam_policy() {
 EOF
 }
 
-# When sourced as a library (by the oracle test), define the functions above and
+# When sourced as a library (by the iam-policy check), define the functions above and
 # stop here -- do NOT run the interactive provisioning flow or touch AWS.
 if [ -n "${MIUOPS_S3_SETUP_LIB:-}" ]; then
     # `return` when sourced; the `exit` is the fallback if run directly with the
