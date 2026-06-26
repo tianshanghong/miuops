@@ -66,27 +66,42 @@
   register: cf_credentials
   tags: ['cloudflared']
 
+# Source of the LOCAL tunnel credential. The miuops CLI decrypts
+# fleet/secrets/<tunnel_id>.json (SOPS+age) to a private temp file on the control
+# node and passes that path as cloudflared_credentials_src. When unset, fall back
+# to the legacy plaintext at {{ playbook_dir }}/files/<tunnel_id>.json so older
+# fleets keep working. Decryption happens only on the control node; the server
+# just receives the plaintext JSON over the Ansible/SSH connection.
+- name: Resolve local tunnel credential source
+  set_fact:
+    cf_cred_src: >-
+      {{ cloudflared_credentials_src
+         if (cloudflared_credentials_src | default('') | length > 0)
+         else playbook_dir + '/files/' + tunnel_id + '.json' }}
+  tags: ['cloudflared']
+
 - name: Check for the local tunnel credentials file
   stat:
-    path: "{{ playbook_dir }}/files/{{ tunnel_id }}.json"
+    path: "{{ cf_cred_src }}"
   delegate_to: localhost
   become: false
   register: cf_local_credentials
   tags: ['cloudflared']
 
-- name: Require tunnel credentials (on the server or in files/)
+- name: Require tunnel credentials (on the server or locally)
   assert:
     that: cf_credentials.stat.exists or cf_local_credentials.stat.exists
     fail_msg: >-
       No tunnel credentials for {{ tunnel_id }}: not on the server at
-      {{ credentials_file }} and not in files/{{ tunnel_id }}.json. Create the
-      tunnel and place its JSON in files/ (see docs/INSTALLATION.md), then re-run.
+      {{ credentials_file }} and no local source at {{ cf_cred_src }}. Bootstrap
+      with the miuops CLI (it encrypts the credential into fleet/secrets/ — see
+      docs/SOPS_SECRETS.md), then re-run.
     quiet: true
   tags: ['cloudflared']
 
 - name: Copy tunnel credentials to the server
   copy:
-    src: "files/{{ tunnel_id }}.json"
+    src: "{{ cf_cred_src }}"
     dest: "{{ credentials_file }}"
     mode: '0600'
   no_log: true

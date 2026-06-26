@@ -26,12 +26,26 @@ jobs:
           shellcheck -S error miuops tests/stack_policy_check_test.sh \
             .github/scripts/discover-changed-servers.sh .github/scripts/deploy-server.sh \
             tests/ssh_deploy_key_validation_test.sh \
-            scripts/test/iam-policy-oracle.sh scripts/setup-s3-backup.sh
+            scripts/test/iam-policy-oracle.sh scripts/setup-s3-backup.sh \
+            tests/sops_test.sh
           bash tests/cli_test.sh
           bash tests/discover_changed_servers_test.sh
           bash tests/deploy_workflow_lint_test.sh
           bash tests/ssh_deploy_key_validation_test.sh
           bash scripts/test/iam-policy-oracle.sh
+
+      - name: SOPS + age secret oracle (self-contained round-trip + tamper)
+        # The oracle generates a throwaway age key and a temp .sops.yaml — no
+        # repo key is used and CI never decrypts real secrets. It proves the
+        # encrypt/decrypt round-trip, that a tampered ciphertext fails closed,
+        # and that the CLI's sops helpers behave (require_sops, 0600 provisioning).
+        run: |
+          command -v sops >/dev/null 2>&1 || {
+            curl -fsSL -o /tmp/sops https://github.com/getsops/sops/releases/download/v3.13.1/sops-v3.13.1.linux.amd64
+            sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+          }
+          command -v age-keygen >/dev/null 2>&1 || sudo apt-get install -y age >/dev/null
+          bash tests/sops_test.sh
 
       - name: Install Ansible
         run: pip install ansible
