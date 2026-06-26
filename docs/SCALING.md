@@ -1,23 +1,12 @@
-# Scaling to a fleet — migration & advanced patterns
+# Scaling & advanced patterns
 
-MiuOps manages multiple servers from one checkout: a flat `inventory.ini` plus one
-`host_vars/<host>.yml` per server (its `domains` + `tunnel_id`); globals come from
-role defaults. See [STRUCTURE.md](STRUCTURE.md) for the layout and
+Your private fleet repo (created from miuops-fleet-template) describes the whole
+fleet: `fleet/inventory.ini` plus one `fleet/host_vars/<server>.yml` per server (its
+`domains` + `tunnel_id`), with SOPS-encrypted tunnel creds + `<server>.env` under
+`fleet/secrets/`. See [STRUCTURE.md](STRUCTURE.md) for the layout and
 [DAILY_OPS.md](DAILY_OPS.md) for the day-to-day commands (`apply`, `add-domain`,
-`remove-domain`). This page covers the **one-time migration** and **optional
-advanced patterns** — none of which the tool requires.
-
-## Migrating an existing single-server setup
-
-1. `mkdir -p host_vars`
-2. Create `host_vars/<inventory_hostname>.yml` with the `domains` and `tunnel_id`
-   from your old `group_vars/all.yml` (see `host_vars/server1.yml.example`).
-3. Delete `group_vars/all.yml`.
-4. Ensure `inventory.ini` lists the host (flat, under `[bare_metal]`).
-5. `ansible-playbook playbook.yml --limit <host>` — should report `changed=0`.
-
-From separate clones: do the above once per server in a single checkout, import
-each server's `files/<tunnel_id>.json`, then retire the old clones.
+`remove-domain`). This page covers **optional advanced patterns** — none of which the
+tool requires.
 
 ## Per-server firewall posture
 
@@ -25,7 +14,7 @@ Each server's exposure is data in its `host_vars`. Defaults are generic-safe (SS
 rate-limited via `ufw limit`). To harden a specific server:
 
 ```yaml
-# host_vars/prod-a.yml
+# fleet/host_vars/prod-a.yml
 firewall_management_networks_v4: ["203.0.113.0/24"]   # allow SSH from these CIDRs
 firewall_ssh_ratelimit_enabled: false                 # then the rate-limiter is optional
 ```
@@ -69,14 +58,11 @@ compose `env_file:` instead of the shared `.env`.
 All optional — the tool never requires them.
 
 - **Environment grouping.** If several servers should share a posture, group them
-  in `inventory.ini` and put shared vars in `group_vars/<group>.yml` (standard
-  Ansible), then `miuops apply <group>` / `ansible-playbook --limit <group>`.
-- **Separate private config repo.** Keep `inventory.ini`, `host_vars/`, and
-  `files/*.json` in a private repo that consumes this public tool: point Ansible at
-  it with `ansible-playbook -i /path/to/fleet/inventory.ini playbook.yml`.
-- **SOPS-encrypted secrets.** Gitignored plaintext is readable by any agent on your
-  machine. Encrypting `host_vars`/`files` with [SOPS](https://github.com/getsops/sops)
-  stores ciphertext in git instead. With a **YubiKey-backed age key for sensitive
-  servers**, an agent cannot decrypt them at all (no hardware) — so it can neither
-  read nor deploy those hosts. (At deploy time the value is decrypted to be used;
-  SOPS protects it at rest.)
+  in `fleet/inventory.ini` and put shared vars in `fleet/group_vars/<group>.yml`
+  (standard Ansible), then `miuops apply <group>`.
+- **YubiKey-backed age key for sensitive servers.** The fleet repo already encrypts
+  tunnel creds + `<server>.env` with [SOPS](https://github.com/getsops/sops),
+  decrypted only on your machine. Backing the age key with a **YubiKey** means an
+  agent on your box cannot decrypt those secrets at all (no hardware) — it can neither
+  read nor deploy those hosts. (At deploy time the value is decrypted locally to be
+  used; SOPS protects it at rest.)

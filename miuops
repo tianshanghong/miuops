@@ -699,7 +699,7 @@ ${existing}
             info "Domain: *.${domain} -> Cloudflare Tunnel -> Traefik"
         done
         echo ""
-        info "Next: create your stack repo from miuops-stack-template"
+        info "Next: create your private fleet repo from miuops-fleet-template"
     fi
 }
 

@@ -48,7 +48,7 @@ observability_enabled: true
 With the env vars from step 2 exported in your shell:
 
 ```bash
-./miuops apply <host>      # or: ansible-playbook playbook.yml --limit <host> --tags observability
+miuops apply <host>        # or: ansible-playbook playbook.yml --limit <host> --tags observability
 ```
 
 Within a few minutes the host's metrics and logs appear in Grafana Cloud. Enable the

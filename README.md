@@ -2,7 +2,7 @@
 
 Ansible-based bootstrap for secure Docker infrastructure on bare metal servers.
 
-miuOps provisions a server with Docker, Traefik, Cloudflare Tunnel, and a ufw firewall — then gets out of the way. Day-to-day service deployment is handled by your own private GitOps stack repo via GitHub Actions.
+miuOps provisions a server with Docker, Traefik, Cloudflare Tunnel, and a ufw firewall — then gets out of the way. Day-to-day service deployment is handled by your own private GitOps **fleet repo** via GitHub Actions.
 
 ## Architecture Overview
 
@@ -37,12 +37,14 @@ miuOps provisions a server with Docker, Traefik, Cloudflare Tunnel, and a ufw fi
 ## Quick Start
 
 ```bash
-git clone https://github.com/tianshanghong/miuops
-cd miuops
-CF_API_TOKEN=your_token ./miuops up root@203.0.113.10 example.com example.org
+# 1. Create your private fleet repo from miuops-fleet-template ("Use this template"),
+#    then clone it and cd in — this is where your fleet's config + stacks live.
+# 2. Install the CLI: clone this repo and put `miuops` on your PATH.
+# 3. From your fleet repo, bootstrap a server (the CLI reads config from ./fleet):
+CF_API_TOKEN=your_token miuops up root@203.0.113.10 example.com example.org
 ```
 
-That's it. Pass one or more domains — the CLI handles Cloudflare Tunnel creation, DNS route registration, config generation, and runs the playbook.
+Pass one or more domains — the CLI creates the Cloudflare Tunnel + DNS routes, writes the server's config into `fleet/`, and converges the host. Commit and push `fleet/`, and GitHub Actions deploys your stacks over SSH.
 
 ### Prerequisites
 
@@ -64,10 +66,10 @@ You also need:
 
 ```bash
 # Preview what would happen without making changes
-CF_API_TOKEN=your_token ./miuops up --dry-run root@203.0.113.10 example.com example.org
+CF_API_TOKEN=your_token miuops up --dry-run root@203.0.113.10 example.com example.org
 
 # SSH user defaults to root if omitted
-CF_API_TOKEN=your_token ./miuops up 203.0.113.10 example.com
+CF_API_TOKEN=your_token miuops up 203.0.113.10 example.com
 ```
 
 ## Commands
@@ -83,9 +85,10 @@ All commands accept `--dry-run` (preview) and `--no-apply` (change config/DNS bu
 
 ## Managing multiple servers
 
-Each server is one line in `inventory.ini` plus one `host_vars/<name>.yml` (its
-`domains` + `tunnel_id`). Run `miuops up` once per server in a single checkout —
-they coexist, and you converge any subset:
+Your fleet repo describes the whole fleet: each server is one line in
+`fleet/inventory.ini` plus one `fleet/host_vars/<name>.yml` (its `domains` +
+`tunnel_id`). The CLI reads `fleet/` from the current directory, so run it from your
+fleet repo — servers coexist and you converge any subset:
 
 ```bash
 miuops apply server-a          # one server
@@ -93,9 +96,6 @@ miuops apply                   # the whole fleet
 ```
 
 Day-to-day domain/converge commands are in [Daily Operations](docs/DAILY_OPS.md).
-See **[Scaling & advanced patterns](docs/SCALING.md)** for migrating from a
-single-server setup and optional patterns (env grouping, SOPS, YubiKey, a
-management-CIDR SSH allowlist).
 
 ## What Gets Deployed
 
@@ -113,7 +113,7 @@ management-CIDR SSH allowlist).
 
 ## Deploy Services
 
-After bootstrap, create your private stack repo from the **[miuops-stack-template](https://github.com/tianshanghong/miuops-stack-template)** — it includes example stacks and a GitHub Actions pipeline that deploys your services on push to `main`.
+After bootstrap, create one private **fleet repo** from the **[miuops-fleet-template](https://github.com/tianshanghong/miuops-fleet-template)** ("Use this template"). The fleet repo describes your whole fleet — `fleet/inventory.ini`, `fleet/host_vars/<server>.yml`, SOPS-encrypted secrets under `fleet/secrets/`, and your per-server Compose stacks under `fleet/stacks/<server>/<stack>/`. It consumes miuOps as a dependency: a ~5-line caller workflow that calls the miuOps reusable `deploy.yml` (pinned to a tag, `secrets: inherit`) — there is no tool code to fork. On push to `main`, GitHub Actions discovers the changed servers and deploys each over SSH.
 
 ## Infrastructure Upgrades
 
@@ -137,19 +137,19 @@ ansible-playbook playbook.yml --tags docker
 
 ## Tunnel Management
 
-- `./miuops up` automatically creates and configures a Cloudflare Tunnel
+- `miuops up` automatically creates and configures a Cloudflare Tunnel
 - DNS CNAME records are created by the CLI via Cloudflare API
-- Re-running `./miuops up` with additional domains adds them (additive — never drops)
-- `./miuops add-domain <host> <domain…>` / `remove-domain <host> <domain…>` manage domains on a live server (remove-domain also deletes the orphaned CNAMEs)
+- Re-running `miuops up` with additional domains adds them (additive — never drops)
+- `miuops add-domain <host> <domain…>` / `remove-domain <host> <domain…>` manage domains on a live server (remove-domain also deletes the orphaned CNAMEs)
 - A domain belongs to exactly one server; assigning it to a second is refused
 - To delete a tunnel, see [Deleting a tunnel](docs/DAILY_OPS.md#deleting-a-tunnel)
 
 ## Backup Setup
 
-- `scripts/setup-s3-backup.sh` — Create an S3 bucket (Object Lock + lifecycle) and IAM user for backups
+- `scripts/setup-s3-backup.sh --server <server>` — Create the shared S3 bucket (Object Lock + lifecycle) and a per-server, prefix-scoped IAM user for backups
 - `images/postgres-walg/` — Custom PostgreSQL 17 + WAL-G image for continuous WAL archiving to S3
 
-The setup script creates a single `{project}-backup` bucket used by both the host-side `backup` role (volume tarballs under `vol/`) and WAL-G (database backups under `db/`). The volume backup is a host `systemd` timer — no container, no `docker.sock` mount; see [roles/backup/README.md](roles/backup/README.md). Object Lock (Governance, 30 days) prevents deletion; S3 lifecycle transitions to Glacier at 30 days and expires at 90 days.
+One shared `{project}-backup` bucket holds every server's backups under a per-server prefix (`<server>/…`); each server gets its own IAM user scoped to only its prefix (no Delete, no cross-prefix access), so a compromised server's key can touch only its own backups. Within a server's prefix the host-side `backup` role stores volume tarballs under `<server>/vol/` and WAL-G stores database backups under `<server>/db/`. The volume backup is a host `systemd` timer — no container, no `docker.sock` mount; see [roles/backup/README.md](roles/backup/README.md). Object Lock (Governance, 30 days) prevents deletion; S3 lifecycle transitions to Glacier at 30 days and expires at 90 days.
 
 ## Security
 
@@ -165,7 +165,7 @@ The setup script creates a single `{project}-backup` bucket used by both the hos
 
 - [Architecture](docs/ARCHITECTURE.md) — Design decisions, network model, and system diagram
 - [Installation Guide](docs/INSTALLATION.md) — Full end-to-end setup walkthrough
-- [Scaling & Advanced](docs/SCALING.md) — Migration to a fleet + optional patterns (env grouping, SOPS, YubiKey)
+- [Scaling & Advanced](docs/SCALING.md) — Optional patterns (env grouping, SOPS, YubiKey)
 - [Repository Structure](docs/STRUCTURE.md) — Directory layout and role descriptions
 - [Disaster Recovery](docs/DISASTER_RECOVERY.md) — Backup restore procedures for all failure scenarios
 - [Daily Operations](docs/DAILY_OPS.md) — Quick reference for day-to-day server management

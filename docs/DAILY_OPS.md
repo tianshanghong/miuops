@@ -102,15 +102,15 @@ systemctl list-timers miuops-backup.timer
 docker compose exec postgres wal-g backup-list
 
 # Volume tarballs in S3 (one prefix per volume)
-aws s3 ls s3://PROJECT-backup/vol/ --recursive --region REGION
+aws s3 ls s3://PROJECT-backup/<server>/vol/ --recursive --region REGION
 ```
 
 ## Deploying changes
 
-Push to your stack repo's `main` branch. GitHub Actions handles deployment automatically:
+Push to your fleet repo's `main` branch. GitHub Actions handles deployment automatically:
 
 ```bash
-# From your stack repo (local machine)
+# From your fleet repo (local machine)
 git add -A && git commit -m "Update config" && git push
 ```
 
@@ -126,12 +126,12 @@ Use `add-domain` — it's additive: only the new domain's DNS is created, existi
 domains are untouched.
 
 ```bash
-CF_API_TOKEN=your_token ./miuops add-domain <host> newdomain.com
+CF_API_TOKEN=your_token miuops add-domain <host> newdomain.com
 ```
 
-`<host>` is the server's alias in `inventory.ini`. This creates the `newdomain.com`
-and `*.newdomain.com` CNAMEs, merges the domain into the host's `host_vars`, and
-re-converges. Then **add Traefik labels** in your stack repo's compose file with
+`<host>` is the server's alias in `fleet/inventory.ini`. This creates the `newdomain.com`
+and `*.newdomain.com` CNAMEs, merges the domain into the host's `fleet/host_vars`, and
+re-converges. Then **add Traefik labels** in your fleet repo's compose file with
 ``Host(`sub.newdomain.com`)`` and deploy.
 
 The Cloudflare API token needs DNS edit permission for the domain's zone (set this
@@ -139,11 +139,11 @@ when [creating the token](INSTALLATION.md#create-a-cloudflare-api-token)).
 
 ## Removing a domain
 
-Use `remove-domain` — it drops the domain from the host's `host_vars`, **deletes the
+Use `remove-domain` — it drops the domain from the host's `fleet/host_vars`, **deletes the
 orphaned CNAMEs** (`d` and `*.d`) for you, and re-converges:
 
 ```bash
-CF_API_TOKEN=your_token ./miuops remove-domain <host> example.org
+CF_API_TOKEN=your_token miuops remove-domain <host> example.org
 ```
 
 No manual Cloudflare dashboard cleanup needed. A server must keep at least one
@@ -169,16 +169,16 @@ For each domain, delete the two CNAME records pointing to `<tunnel-id>.cfargotun
 **3. Clean up local files:**
 
 ```bash
-rm -f files/<tunnel-id>.json
-rm -f host_vars/<host>.yml
-# remove the host's line from inventory.ini — or `rm -f inventory.ini` only if it was your only server
+rm -f fleet/secrets/<tunnel-id>.json
+rm -f fleet/host_vars/<host>.yml
+# remove the host's line from fleet/inventory.ini — or `rm -f fleet/inventory.ini` only if it was your only server
 ```
 
-The next `./miuops up` will create a fresh tunnel.
+The next `miuops up` will create a fresh tunnel.
 
 ## Reconfiguring servers (apply)
 
-Re-converge a server (or the whole fleet) after changing `host_vars` or pulling
+Re-converge a server (or the whole fleet) after changing `fleet/host_vars` or pulling
 tool updates — run from your local machine. `apply` only re-runs the playbook; it
 doesn't touch DNS, so no `CF_API_TOKEN` is needed.
 
