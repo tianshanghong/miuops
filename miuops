@@ -125,7 +125,10 @@ sops_encrypt_tunnel_cred() {  # $1 = tunnel_id
     [[ -f "$src" ]] || die "Tunnel credential not found at ${src}"
     mkdir -p "$SECRETS_DIR"; chmod 700 "$SECRETS_DIR"
     if [[ -f "$dst" ]]; then info "Encrypted tunnel credential already present: ${dst}"; return 0; fi
+    # cloudflared writes the tunnel credential read-only (0400); `cp` preserves that, so
+    # `sops --in-place` cannot rewrite it. Make our copy writable before encrypting.
     if ! ( cd "$FLEET_ROOT" && cp "$src" "fleet/secrets/${tid}.json" \
+            && chmod 600 "fleet/secrets/${tid}.json" \
             && sops --encrypt --input-type json --output-type json --in-place "fleet/secrets/${tid}.json" ); then
         rm -f "$dst"
         die "sops encrypt failed for ${tid}.json
