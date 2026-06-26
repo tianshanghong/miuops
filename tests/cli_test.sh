@@ -6,16 +6,19 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail() { echo "FAIL: $1"; exit 1; }
 
-export MIUOPS_TEST_SCRIPT_DIR="$TMP"
+export MIUOPS_TEST_SCRIPT_DIR="$TMP/tool"   # tool assets (playbook / roles / ansible.cfg)
+export MIUOPS_FLEET_DIR="$TMP/fleet"   # fleet config (inventory + host_vars) lives here
 # shellcheck disable=SC1090
 source "$ROOT/miuops" --source-only
 
 # --- helpers: write_host_vars / hv_tunnel / hv_domains ---
-mkdir -p "$TMP/host_vars"
+mkdir -p "$TMP/fleet/host_vars"
 write_host_vars server-a tunnelA example.com example.org
-[ -f "$TMP/host_vars/server-a.yml" ] || fail "host_vars not written"
+[ -f "$TMP/fleet/host_vars/server-a.yml" ] || fail "host_vars not written"
+# discriminating: config must land in FLEET_DIR, NOT leak into SCRIPT_DIR (the move is the point)
+[ ! -e "$TMP/tool/host_vars/server-a.yml" ] || fail "host_vars leaked into SCRIPT_DIR (path not moved to FLEET_DIR)"
 # host_vars must be written 0600 (portable: Linux `stat -c`, macOS `stat -f`)
-hvperm="$(stat -c '%a' "$TMP/host_vars/server-a.yml" 2>/dev/null || stat -f '%Lp' "$TMP/host_vars/server-a.yml")"
+hvperm="$(stat -c '%a' "$TMP/fleet/host_vars/server-a.yml" 2>/dev/null || stat -f '%Lp' "$TMP/fleet/host_vars/server-a.yml")"
 [ "$hvperm" = "600" ] || fail "host_vars not written 0600 (got $hvperm)"
 hv_tunnel server-a | grep -qx tunnelA      || fail "tunnel_id wrong"
 hv_domains server-a | grep -qx example.com || fail "domain example.com missing"
@@ -27,11 +30,12 @@ hv_domains server-a | grep -qx -- '--' && fail "hv_domains leaked the '---' sepa
 # --- inventory_upsert is additive (does not clobber other hosts) ---
 inventory_upsert server-a 198.51.100.1 root
 inventory_upsert server-b 198.51.100.2 root
-grep -qE '^server-a ' "$TMP/inventory.ini" || fail "server-a missing from inventory"
-grep -qE '^server-b ' "$TMP/inventory.ini" || fail "server-b missing from inventory"
+grep -qE '^server-a ' "$TMP/fleet/inventory.ini" || fail "server-a missing from inventory"
+grep -qE '^server-b ' "$TMP/fleet/inventory.ini" || fail "server-b missing from inventory"
+[ ! -e "$TMP/tool/inventory.ini" ] || fail "inventory leaked into SCRIPT_DIR (path not moved to FLEET_DIR)"
 inventory_upsert server-a 198.51.100.9 admin   # update in place
-[ "$(grep -c '^server-a ' "$TMP/inventory.ini")" = "1" ] || fail "server-a duplicated"
-grep -q 'ansible_host=198.51.100.9' "$TMP/inventory.ini" || fail "server-a not updated"
+[ "$(grep -c '^server-a ' "$TMP/fleet/inventory.ini")" = "1" ] || fail "server-a duplicated"
+grep -q 'ansible_host=198.51.100.9' "$TMP/fleet/inventory.ini" || fail "server-a not updated"
 
 # --- domain_owner finds the owning host ---
 [ "$(domain_owner example.com)" = "server-a" ] || fail "domain_owner wrong"
@@ -48,7 +52,7 @@ valid_domain "$(printf 'a.com\nevil;payload')"  && fail "domain with embedded ne
 
 # --- write_host_vars with zero domains must not emit a '- ""' entry ---
 write_host_vars solo tdx
-grep -q -- '- ""' "$TMP/host_vars/solo.yml" && fail "empty domain entry written"
+grep -q -- '- ""' "$TMP/fleet/host_vars/solo.yml" && fail "empty domain entry written"
 [ -z "$(hv_domains solo)" ] || fail "solo host should have no domains"
 
 # --- cf_zone_id parses the Cloudflare response (curl mocked, no network) ---
@@ -64,6 +68,24 @@ out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"
 echo "$out" | grep -q -- "--limit server-a" || fail "apply --dry-run should show --limit server-a"
 out="$(cd "$ROOT" && ./miuops apply --no-apply server-a 2>&1 || true)"
 echo "$out" | grep -qi "no-apply" || fail "--no-apply should skip converge"
+
+# --- U2: apply with no fleet inventory dies with a clear, actionable error ---
+out="$(cd "$ROOT" && MIUOPS_FLEET_DIR="$TMP/empty-fleet" ./miuops apply 2>&1 || true)"
+echo "$out" | grep -qi 'No fleet inventory'                || fail "apply must die clearly when fleet inventory is missing"
+echo "$out" | grep -qiE 'MIUOPS_FLEET_DIR|fleet repo root' || fail "missing-inventory error must be actionable"
+
+# --- U2: tool-checkout host_vars must NOT silently shadow the fleet's. Ansible loads
+# playbook-adjacent (SCRIPT_DIR) host_vars at HIGHER precedence than inventory-adjacent
+# (FLEET_DIR), so converge must fail closed when the tool checkout still holds host_vars. ---
+mkdir -p "$TMP/tool/host_vars"; : > "$TMP/tool/host_vars/server-a.yml"
+out="$(cd "$ROOT" && ./miuops apply server-a 2>&1 || true)"
+echo "$out" | grep -qiE 'would load over|shadow|tool checkout has host_vars' \
+    || fail "apply must refuse when tool-checkout host_vars could shadow the fleet"
+rm -rf "$TMP/tool/host_vars"
+# positive control: with NO shadowing host_vars, the guard does not fire and apply proceeds
+out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"
+echo "$out" | grep -qiE 'would load over|tool checkout has host_vars' && fail "shadow guard false-fired without tool host_vars"
+echo "$out" | grep -q -- "--limit server-a" || fail "apply --dry-run should proceed when no shadow"
 
 # --- Task 9: add-domain / remove-domain reject unknown hosts (offline) ---
 out="$(cd "$ROOT" && CF_API_TOKEN=x ./miuops add-domain nope new.example 2>&1 || true)"
@@ -86,12 +108,12 @@ write_host_vars rgxhost trx abcdXcom
 inventory_upsert host.a 203.0.113.1 root
 inventory_upsert hostXa 203.0.113.2 root
 inventory_upsert host.a 203.0.113.9 root   # update host.a only
-grep -Fq 'hostXa ansible_host=203.0.113.2 ' "$TMP/inventory.ini" || fail "hostXa clobbered by host.a (dot wildcard)"
-grep -Fq 'host.a ansible_host=203.0.113.9 ' "$TMP/inventory.ini" || fail "host.a not updated"
+grep -Fq 'hostXa ansible_host=203.0.113.2 ' "$TMP/fleet/inventory.ini" || fail "hostXa clobbered by host.a (dot wildcard)"
+grep -Fq 'host.a ansible_host=203.0.113.9 ' "$TMP/fleet/inventory.ini" || fail "host.a not updated"
 
 # remove-domain refuses the last domain BEFORE deleting DNS (no token needed)
 write_host_vars onehost ot only.example
-out="$(cd "$ROOT" && MIUOPS_TEST_SCRIPT_DIR="$TMP" ./miuops remove-domain onehost only.example 2>&1 || true)"
+out="$(cd "$ROOT" && MIUOPS_TEST_SCRIPT_DIR="$TMP/tool" ./miuops remove-domain onehost only.example 2>&1 || true)"
 echo "$out" | grep -qi 'Refusing to remove the last domain' || fail "remove-domain must refuse last domain before deleting"
 
 # apply ensures Galaxy collections (visible in dry-run)
@@ -146,7 +168,7 @@ echo "$out" | grep -qi 'did not confirm deletion' || fail "cf_delete_cname must 
 
 # remove-domain: missing tunnel_id -> hard error
 write_host_vars notunnel "" a.example b.example
-out="$(cd "$ROOT" && MIUOPS_TEST_SCRIPT_DIR="$TMP" ./miuops remove-domain notunnel a.example 2>&1 || true)"
+out="$(cd "$ROOT" && MIUOPS_TEST_SCRIPT_DIR="$TMP/tool" ./miuops remove-domain notunnel a.example 2>&1 || true)"
 echo "$out" | grep -qi 'no tunnel_id' || fail "remove-domain must require a non-empty tunnel_id"
 
 echo "ALL CLI HELPER TESTS PASSED"
