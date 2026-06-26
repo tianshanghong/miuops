@@ -67,7 +67,13 @@ refuse() { # $1=label  $2=value : the value MUST be refused
   fi
 }
 
-# --- Positive controls: real public keys, every allowlisted type, accepted -------
+# All key fixtures below are SYNTHETIC: real-FORMAT headers / type-prefixes (so the
+# allowlist + the 'PRIVATE KEY' guard are exercised honestly) with literal
+# 'testkey' / 'legit' / 'backdoor' filler bodies. NO real, usable, or in-use key
+# material exists anywhere in this file — the private-key blocks are recognizable
+# stubs (e.g. the OpenSSH one is ~132B vs ~400B for a real ed25519 key; its secret
+# scalar is literally 'testkey…'), not generated or copied keys.
+# --- Positive controls: well-formed PUBLIC keys (synthetic), every allowlisted type, accepted ---
 accept "ssh-ed25519" \
   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGtESTKEYtestkeytestkeytestkeytestkey ci-deploy@web1"
 accept "ssh-rsa" \
@@ -82,13 +88,14 @@ accept "sk-ecdsa-sha2 (FIDO2)" \
   "sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZ0estkey deploy@web1"
 
 # --- Negative controls: bad inputs, each refused ---------------------------------
-# A real OpenSSH PRIVATE KEY block fed in by mistake — the exact thing we must refuse.
+# A synthetic OpenSSH PRIVATE KEY block (recognizable header, filler body) — the kind of
+# value an operator might paste by mistake, which we must refuse.
 refuse "OpenSSH private key block" \
   "-----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQy
 NTUxOQAAACDtestkeytestkeytestkeytestkeytestkeytestkeytestkey
 -----END OPENSSH PRIVATE KEY-----"
-# A classic PEM RSA private key (different banner, same 'PRIVATE KEY' substring).
+# A synthetic PEM RSA private key (different banner, same 'PRIVATE KEY' substring).
 refuse "PEM RSA private key block" \
   "-----BEGIN RSA PRIVATE KEY-----
 MIIEpAIBAAKCAQEAtestkeytestkeytestkeytestkeytestkeytestkeytestkey
