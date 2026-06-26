@@ -1,0 +1,118 @@
+name: Deploy fleet stacks
+
+# Reusable workflow that lives in miuops. The operator's private fleet repo adds
+# a tiny caller that runs on push to its main branch:
+#
+#   # .github/workflows/deploy.yml in the FLEET repo
+#   name: Deploy fleet
+#   on:
+#     push:
+#       branches: [main]
+#   jobs:
+#     deploy:
+#       # Pin to an immutable ref. This workflow handles per-server SSH keys, so a
+#       # mutable ref (a branch) would be a server-takeover supply-chain risk.
+#       # A release TAG is the minimum; a full commit SHA is strongest.
+#       uses: tianshanghong/miuops/.github/workflows/deploy.yml@v1
+#       secrets: inherit
+#
+# Per-server secret isolation: each changed server gets its own matrix job with a
+# job-level `environment: <server>`, so it loads ONLY that server's Environment
+# secrets (SSH_HOST/SSH_USER/SSH_PORT/SSH_PRIVATE_KEY/SSH_KNOWN_HOSTS). A matrix
+# job for one server cannot reference another's secrets — that is the isolation.
+# `on.workflow_call` cannot declare an environment, so the binding is at job level
+# (where the matrix context is available). `secrets: inherit` lets this workflow
+# reference secrets at all; the `environment:` binding (not inherit) is what
+# isolates one server from another. The age/SOPS key + Cloudflare token are never
+# GitHub secrets, so inherit cannot leak them.
+
+on:
+  workflow_call:
+    inputs:
+      stacks_dir:
+        description: Path prefix in the fleet repo that holds per-server stacks.
+        type: string
+        required: false
+        default: fleet/stacks
+      remote_stacks_dir:
+        description: Destination prefix on each server.
+        type: string
+        required: false
+        default: /opt/stacks
+
+# Least privilege: read the fleet repo and SSH out. Never write back to the repo.
+permissions:
+  contents: read
+
+# Serialize deploys of the same fleet ref. Do not cancel in progress: a
+# half-finished rsync is worse than a short queue.
+concurrency:
+  group: fleet-deploy-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Determine which servers changed in this push -> a JSON array for the matrix.
+  # Reads no secrets, so a crafted server name has zero secret-exposure surface.
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      servers: ${{ steps.scan.outputs.servers }}
+    steps:
+      # fetch-depth: 0 -> full history so a before..after diff is correct for any
+      # pushed range (the default depth-1 checkout lacks the base commit).
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Scan changed servers
+        id: scan
+        env:
+          # github context reflects the caller's push event. before is the
+          # all-zero SHA on a first push / new branch; the script handles that
+          # and any unknown/rewritten base by deploying all present stacks.
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          STACKS_DIR: ${{ inputs.stacks_dir }}
+        run: |
+          set -euo pipefail
+          servers="$(bash "${GITHUB_WORKSPACE}/.github/scripts/discover-changed-servers.sh")"
+          printf 'servers=%s\n' "$servers" >> "$GITHUB_OUTPUT"
+          printf 'Changed servers: %s\n' "$servers"
+
+  # One isolated runner per changed server.
+  deploy:
+    needs: discover
+    # An empty fromJSON matrix errors. Skip cleanly (green, zero jobs) when no
+    # server changed (e.g. a push that only touched inventory/host_vars).
+    if: needs.discover.outputs.servers != '[]'
+    runs-on: ubuntu-latest
+    environment: ${{ matrix.server }}
+    concurrency:
+      # Never two concurrent deploys to the SAME server; different servers still
+      # run in parallel. Do not cancel: let an in-flight deploy finish.
+      group: fleet-deploy-${{ github.repository }}-${{ github.ref }}-${{ matrix.server }}
+      cancel-in-progress: false
+    strategy:
+      # One server's failure must not cancel the others.
+      fail-fast: false
+      # Bound concurrent SSH fan-out across the fleet.
+      max-parallel: 4
+      matrix:
+        server: ${{ fromJSON(needs.discover.outputs.servers) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Deploy ${{ matrix.server }}
+        env:
+          # Resolve from environment: ${{ matrix.server }} -- this one server only.
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          # Untrusted directory name: only ever passed as an env var / argument,
+          # never concatenated into a command. Re-validated inside the script.
+          SERVER: ${{ matrix.server }}
+          STACKS_DIR: ${{ inputs.stacks_dir }}
+          REMOTE_STACKS_DIR: ${{ inputs.remote_stacks_dir }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/deploy-server.sh"
