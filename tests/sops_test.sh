@@ -212,4 +212,24 @@ grep -q 'trap _sops_cleanup EXIT INT TERM' "$ROOT/miuops" || fail "CLI must arm 
 ) || fail "_sops_cleanup did not shred a registered temp"
 echo "ok: leak hygiene (no RETURN trap, no top-level trap, cleanup shreds registered temps)"
 
+# ── 8. encrypt handles a READ-ONLY source credential. cloudflared writes the tunnel
+# credential 0400 (read-only); `cp` preserves that, so `sops --in-place` cannot rewrite
+# the copy unless we make it writable first. Regression test for that real-VPS bug. ──
+ro_home="$TMP/ro-home"; mkdir -p "$ro_home/.cloudflared"
+ro_tid="ro000000-1111-2222-3333-444455556666"
+printf '{"AccountTag":"acct","TunnelSecret":"c2VjcmV0","TunnelID":"%s"}\n' "$ro_tid" > "$ro_home/.cloudflared/${ro_tid}.json"
+chmod 400 "$ro_home/.cloudflared/${ro_tid}.json"   # mimic cloudflared's read-only cred
+ro_out="$(
+  export HOME="$ro_home" MIUOPS_FLEET_DIR="$TMP/fleet"
+  # shellcheck source=/dev/null
+  source "$ROOT/miuops" --source-only
+  set +e +o pipefail
+  sops_encrypt_tunnel_cred "$ro_tid" 2>&1
+)" || true
+if [ -f "$TMP/fleet/secrets/${ro_tid}.json" ] && grep -q 'ENC\[' "$TMP/fleet/secrets/${ro_tid}.json"; then
+  echo "ok: encrypt handles a read-only (0400) source credential -> ciphertext"
+else
+  fail "encrypt failed on a read-only (0400) source cred — the cloudflared case: ${ro_out}"
+fi
+
 echo "ALL SOPS TESTS PASSED"
