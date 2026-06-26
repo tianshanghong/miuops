@@ -25,11 +25,13 @@ jobs:
           command -v shellcheck >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y shellcheck >/dev/null; }
           shellcheck -S error miuops tests/stack_policy_check_test.sh \
             .github/scripts/discover-changed-servers.sh .github/scripts/deploy-server.sh \
-            tests/ssh_deploy_key_validation_test.sh
+            tests/ssh_deploy_key_validation_test.sh \
+            scripts/test/iam-policy-oracle.sh scripts/setup-s3-backup.sh
           bash tests/cli_test.sh
           bash tests/discover_changed_servers_test.sh
           bash tests/deploy_workflow_lint_test.sh
           bash tests/ssh_deploy_key_validation_test.sh
+          bash scripts/test/iam-policy-oracle.sh
 
       - name: Install Ansible
         run: pip install ansible
