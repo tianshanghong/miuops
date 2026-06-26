@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Oracle for the SOPS+age secret integration. Self-contained: it generates a
+# Verifies the SOPS+age secret integration. Self-contained: it generates a
 # throwaway age key and a temp .sops.yaml so the round-trip needs no operator
 # key and never touches the real fleet repo. Proves, with each assertion able
 # to FAIL independently:
@@ -180,7 +180,7 @@ echo "ok: cloudflared role consumes the local decrypted source with a legacy fal
 # ── 6. set -u safety: the sops helpers must reach their OWN preconditions, never die
 # at a `local` line with "unbound variable". bash expands ALL `local` initializers
 # before assigning, so a same-statement forward reference reads the outer/unset value
-# -> set -u abort (the helper would be dead on arrival, as the round-trip oracle can't
+# -> set -u abort (the helper would be dead on arrival, as the round-trip test can't
 # see). ──────────────────────────────────────────────────────────────────────────
 t6="$TMP/setu.out"
 ( # encrypt helper under set -u: must REACH its own precondition, not die at a `local`.
@@ -212,4 +212,4 @@ grep -q 'trap _sops_cleanup EXIT INT TERM' "$ROOT/miuops" || fail "CLI must arm 
 ) || fail "_sops_cleanup did not shred a registered temp"
 echo "ok: leak hygiene (no RETURN trap, no top-level trap, cleanup shreds registered temps)"
 
-echo "ALL SOPS ORACLE TESTS PASSED"
+echo "ALL SOPS TESTS PASSED"

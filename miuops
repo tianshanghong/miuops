@@ -136,7 +136,7 @@ sops_encrypt_tunnel_cred() {  # $1 = tunnel_id
 }
 
 # The remote command that lands the decrypted .env at /opt/stacks/.env, mode
-# 0600, root-owned, atomically. Kept as a function so the oracle can assert the
+# 0600, root-owned, atomically. Kept as a function so the test can assert the
 # mode/path without running ssh. install(1) sets the mode in one step.
 sops_env_install_cmd() {
     echo "umask 077; install -m 0600 /dev/stdin /opt/stacks/.env"

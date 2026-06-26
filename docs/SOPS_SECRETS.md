@@ -140,7 +140,7 @@ matches.
 ## Verify it works — round-trip and tamper
 
 Run from the fleet repo root (so `.sops.yaml` applies). These are the same checks
-the project's oracle automates.
+the project's tests automate.
 
 **Round-trip** (a secret encrypts, hides its value, and decrypts back):
 
