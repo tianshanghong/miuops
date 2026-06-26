@@ -1,0 +1,16 @@
+---
+# Per-server CI deploy PUBLIC keys to install into the connecting user's
+# authorized_keys (additive). PUBLIC keys only — the operator generates the
+# keypair and keeps the PRIVATE key out of this repo and out of the tool; the
+# private key lives ONLY in the per-server GitHub Environment as a secret.
+#
+# Default is an empty list, so the role is a NO-OP when no key is supplied: an
+# Ansible-only `apply` without the CLI still converges and existing servers are
+# unaffected. Set it per host in fleet/host_vars/<server>.yml, e.g.:
+#
+#   deploy_public_keys:
+#     - "ssh-ed25519 AAAA... ci-deploy@<server>"   # PUBLIC key ONLY
+#
+# Each entry is validated against a public-key allowlist AND refused if it
+# contains 'PRIVATE KEY' (fail-closed) before anything is written.
+deploy_public_keys: []
