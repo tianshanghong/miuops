@@ -78,6 +78,10 @@ set -e
 
 SERVER="${MIUOPS_SERVER:-}"
 PROJECT_NAME="${MIUOPS_PROJECT:-}"
+# Honour a pre-set region (env or --region); prompt only if still unset + interactive.
+AWS_REGION="${AWS_REGION:-${MIUOPS_REGION:-}}"
+# --yes / MIUOPS_ASSUME_YES skips the confirm prompt so the script runs non-interactively.
+ASSUME_YES="${MIUOPS_ASSUME_YES:-false}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -97,11 +101,25 @@ while [[ $# -gt 0 ]]; do
             PROJECT_NAME="${1#*=}"
             shift
             ;;
+        --region)
+            AWS_REGION="$2"
+            shift 2
+            ;;
+        --region=*)
+            AWS_REGION="${1#*=}"
+            shift
+            ;;
+        -y | --yes)
+            ASSUME_YES=true
+            shift
+            ;;
         -h | --help)
-            echo "Usage: $0 [--project <name>] [--server <name>]"
+            echo "Usage: $0 [--project <name>] [--server <name>] [--region <r>] [--yes]"
             echo "  --project <name>  fleet/bucket prefix (bucket = <name>-backup)"
             echo "  --server <name>   per-server identity (IAM user + S3 prefix)"
-            echo "Env: MIUOPS_PROJECT, MIUOPS_SERVER mirror the flags."
+            echo "  --region <r>      AWS region (default us-west-2; skips the region prompt)"
+            echo "  -y, --yes         assume yes — skip the confirm prompt (non-interactive)"
+            echo "Env: MIUOPS_PROJECT, MIUOPS_SERVER, MIUOPS_REGION, MIUOPS_ASSUME_YES mirror the flags."
             exit 0
             ;;
         *)
@@ -180,7 +198,9 @@ BUCKET_NAME="${PROJECT_NAME}-backup"
 # pair scoped to its own "<server>/" prefix only.
 IAM_USER="${BUCKET_NAME}-${SERVER}"
 
-read -rp "Enter AWS region [us-west-2]: " AWS_REGION
+if [[ -z "$AWS_REGION" && -t 0 && "$ASSUME_YES" != true ]]; then
+    read -rp "Enter AWS region [us-west-2]: " AWS_REGION
+fi
 AWS_REGION=${AWS_REGION:-us-west-2}
 
 echo ""
@@ -191,10 +211,17 @@ echo "  - S3 prefix:  ${SERVER}/  (this server's keyspace)"
 echo "  - Object Lock: Governance mode, 30-day retention"
 echo "  - Lifecycle:   Glacier after 30 days, expire after 90 days"
 echo ""
-read -rp "Continue? (y/N): " CONFIRM
-if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
-    echo "Aborted."
-    exit 0
+if [[ "$ASSUME_YES" != true ]]; then
+    if [[ ! -t 0 ]]; then
+        echo "Refusing to proceed without confirmation in a non-interactive shell." >&2
+        echo "Re-run with --yes (or MIUOPS_ASSUME_YES=true) to confirm." >&2
+        exit 1
+    fi
+    read -rp "Continue? (y/N): " CONFIRM
+    if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
+        echo "Aborted."
+        exit 0
+    fi
 fi
 
 # -- Create bucket ------------------------------------------------------------

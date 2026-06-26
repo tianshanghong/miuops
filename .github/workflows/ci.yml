@@ -27,12 +27,13 @@ jobs:
             .github/scripts/discover-changed-servers.sh .github/scripts/deploy-server.sh \
             tests/ssh_deploy_key_validation_test.sh \
             scripts/test/iam-policy-check.sh scripts/setup-s3-backup.sh \
-            tests/sops_test.sh
+            tests/sops_test.sh tests/setup_s3_backup_noninteractive_test.sh
           bash tests/cli_test.sh
           bash tests/discover_changed_servers_test.sh
           bash tests/deploy_workflow_lint_test.sh
           bash tests/ssh_deploy_key_validation_test.sh
           bash scripts/test/iam-policy-check.sh
+          bash tests/setup_s3_backup_noninteractive_test.sh
 
       - name: SOPS + age secret check (self-contained round-trip + tamper)
         # The check generates a throwaway age key and a temp .sops.yaml — no
