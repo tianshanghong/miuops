@@ -9,6 +9,22 @@ SCRIPT_DIR="${MIUOPS_TEST_SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 # (run_apply additionally refuses to converge if the tool checkout still holds host_vars/
 # that Ansible would load at higher precedence than the fleet's.)
 FLEET_DIR="${MIUOPS_FLEET_DIR:-$(pwd)/fleet}"
+# Encrypted secrets (SOPS+age) live under fleet/secrets/. The repo's .sops.yaml
+# (shipped by the fleet template, not by us) sits at the fleet repo ROOT — the
+# parent of FLEET_DIR — and matches '^fleet/secrets/.*\.(json|env)$'. So we always
+# invoke sops with cwd = that ROOT and pass repo-relative 'fleet/secrets/<file>'.
+SECRETS_DIR="${FLEET_DIR}/secrets"
+FLEET_ROOT="$(dirname "$FLEET_DIR")"
+
+# Decrypted plaintext secrets live only in 0600 temp files; shred ALL of them on
+# ANY exit. A per-function RETURN trap does NOT fire when the script exits via die
+# or set -e (a failed converge would otherwise leave the cleartext credential on
+# disk), so every sops temp is registered here and one trap cleans them up.
+_SOPS_TMPS=()
+_sops_cleanup() { [ "${#_SOPS_TMPS[@]}" -gt 0 ] && rm -f "${_SOPS_TMPS[@]}"; return 0; }
+# The trap is armed INSIDE run_apply / sops_provision_env (the only functions that
+# create plaintext temps), NOT at top level — so sourcing the CLI (--source-only,
+# e.g. from a test) does not clobber the sourcer's own EXIT trap.
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -42,6 +58,106 @@ valid_domain() { local re='^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,
 valid_host_alias() { local re='^[A-Za-z0-9._-]+$'; [[ "$1" =~ $re ]]; }
 # Lowercase a domain (DNS is case-insensitive; portable — bash 3.2 lacks ${,,}).
 lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# ── SOPS + age secret helpers ───────────────────────────────────────
+# All SOPS work is LOCAL (operator machine). The age identity is owned entirely
+# by the SOPS env (SOPS_AGE_KEY / SOPS_AGE_KEY_FILE / default keys.txt) — the CLI
+# sets NOTHING and inherits the operator env, so a software age key and an
+# age-plugin-yubikey identity are interchangeable. Plaintext only ever exists in
+# a private temp file (or stdin); it is never committed and never reaches CI.
+
+# Prereq: sops must be on PATH. Fail closed (die) — no secret op can proceed.
+require_sops() {
+    command -v sops >/dev/null 2>&1 || die "sops not found
+  macOS:  brew install sops age
+  Linux:  see https://github.com/getsops/sops/releases (and 'age' for the key)
+  SOPS encrypts tunnel credentials + the app .env into fleet/secrets/."
+    # The .sops.yaml creation_rules use path_regex ^fleet/secrets/..., resolved with
+    # cwd = the fleet repo root, so they only match when the fleet dir is named 'fleet'.
+    [[ "$(basename "$FLEET_DIR")" == "fleet" ]] \
+        || die "MIUOPS_FLEET_DIR must end in '/fleet' (got '$(basename "$FLEET_DIR")') — the SOPS .sops.yaml path_regex expects fleet/secrets/<…>."
+}
+
+# Warn (never die) when no age identity is resolvable. A YubiKey-only setup
+# resolves at touch time, so absence here is informational, not fatal.
+sops_age_default_keys() {
+    # SOPS's default identity file location (XDG on Linux, App Support on macOS).
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        echo "$HOME/Library/Application Support/sops/age/keys.txt"
+    else
+        echo "${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt"
+    fi
+}
+warn_no_age_identity() {
+    [[ -n "${SOPS_AGE_KEY:-}${SOPS_AGE_KEY_FILE:-}" || -f "$(sops_age_default_keys)" ]] && return 0
+    warn "no age identity found (SOPS_AGE_KEY / SOPS_AGE_KEY_FILE / $(sops_age_default_keys)).
+  SOPS decryption will fail unless a YubiKey (age-plugin-yubikey) resolves at touch time.
+  Generate one: see docs/SOPS_SECRETS.md."
+}
+
+# Decrypt a fleet/secrets/<file> to a private 0600 temp file; echo its path.
+# Caller is responsible for shredding the temp file (trap). sops runs with cwd =
+# the fleet repo ROOT so the repo's .sops.yaml applies; path is repo-relative.
+sops_decrypt_to_tmp() {  # $1 = absolute path under SECRETS_DIR
+    local enc="$1" rel tmp
+    [[ -f "$enc" ]] || die "Encrypted secret not found: ${enc}"
+    rel="${enc#"${FLEET_ROOT}"/}"
+    tmp="$(mktemp "${TMPDIR:-/tmp}/miuops.XXXXXX")" || die "mktemp failed"
+    chmod 600 "$tmp"
+    if ! ( cd "$FLEET_ROOT" && sops --decrypt "$rel" ) > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        die "sops decrypt failed for ${enc}
+  - Is an age identity available? (SOPS_AGE_KEY_FILE / default keys.txt / YubiKey plugged in)
+  - Is fleet/secrets present and committed encrypted? (see docs/SOPS_SECRETS.md)"
+    fi
+    printf '%s' "$tmp"
+}
+
+# Encrypt the freshly-created tunnel credential into fleet/secrets/<id>.json,
+# in place, using the recipients from the repo's .sops.yaml. Plaintext stays
+# only in ~/.cloudflared/; the repo only ever receives ciphertext.
+sops_encrypt_tunnel_cred() {  # $1 = tunnel_id
+    # Split the local decls: bash expands ALL `local` initializers before assigning,
+    # so a later var referencing an earlier one in the SAME statement reads the OUTER
+    # (here unset) value -> set -u abort. tid must be its own statement first.
+    local tid="$1"
+    local src="$HOME/.cloudflared/${tid}.json" dst="${SECRETS_DIR}/${tid}.json"
+    [[ -f "$src" ]] || die "Tunnel credential not found at ${src}"
+    mkdir -p "$SECRETS_DIR"; chmod 700 "$SECRETS_DIR"
+    if [[ -f "$dst" ]]; then info "Encrypted tunnel credential already present: ${dst}"; return 0; fi
+    if ! ( cd "$FLEET_ROOT" && cp "$src" "fleet/secrets/${tid}.json" \
+            && sops --encrypt --input-type json --output-type json --in-place "fleet/secrets/${tid}.json" ); then
+        rm -f "$dst"
+        die "sops encrypt failed for ${tid}.json
+  - Is .sops.yaml present at the fleet repo root with an age recipient?
+  - See docs/SOPS_SECRETS.md."
+    fi
+    info "Encrypted tunnel credential -> ${dst} (commit this)"
+}
+
+# The remote command that lands the decrypted .env at /opt/stacks/.env, mode
+# 0600, root-owned, atomically. Kept as a function so the test can assert the
+# mode/path without running ssh. install(1) sets the mode in one step.
+sops_env_install_cmd() {
+    echo "umask 077; install -m 0600 /dev/stdin /opt/stacks/.env"
+}
+
+# Decrypt fleet/secrets/<server>.env LOCALLY and push it to the host's
+# /opt/stacks/.env over SSH at 0600 (root). No plaintext is staged on disk
+# beyond the private temp file, which is shredded on return.
+sops_provision_env() {  # $1 = server (host alias)  $2 = ssh_user@host
+    local server="$1" sshtgt="$2"
+    local enc="${SECRETS_DIR}/${server}.env" tmp   # separate decl: enc needs server set first (set -u)
+    trap _sops_cleanup EXIT INT TERM   # shred the decrypted .env temp on exit/die/signal
+    [[ -f "$enc" ]] || { info "No ${server}.env in fleet/secrets — skipping .env provisioning"; return 0; }
+    if $DRY_RUN; then dry "Would provision /opt/stacks/.env on ${server} (0600, from fleet/secrets/${server}.env)"; return 0; fi
+    tmp="$(sops_decrypt_to_tmp "$enc")"
+    _SOPS_TMPS+=("$tmp")   # shredded by the global EXIT/INT/TERM trap, even on die/signal
+    if ! ssh -o BatchMode=yes "$sshtgt" "$(sops_env_install_cmd)" < "$tmp"; then
+        die "Failed to provision /opt/stacks/.env to ${server}"
+    fi
+    info "Provisioned /opt/stacks/.env on ${server} (0600)"
+}
 
 # ── Config helpers (host_vars + inventory) ──────────────────────────
 hv_path() { echo "${FLEET_DIR}/host_vars/$1.yml"; }
@@ -202,6 +318,7 @@ cf_delete_cname() {
 # Ensures Galaxy collections are installed first, so a fresh control machine can
 # run `apply` without having run `up` beforehand.
 run_apply() {
+    trap _sops_cleanup EXIT INT TERM   # shred decrypted secret temps on exit/die/signal
     local host="${1:-}"
     if $NO_APPLY; then info "--no-apply: skipping converge"; return 0; fi
     [[ -f "${FLEET_DIR}/inventory.ini" ]] \
@@ -222,6 +339,23 @@ run_apply() {
     export ANSIBLE_CONFIG="${SCRIPT_DIR}/ansible.cfg"
     local cmd=(ansible-playbook -i "${FLEET_DIR}/inventory.ini" "${SCRIPT_DIR}/playbook.yml")
     [[ -n "$host" ]] && cmd+=(--limit "$host")
+
+    # If a host is targeted and its tunnel credential is committed encrypted under
+    # fleet/secrets/, decrypt it LOCALLY to a private temp file and hand Ansible the
+    # path via cloudflared_credentials_src. The plaintext never enters git/CI and is
+    # shredded when this function returns. The server still just receives the JSON over
+    # SSH (the role copies the path); decryption happens only on this control node.
+    local _cred_tmp=""
+    if [[ -n "$host" ]]; then
+        local _tid; _tid="$(hv_tunnel "$host")"
+        if [[ -n "$_tid" && "$_tid" != "<would-be-created>" && -f "${SECRETS_DIR}/${_tid}.json" ]]; then
+            require_sops
+            _cred_tmp="$(sops_decrypt_to_tmp "${SECRETS_DIR}/${_tid}.json")"
+            _SOPS_TMPS+=("$_cred_tmp")   # shredded by the global EXIT/INT/TERM trap, even on die/signal
+            cmd+=(-e "cloudflared_credentials_src=${_cred_tmp}")
+        fi
+    fi
+
     if $DRY_RUN; then
         dry "Would install Ansible Galaxy requirements"
         dry "Would run: ${cmd[*]}"
@@ -244,6 +378,7 @@ cmd_apply() {
             *)  host="$1"; shift ;;
         esac
     done
+    [[ -z "$host" ]] || valid_host_alias "$host" || die "Invalid host '${host}'"
     run_apply "$host"
 }
 
@@ -367,6 +502,12 @@ cmd_up() {
         || die "jq not found
   macOS:  brew install jq
   Linux:  sudo apt install jq"
+    # sops is required: the tunnel credential is encrypted into fleet/secrets/ at
+    # bootstrap, and the app .env is decrypted locally before provisioning.
+    require_sops
+    # An age identity is needed to decrypt later; warn (not die) here because a
+    # YubiKey-only setup resolves at touch time, not at preflight.
+    warn_no_age_identity
 
     if ! ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no \
          "${ssh_user}@${ssh_host}" true 2>/dev/null; then
@@ -503,22 +644,13 @@ ${existing}
         fi
     fi
 
-    # Copy credentials
+    # Encrypt the tunnel credential into fleet/secrets/<tunnel_id>.json (SOPS+age).
+    # The plaintext stays only in ~/.cloudflared/; the repo only ever gets ciphertext,
+    # which is safe to commit. run_apply later decrypts a local copy at converge time.
     if ! $DRY_RUN; then
-        mkdir -p "${SCRIPT_DIR}/files"
-        if [[ ! -f "${SCRIPT_DIR}/files/${tunnel_id}.json" ]]; then
-            if [[ -f ~/.cloudflared/${tunnel_id}.json ]]; then
-                cp ~/.cloudflared/"${tunnel_id}.json" "${SCRIPT_DIR}/files/"
-                chmod 600 "${SCRIPT_DIR}/files/${tunnel_id}.json"
-                info "Tunnel credentials copied"
-            else
-                die "Credentials not found at ~/.cloudflared/${tunnel_id}.json
-  - Did 'cloudflared tunnel create' succeed?
-  - Check ~/.cloudflared/ for JSON files"
-            fi
-        fi
+        sops_encrypt_tunnel_cred "$tunnel_id"
     else
-        dry "Would copy tunnel credentials to files/"
+        dry "Would encrypt tunnel credential to fleet/secrets/${tunnel_id}.json (SOPS+age)"
     fi
 
     # ── Step 4: Create DNS records ───────────────────────────────────
@@ -551,6 +683,14 @@ ${existing}
         inventory_upsert "$ssh_host" "$ssh_host" "$ssh_user"
 
         run_apply "$ssh_host"   # installs Galaxy requirements, then converges
+
+        # Provision the app .env (if present, encrypted under fleet/secrets/) to the
+        # host's /opt/stacks/.env at 0600. Decryption is LOCAL; only the plaintext .env
+        # crosses the wire (over SSH), never the age key. CI deploy rsync excludes .env,
+        # so this operator-set file is authoritative.
+        if [[ -f "${SECRETS_DIR}/${ssh_host}.env" ]]; then
+            sops_provision_env "$ssh_host" "${ssh_user}@${ssh_host}"
+        fi
 
         echo ""
         info "${BOLD}Done!${NC} Server bootstrapped."
