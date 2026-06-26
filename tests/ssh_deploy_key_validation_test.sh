@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Oracle for the ssh role's deploy-key validation (fail-closed).
+# Check for the ssh role's deploy-key validation (fail-closed).
 #
 # The ssh role installs only PUBLIC keys into a server's authorized_keys. It must
 # POSITIVELY validate every supplied value against an allowlist of public-key

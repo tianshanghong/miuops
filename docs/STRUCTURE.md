@@ -25,7 +25,7 @@ and stacks) lives in your **separate fleet repo**, created from `miuops-fleet-te
 ├── miuops                     # CLI entry point (miuops up)
 ├── scripts/
 │   └── setup-s3-backup.sh     # Shared S3 bucket + per-server prefix-scoped IAM
-├── tests/                     # CLI/oracle tests + the e2e acceptance harness
+├── tests/                     # CLI/unit tests + the e2e acceptance harness
 └── docs/                      # Documentation
 ```
 
