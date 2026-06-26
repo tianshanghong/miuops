@@ -74,7 +74,7 @@ gh secret set SSH_PRIVATE_KEY --env <server> --body "$(cat deploy_<server>)"
 shred -u deploy_<server>   # private key now lives ONLY in the Environment
 ```
 
-The allowlist/refusal logic is covered by an oracle: `tests/ssh_deploy_key_validation_test.sh`.
+The allowlist/refusal logic is covered by a test: `tests/ssh_deploy_key_validation_test.sh`.
 
 ## Requirements
 

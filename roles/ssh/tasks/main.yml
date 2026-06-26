@@ -23,7 +23,7 @@
       # Positive allowlist. The four space-delimited types need a trailing space so a
       # glued suffix ('ssh-rsaEVIL...') and a bare type with no key body are refused;
       # the ecdsa types keep a bare prefix (a curve name follows). Mirrors the test
-      # oracle exactly so role and test share one accept/refuse boundary.
+      # check exactly so role and test share one accept/refuse boundary.
       - >-
         item is match('^(ssh-rsa |ssh-ed25519 |ssh-dss |ecdsa-sha2-|sk-ssh-ed25519@openssh\.com |sk-ecdsa-sha2-)')
       # Fail-closed, case-insensitive: refuse anything carrying private-key material.
