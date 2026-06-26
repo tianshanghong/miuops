@@ -23,8 +23,11 @@ jobs:
       - name: Lint + CLI unit tests
         run: |
           command -v shellcheck >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y shellcheck >/dev/null; }
-          shellcheck -S error miuops tests/stack_policy_check_test.sh
+          shellcheck -S error miuops tests/stack_policy_check_test.sh \
+            .github/scripts/discover-changed-servers.sh .github/scripts/deploy-server.sh
           bash tests/cli_test.sh
+          bash tests/discover_changed_servers_test.sh
+          bash tests/deploy_workflow_lint_test.sh
 
       - name: Install Ansible
         run: pip install ansible
