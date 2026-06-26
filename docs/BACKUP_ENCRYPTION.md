@@ -128,7 +128,7 @@ For a big backup, avoid round-tripping it through your laptop. Two options:
   there, and pipe the plaintext tar back over SSH:
 
   ```bash
-  aws s3 cp s3://PROJECT-backup/vol/VOLUME/backup-TS.tar.age - --region REGION \
+  aws s3 cp s3://PROJECT-backup/<server>/vol/VOLUME/backup-TS.tar.age - --region REGION \
     | age --decrypt -i ~/.ssh/id_ed25519 \
     | ssh user@server 'cat > /tmp/backup-TS.tar'
   ```
@@ -147,8 +147,8 @@ systemctl start miuops-backup.service
 journalctl -u miuops-backup.service -f
 
 # Check S3 for the encrypted object
-aws s3 ls s3://PROJECT-backup/vol/ --recursive --region REGION
-# Should show: vol/<volume>/backup-YYYYMMDDTHHMMSSZ.tar.age
+aws s3 ls s3://PROJECT-backup/<server>/vol/ --recursive --region REGION
+# Should show: <server>/vol/<volume>/backup-YYYYMMDDTHHMMSSZ.tar.age
 ```
 
 ## Restoring encrypted backups
@@ -159,7 +159,7 @@ aws s3 ls s3://PROJECT-backup/vol/ --recursive --region REGION
 
 ```bash
 # Download
-aws s3 cp s3://PROJECT-backup/vol/VOLUME/backup-YYYYMMDDTHHMMSSZ.tar.age . --region REGION
+aws s3 cp s3://PROJECT-backup/<server>/vol/VOLUME/backup-YYYYMMDDTHHMMSSZ.tar.age . --region REGION
 
 # Decrypt (age — identity file, SSH private key, or YubiKey)
 age --decrypt -i key.txt -o backup-YYYYMMDDTHHMMSSZ.tar backup-YYYYMMDDTHHMMSSZ.tar.age

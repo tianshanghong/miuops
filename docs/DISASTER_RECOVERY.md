@@ -33,16 +33,17 @@ Ensure SSH access from your control machine. The server must run Debian or Ubunt
 
 ### 2. Restore this host's config
 
-Edit `inventory.ini` with the new server's IP and SSH user:
+Edit `fleet/inventory.ini` with the new server's IP and SSH user:
 
 ```ini
 [bare_metal]
 server1 ansible_host=NEW_IP ansible_user=admin
 ```
 
-Ensure `host_vars/server1.yml` (its `domains` + `tunnel_id`) exists, and restore the
-tunnel credentials to `files/<tunnel_id>.json` (reuse the same tunnel ID — no need
-to recreate it in Cloudflare).
+Ensure `fleet/host_vars/server1.yml` (its `domains` + `tunnel_id`) exists and the
+SOPS-encrypted tunnel credential `fleet/secrets/<tunnel_id>.json` is committed (reuse the
+same tunnel ID — no need to recreate it in Cloudflare; it is decrypted locally and pushed to
+the server at deploy).
 
 ### 3. Run the bootstrap playbook
 
@@ -54,26 +55,28 @@ This installs Docker, Traefik, cloudflared, and the firewall — same as initial
 setup. (`--limit server1` scopes the run to the rebuilt host; omit it to converge
 the whole fleet.)
 
-### 4. Update GitHub Actions secrets
+### 4. Update the server's deploy environment secrets
 
-In your stack repo (Settings > Secrets > Actions), update:
+In your fleet repo, open the per-server GitHub Environment (Settings > Environments >
+`<server>`) and update:
 
 | Secret | New value |
 |---|---|
 | `SSH_HOST` | New server IP or hostname |
 | `SSH_USER` | New SSH user (if changed) |
 | `SSH_PRIVATE_KEY` | New SSH private key (if changed) |
+| `SSH_KNOWN_HOSTS` | Re-pin the new host keys (`ssh-keyscan -p <port> <host>`) — a rebuilt server has new host keys |
 
-The stack's `.env` lives on the **server** at `/opt/stacks/.env` (not a GitHub
-secret) — recreate it on the rebuilt server as in [INSTALLATION.md](INSTALLATION.md)
-(the Ansible bootstrap pre-creates it with secure permissions; fill in your values).
+The app `.env` lives on the **server** at `/opt/stacks/.env` (provisioned locally from the
+SOPS-encrypted `fleet/secrets/<server>.env`, never a GitHub secret) — restore it on the
+rebuilt server as in [INSTALLATION.md](INSTALLATION.md).
 
 ### 5. Deploy stacks
 
-Push to your stack repo's `main` branch (or re-run the last workflow):
+Push to your fleet repo's `main` branch (or re-run the last workflow):
 
 ```bash
-# From your stack repo
+# From your fleet repo
 git commit --allow-empty -m "Redeploy to new server" && git push
 ```
 
@@ -184,7 +187,7 @@ numbers — deterministic ownership even when the restore host has a different
 **1. List backups for the volume:**
 
 ```bash
-aws s3 ls s3://PROJECT-backup/vol/VOLUME_NAME/ --region REGION
+aws s3 ls s3://PROJECT-backup/<server>/vol/VOLUME_NAME/ --region REGION
 ```
 
 If encrypted, files have a `.age` extension (e.g. `backup-YYYYMMDDTHHMMSSZ.tar.age`).
@@ -193,10 +196,10 @@ If encrypted, files have a `.age` extension (e.g. `backup-YYYYMMDDTHHMMSSZ.tar.a
 
 ```bash
 # Unencrypted
-aws s3 cp s3://PROJECT-backup/vol/VOLUME_NAME/backup-YYYYMMDDTHHMMSSZ.tar . --region REGION
+aws s3 cp s3://PROJECT-backup/<server>/vol/VOLUME_NAME/backup-YYYYMMDDTHHMMSSZ.tar . --region REGION
 
 # Encrypted (include the .age extension)
-aws s3 cp s3://PROJECT-backup/vol/VOLUME_NAME/backup-YYYYMMDDTHHMMSSZ.tar.age . --region REGION
+aws s3 cp s3://PROJECT-backup/<server>/vol/VOLUME_NAME/backup-YYYYMMDDTHHMMSSZ.tar.age . --region REGION
 ```
 
 **3. Decrypt the backup (if encrypted):**
@@ -317,7 +320,7 @@ Backups that haven't been tested are not backups. Periodically verify:
 3. **Volume backup list** — Confirm recent volume tarballs exist in S3 (one
    prefix per volume):
    ```bash
-   aws s3 ls s3://PROJECT-backup/vol/ --recursive --region REGION
+   aws s3 ls s3://PROJECT-backup/<server>/vol/ --recursive --region REGION
    ```
    You can also trigger a run on demand and watch it:
    ```bash

@@ -1,29 +1,31 @@
 # Repository Structure
 
+This is the **miuOps tool** repo — the Ansible roles, the `miuops` CLI, and the reusable
+GitHub workflows. Your fleet's configuration (inventory, per-server vars, encrypted secrets,
+and stacks) lives in your **separate fleet repo**, created from `miuops-fleet-template`.
+
 ```
 .
 ├── ansible.cfg                # Ansible configuration
 ├── playbook.yml               # Main Ansible playbook
 ├── requirements.yml           # Ansible Galaxy requirements
-├── inventory.ini.template     # Example inventory file (flat host list)
-├── host_vars/
-│   └── server1.yml.example    # Per-server config example (domains + tunnel_id)
 ├── roles/
 │   ├── firewall/              # ufw host firewall (default-deny inbound)
 │   ├── docker/                # Docker engine + hardened daemon
-│   ├── ssh/                   # Key-only SSH
+│   ├── ssh/                   # Key-only SSH + operator-supplied deploy keys
 │   ├── traefik/               # Non-root host binary + read-only socket-proxy
 │   ├── cloudflared/           # Cloudflare Tunnel + DNS records
 │   ├── metadata-block/        # Block containers from the cloud metadata endpoint
 │   ├── observability/         # Grafana Alloy host binary (opt-in)
 │   ├── backup/                # Host-side Docker volume backup (systemd timer)
 │   └── unattended-upgrades/   # Automatic security upgrades
-├── files/                     # Tunnel credentials (gitignored)
+├── .github/workflows/         # Reusable deploy.yml + the stack policy-check
 ├── images/
 │   └── postgres-walg/         # PostgreSQL 17 + WAL-G Docker image
-├── miuops                     # CLI entry point (./miuops up)
+├── miuops                     # CLI entry point (miuops up)
 ├── scripts/
-│   └── setup-s3-backup.sh     # S3 backup bucket + IAM user creation
+│   └── setup-s3-backup.sh     # Shared S3 bucket + per-server prefix-scoped IAM
+├── tests/                     # CLI/oracle tests + the e2e acceptance harness
 └── docs/                      # Documentation
 ```
 
