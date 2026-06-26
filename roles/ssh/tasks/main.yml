@@ -4,6 +4,49 @@
 # pointless (keys only). Deployed as a drop-in so the distro's base sshd_config is untouched.
 # SSH rate-limiting (ufw limit) lives in roles/firewall, which runs just before this.
 
+# --- CI deploy public keys -------------------------------------------------------
+# Install operator-supplied PUBLIC deploy keys BEFORE the key-only lockout guard, so
+# a host that only had the operator's bootstrap key also gains the CI key and the
+# guard below still passes (authorized_keys is non-empty). The install is additive
+# (exclusive: false) so the operator's existing key is preserved. PUBLIC keys only:
+# every entry is positively matched against an allowlist of public-key types AND
+# refused if it contains 'PRIVATE KEY' — fail-closed, so a private key fed in by
+# mistake is rejected and never written. Default deploy_public_keys is [] (no-op).
+
+- name: Validate each deploy key is a PUBLIC key (never handle a private key)
+  ansible.builtin.assert:
+    that:
+      # One list entry == one key. ansible.posix.authorized_key splits on newlines
+      # and installs EACH line as a separate key, so a multi-line value could smuggle
+      # a second (back-door) key past a valid first line. Require exactly one line.
+      - "(item.splitlines() | length) == 1"
+      # Positive allowlist. The four space-delimited types need a trailing space so a
+      # glued suffix ('ssh-rsaEVIL...') and a bare type with no key body are refused;
+      # the ecdsa types keep a bare prefix (a curve name follows). Mirrors the test
+      # oracle exactly so role and test share one accept/refuse boundary.
+      - >-
+        item is match('^(ssh-rsa |ssh-ed25519 |ssh-dss |ecdsa-sha2-|sk-ssh-ed25519@openssh\.com |sk-ecdsa-sha2-)')
+      # Fail-closed, case-insensitive: refuse anything carrying private-key material.
+      - "'PRIVATE KEY' not in (item | upper)"
+    fail_msg: >-
+      deploy_public_keys entries must be PUBLIC keys (ssh-ed25519/ssh-rsa/ecdsa-sha2-/
+      sk-...). Refusing — this tool never handles private keys. Put the private key in
+      the server's GitHub Environment as a secret, not here.
+    quiet: true
+  loop: "{{ deploy_public_keys }}"
+  when: deploy_public_keys | length > 0
+
+- name: Install CI deploy public key(s) into authorized_keys (additive)
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user_id }}"
+    key: "{{ item }}"
+    state: present
+    exclusive: false   # ADD — never clobber the operator's bootstrap key
+    manage_dir: true
+  loop: "{{ deploy_public_keys }}"
+  when: deploy_public_keys | length > 0
+  become: true
+
 - name: Check the deploy user has an authorized key (lockout guard)
   ansible.builtin.stat:
     path: "{{ ansible_env.HOME }}/.ssh/authorized_keys"
