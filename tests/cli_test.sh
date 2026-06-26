@@ -69,12 +69,12 @@ echo "$out" | grep -q -- "--limit server-a" || fail "apply --dry-run should show
 out="$(cd "$ROOT" && ./miuops apply --no-apply server-a 2>&1 || true)"
 echo "$out" | grep -qi "no-apply" || fail "--no-apply should skip converge"
 
-# --- U2: apply with no fleet inventory dies with a clear, actionable error ---
+# --- apply with no fleet inventory dies with a clear, actionable error ---
 out="$(cd "$ROOT" && MIUOPS_FLEET_DIR="$TMP/empty-fleet" ./miuops apply 2>&1 || true)"
 echo "$out" | grep -qi 'No fleet inventory'                || fail "apply must die clearly when fleet inventory is missing"
 echo "$out" | grep -qiE 'MIUOPS_FLEET_DIR|fleet repo root' || fail "missing-inventory error must be actionable"
 
-# --- U2: tool-checkout host_vars must NOT silently shadow the fleet's. Ansible loads
+# --- tool-checkout host_vars must NOT silently shadow the fleet's. Ansible loads
 # playbook-adjacent (SCRIPT_DIR) host_vars at HIGHER precedence than inventory-adjacent
 # (FLEET_DIR), so converge must fail closed when the tool checkout still holds host_vars. ---
 mkdir -p "$TMP/tool/host_vars"; : > "$TMP/tool/host_vars/server-a.yml"
