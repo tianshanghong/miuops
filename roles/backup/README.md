@@ -24,9 +24,10 @@ the writer first.
 
 ## Quick start
 
-1. Create the S3 bucket + IAM user (Object Lock + lifecycle):
-   `scripts/setup-s3-backup.sh` (one bucket is shared with WAL-G — see the repo
-   README).
+1. Create the shared S3 bucket + this server's scoped IAM user (Object Lock +
+   lifecycle): `scripts/setup-s3-backup.sh --server <server>` (one bucket is
+   shared by the whole fleet and with WAL-G; each server gets its own prefix +
+   IAM user — see the repo README and the **Fleet isolation** section below).
 2. Export the AWS credentials in the shell you run miuOps from:
 
    ```bash
@@ -44,8 +45,8 @@ the writer first.
 |---|---|---|
 | `backup_enabled` | `false` | Master switch. Role is a no-op when false. |
 | `backup_volumes` | `[]` | List of `{ name, stop }` items (below). |
-| `backup_s3_bucket` | `""` | Destination bucket name (no `s3://`). Required. |
-| `backup_s3_prefix` | `"vol"` | Key prefix. Objects land under `<prefix>/<volume>/`. |
+| `backup_s3_bucket` | `""` | Destination bucket name (no `s3://`). One bucket for the whole fleet. Required. |
+| `backup_s3_prefix` | `"{{ inventory_hostname }}/vol"` | Key prefix, rooted at this server's name. Objects land under `<server>/vol/<volume>/`. Must start with `<inventory_hostname>/` (the role asserts it). |
 | `backup_schedule` | `"*-*-* 02:00:00"` | systemd `OnCalendar` expression. |
 | `backup_randomized_delay_sec` | `"45m"` | `RandomizedDelaySec` to smear the start. |
 | `backup_encryption` | `"none"` | `none` \| `age`. |
@@ -85,8 +86,10 @@ until the next manual intervention.
 ```yaml
 # host_vars/<host>.yml
 backup_enabled: true
-backup_s3_bucket: "myproject-backup"
-backup_s3_prefix: "vol"
+backup_s3_bucket: "myfleet-backup"      # one bucket for the whole fleet
+# backup_s3_prefix defaults to "{{ inventory_hostname }}/vol" — leave it unset
+# unless you have a reason to change the trailing segment (keep the
+# "<server>/" root or the role's assert fails).
 backup_schedule: "*-*-* 02:00:00"
 backup_encryption: "age"
 backup_age_recipients:
@@ -118,9 +121,31 @@ so they never appear in `ps` / the process table.
 ## Object naming
 
 ```
-s3://<bucket>/<prefix>/<volume>/backup-<UTC ISO8601>.tar[.age]
-# e.g. s3://myproject-backup/vol/app_uploads/backup-20260624T020000Z.tar.age
+s3://<bucket>/<server>/vol/<volume>/backup-<UTC ISO8601>.tar[.age]
+# e.g. s3://myfleet-backup/web1/vol/app_uploads/backup-20260624T020000Z.tar.age
 ```
+
+The leading `<server>/` segment is `inventory_hostname` (the same identity used
+for `host_vars/<server>.yml` and the GitHub Environment). WAL-G database backups
+share the bucket under the symmetric `s3://<bucket>/<server>/db/<app>` prefix.
+
+## Fleet isolation
+
+One S3 bucket serves the whole fleet. Each server gets its own top-level prefix
+`<server>/` **and** its own per-server IAM user `"<bucket>-<server>"` (created by
+`scripts/setup-s3-backup.sh --server <server>`) whose inline policy is scoped to
+that prefix only:
+
+- `s3:ListBucket` on the bucket, **conditioned** to `s3:prefix` `<server>/*`;
+- `s3:PutObject` + `s3:GetObject` on `arn:aws:s3:::<bucket>/<server>/*`;
+- **no** `s3:DeleteObject`, **no** `s3:*`, **no** explicit `Deny`.
+
+AWS default-deny means a compromised host's key can read/write **only** its own
+backups — a `PutObject` to another server's prefix simply matches no `Allow` and
+is denied. Immutability is enforced by omitting Delete and by the bucket Object
+Lock. (Listing the bucket root from a server key is intentionally denied; an
+operator lists their own data with `aws s3 ls s3://<bucket>/<server>/` and uses
+an admin profile for a fleet-wide view.)
 
 ## Retention
 
@@ -141,8 +166,8 @@ journalctl -u miuops-backup.service -f
 # When does it next fire?
 systemctl list-timers miuops-backup.timer
 
-# What got uploaded?
-aws s3 ls s3://<bucket>/vol/ --recursive --region <region>
+# What got uploaded? (this server's prefix)
+aws s3 ls s3://<bucket>/<server>/vol/ --recursive --region <region>
 ```
 
 ## Restore
@@ -152,10 +177,10 @@ round-trip).
 
 ```bash
 # 1. Pick a backup
-aws s3 ls s3://<bucket>/vol/<volume>/ --region <region>
+aws s3 ls s3://<bucket>/<server>/vol/<volume>/ --region <region>
 
 # 2. Download it
-aws s3 cp s3://<bucket>/vol/<volume>/backup-<ts>.tar.age . --region <region>
+aws s3 cp s3://<bucket>/<server>/vol/<volume>/backup-<ts>.tar.age . --region <region>
 
 # 3. Decrypt (skip if unencrypted)
 #    age (identity file, SSH private key, or YubiKey-backed identity):

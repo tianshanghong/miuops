@@ -21,6 +21,22 @@
   when: backup_enabled | bool
   tags: ['backup']
 
+- name: Ensure the S3 prefix is rooted at this server's name
+  ansible.builtin.assert:
+    that:
+      - backup_s3_prefix is string
+      - backup_s3_prefix.startswith(inventory_hostname ~ '/')
+    fail_msg: >-
+      backup_s3_prefix ('{{ backup_s3_prefix }}') must start with
+      '{{ inventory_hostname }}/' so this host writes only inside its own
+      fleet prefix. The per-server backup IAM user is scoped to
+      '{{ inventory_hostname }}/*'; a prefix outside it would fail at backup
+      time with AccessDenied (a silent 02:00 gap). Set
+      backup_s3_prefix: "{{ inventory_hostname }}/vol" (the default).
+    quiet: true
+  when: backup_enabled | bool
+  tags: ['backup']
+
 - name: Validate encryption mode
   ansible.builtin.assert:
     that:

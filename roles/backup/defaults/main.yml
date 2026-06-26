@@ -26,10 +26,14 @@ backup_volumes: []
 #     stop: []
 
 # --- Destination ------------------------------------------------------------
-# S3 bucket (name only, no s3:// prefix) and key prefix. Objects land at
-#   s3://<bucket>/<prefix>/<volume>/backup-<UTC ISO8601>.tar[.age]
+# S3 bucket (name only, no s3:// prefix) and key prefix. ONE bucket is shared by
+# the whole fleet; every key is rooted at this server's name so the per-server
+# IAM user (scoped to "<server>/*") is authorized to write it. Objects land at
+#   s3://<bucket>/<server>/vol/<volume>/backup-<UTC ISO8601>.tar[.age]
+# Keep the "<inventory_hostname>/" root if you override this (the role asserts
+# it) so a host cannot write outside its own prefix.
 backup_s3_bucket: ""
-backup_s3_prefix: "vol"
+backup_s3_prefix: "{{ inventory_hostname }}/vol"
 
 # --- Schedule ---------------------------------------------------------------
 # systemd OnCalendar expression for the timer. Default: daily at ~02:00 local.
