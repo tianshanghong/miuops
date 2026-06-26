@@ -20,6 +20,16 @@ grep -qF 'fromJSON(needs.discover.outputs.servers)' "$Y"    || fail "matrix must
 grep -qF "servers != '[]'" "$Y"                             || fail "deploy must guard against an empty matrix"
 grep -qF 'fail-fast: false' "$Y"                            || fail "matrix must set fail-fast: false (one server's failure must not cancel others)"
 
+# Machinery checkout: a reusable workflow runs in the CALLER's checkout (the fleet
+# repo, which has no deploy scripts), so it must check out miuops at the pinned ref
+# and run the scripts from there. Regression guard for the exit-127 "script not
+# found" bug (github.job_workflow_ref is empty on current runners, hence miuops_ref).
+grep -qE '^[[:space:]]*miuops_ref:' "$Y"                    || fail "must declare a miuops_ref input (the ref to load deploy scripts from)"
+grep -qF 'repository: ${{ inputs.miuops_repo }}' "$Y"       || fail "must check out the miuops machinery repo (inputs.miuops_repo)"
+grep -qF 'ref: ${{ inputs.miuops_ref }}' "$Y"               || fail "machinery checkout must use the caller-supplied miuops_ref"
+grep -qF '.miuops-machinery/.github/scripts/' "$Y"          || fail "deploy scripts must run from the checked-out miuops machinery"
+! grep -qF '${GITHUB_WORKSPACE}/.github/scripts/' "$Y"      || fail "scripts must NOT run from the caller's checkout (that path is the fleet repo, which lacks them)"
+
 # Supply chain: every real action use pinned to a 40-hex commit SHA, no tags.
 uses_count=$(grep -cE 'uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}' "$Y" || true)
 [ "${uses_count:-0}" -ge 2 ]                                || fail "real action uses must be SHA-pinned (found ${uses_count})"

@@ -14,12 +14,18 @@ name: Deploy fleet stacks
 #       # mutable ref (a branch) would be a server-takeover supply-chain risk.
 #       # A release TAG is the minimum; a full commit SHA is strongest.
 #       uses: tianshanghong/miuops/.github/workflows/deploy.yml@v1
+#       with:
+#         # MUST equal the @ref above. This workflow loads its deploy scripts from
+#         # miuops at this ref, so they are the SAME immutable version as the
+#         # workflow. (A reusable workflow can't read its own @ref at run time --
+#         # github.job_workflow_ref is empty on current runners -- so it's passed.)
+#         miuops_ref: v1
 #       secrets: inherit
 #
 # Per-server secret isolation: each changed server gets its own matrix job with a
 # job-level `environment: <server>`, so it loads ONLY that server's Environment
 # secrets (SSH_HOST/SSH_USER/SSH_PORT/SSH_PRIVATE_KEY/SSH_KNOWN_HOSTS). A matrix
-# job for one server cannot reference another's secrets — that is the isolation.
+# job for one server cannot reference another's secrets -- that is the isolation.
 # `on.workflow_call` cannot declare an environment, so the binding is at job level
 # (where the matrix context is available). `secrets: inherit` lets this workflow
 # reference secrets at all; the `environment:` binding (not inherit) is what
@@ -29,6 +35,18 @@ name: Deploy fleet stacks
 on:
   workflow_call:
     inputs:
+      miuops_ref:
+        description: >-
+          Ref of the miuops repo to load the deploy scripts from. MUST match the
+          @<ref> this workflow is pinned to in the caller, so the scripts are the
+          same immutable version as the workflow itself.
+        type: string
+        required: true
+      miuops_repo:
+        description: Repository that holds the deploy scripts (override only for a fork).
+        type: string
+        required: false
+        default: tianshanghong/miuops
       stacks_dir:
         description: Path prefix in the fleet repo that holds per-server stacks.
         type: string
@@ -64,6 +82,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      # This is a REUSABLE workflow: the checkout above is the CALLER's fleet repo,
+      # which has no deploy scripts (they live here, in miuops). Check out miuops at
+      # the caller-supplied ref (== the @pin) so the machinery is that exact version.
+      # The scripts still operate on the caller's checkout (GITHUB_WORKSPACE).
+      - name: Check out miuops machinery (deploy scripts)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ inputs.miuops_repo }}
+          ref: ${{ inputs.miuops_ref }}
+          path: .miuops-machinery
+          persist-credentials: false
+
       - name: Scan changed servers
         id: scan
         env:
@@ -75,7 +105,7 @@ jobs:
           STACKS_DIR: ${{ inputs.stacks_dir }}
         run: |
           set -euo pipefail
-          servers="$(bash "${GITHUB_WORKSPACE}/.github/scripts/discover-changed-servers.sh")"
+          servers="$(bash "${GITHUB_WORKSPACE}/.miuops-machinery/.github/scripts/discover-changed-servers.sh")"
           printf 'servers=%s\n' "$servers" >> "$GITHUB_OUTPUT"
           printf 'Changed servers: %s\n' "$servers"
 
@@ -102,6 +132,16 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # Same as the discover job: pull the deploy scripts from miuops at the pinned
+      # ref (the caller's checkout above has only the fleet's stacks, no scripts).
+      - name: Check out miuops machinery (deploy scripts)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ inputs.miuops_repo }}
+          ref: ${{ inputs.miuops_ref }}
+          path: .miuops-machinery
+          persist-credentials: false
+
       - name: Deploy ${{ matrix.server }}
         env:
           # Resolve from environment: ${{ matrix.server }} -- this one server only.
@@ -115,4 +155,4 @@ jobs:
           SERVER: ${{ matrix.server }}
           STACKS_DIR: ${{ inputs.stacks_dir }}
           REMOTE_STACKS_DIR: ${{ inputs.remote_stacks_dir }}
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/deploy-server.sh"
+        run: bash "${GITHUB_WORKSPACE}/.miuops-machinery/.github/scripts/deploy-server.sh"
