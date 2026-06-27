@@ -19,23 +19,27 @@ In your Grafana Cloud stack collect these (free tier is fine):
 - **Token** (Administration → Cloud access policies): create an access policy scoped to
   `metrics:write` + `logs:write`, then create a token under it.
 
-## 2. Configure (environment variables — nothing stored on disk)
+## 2. Configure — endpoints are versioned config, the token is the one secret
 
-Provide the connection via environment variables at deploy time. The role reads them at
-runtime; nothing is written to a vars file. The exact names:
+The push **endpoints + user IDs are CONFIG** (not secret, identical across the fleet).
+Set them once in your fleet's `group_vars/all.yml` (see `group_vars/all.yml.example`) —
+versioned, never via per-apply env:
 
-```bash
-export GRAFANA_CLOUD_PROM_URL="https://prometheus-prod-XX-REGION.grafana.net/api/prom/push"
-export GRAFANA_CLOUD_PROM_USER="0000000"
-export GRAFANA_CLOUD_LOKI_URL="https://logs-prod-XX.grafana.net/loki/api/v1/push"
-export GRAFANA_CLOUD_LOKI_USER="0000000"
-export GRAFANA_CLOUD_TOKEN="glc_..."
+```yaml
+# fleet/group_vars/all.yml
+grafana_cloud_prometheus_url:  "https://prometheus-prod-XX-REGION.grafana.net/api/prom/push"
+grafana_cloud_prometheus_user: "0000000"
+grafana_cloud_loki_url:        "https://logs-prod-XX.grafana.net/loki/api/v1/push"
+grafana_cloud_loki_user:       "0000000"
 ```
 
-The **token is never stored on disk** — supply it via the env var each deploy (same
-posture as `CF_API_TOKEN`). The URLs + instance IDs are not secret; if you tire of
-exporting them you may instead set the matching `grafana_cloud_*` vars in gitignored
-config (they override the env-lookup defaults) — but keep the token env-only.
+The **token is the one secret** — it is never versioned. Supply it via the environment
+each deploy (same posture as `CF_API_TOKEN`); the SOPS-in-fleet migration will decrypt it
+at converge instead:
+
+```bash
+export GRAFANA_CLOUD_TOKEN="glc_..."
+```
 
 ## 3. On by default — opt out per host
 
@@ -48,7 +52,7 @@ observability_enabled: false
 
 ## 4. Deploy
 
-With the env vars from step 2 exported in your shell:
+With `GRAFANA_CLOUD_TOKEN` exported (the endpoints come from `group_vars/all`):
 
 ```bash
 miuops apply <host>        # or: ansible-playbook playbook.yml --limit <host> --tags observability
@@ -61,9 +65,10 @@ Grafana Cloud **Docker / Linux Node** integrations for ready-made dashboards.
 
 - The token is rendered into `/etc/alloy/config.alloy` on the server at mode `0600`.
 - On by default but unconfigured (no Grafana endpoint) → the role **skips with a
-  warning**, so the converge still succeeds. A **partial** config (endpoint set but
-  another value missing) **fails fast** with the missing names — a half-configured agent
-  is never shipped.
+  warning**, so the converge still succeeds. A **partial** config (the endpoint set but
+  another value missing) **fails fast** — set all endpoints in `group_vars/all` and
+  export `GRAFANA_CLOUD_TOKEN` (until the SOPS-in-fleet secret supplies it); a
+  half-configured agent is never shipped.
 - **Docker 29+ (overlayfs):** Docker 29 made `overlayfs` the default storage driver,
   which dropped the on-disk layer layout the old cAdvisor read. cAdvisor v0.54+
   (bundled in Alloy >= 1.14) instead resolves each container's read-write layer

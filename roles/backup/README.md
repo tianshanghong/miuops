@@ -28,13 +28,15 @@ the writer first.
    lifecycle): `scripts/setup-s3-backup.sh --server <server>` (one bucket is
    shared by the whole fleet and with WAL-G; each server gets its own prefix +
    IAM user — see the repo README and the **Fleet isolation** section below).
-2. Export the AWS credentials in the shell you run miuOps from:
+2. Export the AWS **credentials** (the two secrets) in the shell you run miuOps from:
 
    ```bash
    export AWS_ACCESS_KEY_ID=AKIA...
    export AWS_SECRET_ACCESS_KEY=...
-   export AWS_REGION=us-west-2
    ```
+
+   The region is **config, not a secret** — set `backup_aws_region` in host_vars
+   (step 3; it defaults to `us-west-2`), not via the environment.
 
 3. Configure the host in `host_vars/<host>.yml` (see schema below).
 4. Apply: `./miuops apply <host>` (or `ansible-playbook playbook.yml --tags backup --limit <host>`).
@@ -53,7 +55,7 @@ the writer first.
 | `backup_age_recipients` | `[]` | age recipients (`age1...`, `ssh-ed25519`/`ssh-rsa`, or `age1yubikey1...`). |
 | `backup_aws_access_key_id` | env `AWS_ACCESS_KEY_ID` | AWS key. Keep env-only. |
 | `backup_aws_secret_access_key` | env `AWS_SECRET_ACCESS_KEY` | AWS secret. Keep env-only. |
-| `backup_aws_region` | env `AWS_REGION` or `us-west-2` | AWS region. |
+| `backup_aws_region` | `us-west-2` | AWS region. **Config** — set in host_vars (not env). |
 | `backup_s3_endpoint_url` | `""` | Optional S3-compatible endpoint override. |
 
 Each `backup_volumes` item:
@@ -87,6 +89,7 @@ until the next manual intervention.
 # host_vars/<host>.yml
 backup_enabled: true
 backup_s3_bucket: "myfleet-backup"      # one bucket for the whole fleet
+backup_aws_region: "us-west-2"          # config (not a secret); defaults to us-west-2
 # backup_s3_prefix defaults to "{{ inventory_hostname }}/vol" — leave it unset
 # unless you have a reason to change the trailing segment (keep the
 # "<server>/" root or the role's assert fails).
