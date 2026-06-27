@@ -87,8 +87,11 @@ All commands accept `--dry-run` (preview) and `--no-apply` (change config/DNS bu
 
 Your fleet repo describes the whole fleet: each server is one line in
 `fleet/inventory.ini` plus one `fleet/host_vars/<name>.yml` (its `domains` +
-`tunnel_id`). The CLI reads `fleet/` from the current directory, so run it from your
-fleet repo — servers coexist and you converge any subset:
+`tunnel_id`). Config shared by the whole fleet (e.g. the Grafana Cloud endpoints)
+goes in `fleet/group_vars/all.yml` instead of being repeated per server — see
+[`group_vars/all.yml.example`](group_vars/all.yml.example). The CLI reads `fleet/`
+from the current directory, so run it from your fleet repo — servers coexist and you
+converge any subset:
 
 ```bash
 miuops apply server-a          # one server

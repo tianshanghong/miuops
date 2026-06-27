@@ -1,0 +1,21 @@
+# Fleet-wide config — group_vars/all.yml
+#
+# Values here apply to EVERY server in this fleet. This file belongs in YOUR FLEET
+# repo (next to inventory.ini and host_vars/), copied from this example — NOT in the
+# miuops tool checkout: Ansible loads tool-adjacent group_vars at higher precedence
+# than the fleet's, so `miuops apply` refuses to converge if it finds group_vars in
+# the tool dir (the same fail-closed guard as host_vars).
+#
+# Per-server values go in host_vars/<server>.yml; values shared by the whole fleet
+# go here. (group_vars/all.yml itself is gitignored in this repo so a local copy in
+# the tool checkout is never committed; commit it in your fleet repo instead.)
+
+# --- Grafana Cloud observability (shared by the whole fleet) -------------------
+# The push endpoints + user IDs are identical across servers, so they belong here
+# rather than duplicated in every host_vars file. The token is a secret — keep it
+# out of git (export GRAFANA_CLOUD_TOKEN, or the SOPS-encrypted fleet secret).
+# observability_enabled: true
+# grafana_cloud_prometheus_url:  "https://prometheus-prod-XX.grafana.net/api/prom/push"
+# grafana_cloud_prometheus_user: "1234567"
+# grafana_cloud_loki_url:        "https://logs-prod-XX.grafana.net/loki/api/v1/push"
+# grafana_cloud_loki_user:       "1234567"
