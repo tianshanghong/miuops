@@ -1,7 +1,13 @@
 ---
-# Grafana Alloy agent shipping metrics + logs to Grafana Cloud. Opt-in per host:
-# set `observability_enabled: true` in that host's host_vars.
-observability_enabled: false
+# Grafana Alloy agent shipping metrics + logs to Grafana Cloud. ON by default so a
+# server is never silently unmonitored. It ACTIVATES only once the Grafana Cloud push
+# endpoint is configured; enabled-but-unconfigured skips with a warning rather than
+# failing the converge (so a default-on fleet that hasn't set up Grafana still
+# converges). Set `observability_enabled: false` in a host's host_vars to opt out.
+observability_enabled: true
+# Derived gate: the role's tasks + its config assert run only when ACTIVE. A partial
+# config (endpoint set but token/other endpoints missing) still fails that assert.
+observability_active: "{{ observability_enabled | bool and (grafana_cloud_prometheus_url | length > 0) }}"
 
 # Pin the Alloy apt package version (supply chain). List available versions with
 # `apt-cache madison alloy` (Grafana apt repo). Must be >= 1.14: that release bundles the
