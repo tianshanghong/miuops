@@ -41,13 +41,15 @@
   ansible.builtin.assert:
     that:
       - backup_encryption in ['none', 'age']
+      - backup_age_recipients is sequence and backup_age_recipients is not string
       - not (backup_encryption == 'age' and (backup_age_recipients | length == 0))
       - not (backup_encryption == 'none' and (backup_age_recipients | length > 0))
     fail_msg: >-
       Invalid encryption config. backup_encryption must be one of none|age;
-      'age' requires backup_age_recipients; and recipients set with encryption
-      'none' would upload PLAINTEXT -- set backup_encryption: age, or clear
-      backup_age_recipients.
+      backup_age_recipients must be a LIST (a bare string is split per-character
+      into bogus -r args); 'age' requires backup_age_recipients; recipients set
+      with encryption 'none' would upload PLAINTEXT -- set backup_encryption: age,
+      or clear backup_age_recipients.
     quiet: true
   when: backup_enabled | bool
   tags: ['backup']

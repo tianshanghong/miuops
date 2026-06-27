@@ -3,28 +3,42 @@
 # weakens encryption gating or the pinned-binary supply chain fails CI. Pure
 # structural assertions over the YAML text -- the backup role is a no-op in the
 # CI converge (backup_enabled is false there), so nothing else exercises it.
+#
+# This is a TRIPWIRE, not a proof: grep can be defeated by a determined edit
+# (e.g. commenting out a gate). It catches the realistic regressions -- a
+# dropped guard, a missing checksum, a drifted version, an off-pin URL, a
+# loosened comparator.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$ROOT/roles/backup/tasks/main.yml"
 D="$ROOT/roles/backup/defaults/main.yml"
 fail() { echo "FAIL: $1"; exit 1; }
 
-# Encryption gating must fail CLOSED both ways: 'age' needs recipients, AND
-# recipients with encryption=none must be rejected -- otherwise the backup
-# uploads PLAINTEXT while the operator believes it is encrypted.
+# Encryption gating must fail CLOSED: 'age' needs recipients; recipients with
+# encryption=none must be rejected (else the backup uploads PLAINTEXT while the
+# operator believes it is encrypted); recipients must be a LIST (a bare string
+# is iterated per-character into bogus `-r` args -> a backup that fails only at
+# 02:00 while every up-front assert called the config valid).
 grep -qF "not (backup_encryption == 'age' and (backup_age_recipients | length == 0))" "$T" \
     || fail "encryption assert must reject 'age' without recipients"
 grep -qF "not (backup_encryption == 'none' and (backup_age_recipients | length > 0))" "$T" \
     || fail "encryption assert must reject recipients with encryption=none (plaintext-upload guard)"
+grep -qF "backup_age_recipients is sequence and backup_age_recipients is not string" "$T" \
+    || fail "encryption assert must require backup_age_recipients to be a list (not a bare string)"
 
-# age-plugin-yubikey is installed ONLY for a YubiKey recipient, and only with age.
-grep -qF "select('match', '^age1yubikey')" "$T" \
+# age-plugin-yubikey is installed ONLY for a YubiKey recipient, and only with
+# age. Pin the FULL gate expression (the comparator too) so a `> 0` -> `>= 0`
+# loosening that makes every host install the plugin is caught.
+grep -qF "select('match', '^age1yubikey') | list | length > 0" "$T" \
     || fail "plugin install must be gated on a YubiKey (age1yubikey) recipient"
 grep -qF "backup_encryption == 'age'" "$T" \
     || fail "plugin install must be gated on backup_encryption == 'age'"
 
-# Supply chain: the .deb is sha256-verified (fail-closed) and the version var is
-# the single source of truth (interpolated into BOTH url and dest -- no drift).
+# Supply chain: the .deb comes from the PINNED upstream repo, is sha256-verified
+# (fail-closed), and the version var is the single source of truth (interpolated
+# into BOTH url and dest -- no drift).
+grep -qF 'https://github.com/str4d/age-plugin-yubikey/releases/download/' "$T" \
+    || fail "plugin .deb must download from the pinned upstream repo (github.com/str4d/age-plugin-yubikey)"
 grep -qE 'checksum:[[:space:]]*"sha256:' "$T" \
     || fail "plugin .deb must be sha256-verified"
 ver_uses=$(grep -c 'backup_age_plugin_yubikey_version' "$T" || true)
