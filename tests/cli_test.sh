@@ -45,6 +45,9 @@ grep -q 'ansible_host=198.51.100.9' "$TMP/fleet/inventory.ini" || fail "server-a
 valid_host_alias 'good-host_1.example' || fail "valid host alias rejected"
 valid_host_alias 'bad|host'   && fail "host alias with | accepted"
 valid_host_alias '../etc/x'   && fail "host alias with / accepted (path traversal)"
+valid_host_alias '-leading'   && fail "host alias with leading dash accepted (--name flag-swallow / flag-injection guard)"
+valid_host_alias '..'         && fail "host alias '..' accepted"
+valid_host_alias '.hidden'    && fail "host alias with leading dot accepted"
 valid_domain 'example.com'    || fail "valid domain rejected"
 valid_domain 'not a domain'   && fail "invalid domain accepted"
 valid_host_alias "$(printf 'good\nrm -rf /')"   && fail "host alias with embedded newline accepted"
@@ -63,7 +66,23 @@ got="$( export CF_API_TOKEN=x; curl() { printf '{"result":[{"id":"ZONEID123"}],"
 # FLEET_DIR/host_vars, never SCRIPT_DIR), never group_vars. group_vars is now a fleet-WIDE
 # config layer with its own read-only shadow guard (below), so we no longer forbid the
 # word -- the per-host invariant is covered by write_host_vars landing in host_vars. ---
-grep -q 'write_host_vars "\$ssh_host"' "$ROOT/miuops" || fail "up does not call write_host_vars"
+grep -qF 'write_host_vars "$handle"' "$ROOT/miuops" || fail "up does not call write_host_vars with the resolved handle"
+
+# --- U8: up --name decouples the fleet handle (inventory key / host_vars / tunnel /
+# domain owner) from the SSH target, so a server need not be keyed by its IP. ---
+[ "$(up_resolve_handle myname 198.51.100.7)" = "myname" ]      || fail "up_resolve_handle must prefer --name"
+[ "$(up_resolve_handle '' 198.51.100.7)" = "198.51.100.7" ]    || fail "up_resolve_handle must default to the ssh host"
+# the handle drives the fleet identity; ssh_host stays the SSH target + ansible_host
+grep -qF 'inventory_upsert "$handle" "$ssh_host"' "$ROOT/miuops" || fail "up must key inventory by handle, ansible_host by ssh_host"
+grep -qF 'run_apply "$handle"' "$ROOT/miuops"                    || fail "up must converge the handle"
+grep -qF 'tunnel_name="miuops-${handle' "$ROOT/miuops"          || fail "tunnel name must derive from the handle"
+grep -qF '"${ssh_user}@${ssh_host}" true' "$ROOT/miuops"         || fail "the SSH reachability check must target ssh_host"
+# pin EVERY decoupled site (a mutation re-keying any of these off the IP must fail here)
+grep -qF '"$owner" != "$handle"' "$ROOT/miuops"                  || fail "domain-owner check must compare to the handle"
+grep -qF 'hv_tunnel "$handle"' "$ROOT/miuops"                    || fail "tunnel reuse must look up the handle"
+grep -qF 'hv_domains "$handle"' "$ROOT/miuops"                   || fail "domain merge must look up the handle"
+grep -qF '"${SECRETS_DIR}/${handle}.env"' "$ROOT/miuops"         || fail "the app .env path must be keyed by the handle"
+grep -qF 'sops_provision_env "$handle"' "$ROOT/miuops"           || fail "the app .env must be provisioned under the handle"
 
 # --- Task 8: apply targets --limit; --no-apply skips converge ---
 out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"

@@ -75,7 +75,7 @@ NO_APPLY=false
 valid_domain() { local re='^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?\.[a-zA-Z]{2,}$'; [[ "$1" =~ $re ]]; }
 # A host alias / SSH user becomes a filename, inventory key, or sed operand, so
 # restrict it to a safe charset — blocks path traversal and sed/grep metachars.
-valid_host_alias() { local re='^[A-Za-z0-9._-]+$'; [[ "$1" =~ $re ]]; }
+valid_host_alias() { local re='^[A-Za-z0-9][A-Za-z0-9._-]*$'; [[ "$1" =~ $re ]]; }
 # Lowercase a domain (DNS is case-insensitive; portable — bash 3.2 lacks ${,,}).
 lc() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
 
@@ -427,9 +427,11 @@ usage() {
 miuops — provision & manage a fleet of Docker + Traefik + Cloudflare-Tunnel servers.
 
 Usage:
-  ./miuops up [--dry-run] [--no-apply] <user@host> <domain> [domain ...]
+  ./miuops up [--dry-run] [--no-apply] [--name <handle>] <user@host> <domain> [domain ...]
       Day-1: register the host, create its tunnel + DNS, write host_vars, converge.
-      Additive — re-running adds domains, never drops them.
+      Additive — re-running adds domains, never drops them. --name sets the fleet
+      handle (inventory key / host_vars / tunnel) when it should differ from the host
+      (e.g. a friendly name instead of an IP).
 
   ./miuops apply [--dry-run] [--no-apply] [<host>]
       Day-2: converge one host (or the whole fleet if <host> is omitted).
@@ -460,13 +462,19 @@ EOF
     exit 1
 }
 
+# The fleet handle (inventory key / host_vars name / tunnel name): the --name
+# override, else the SSH host. Decouples the fleet identity from the SSH target so a
+# server need not be keyed by its IP.
+up_resolve_handle() { printf '%s' "${1:-$2}"; }
+
 cmd_up() {
     # Parse flags and positional args in any order
-    local positional=()
+    local positional=() name_flag=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --dry-run) DRY_RUN=true; shift ;;
             --no-apply) NO_APPLY=true; shift ;;
+            --name) [[ $# -ge 2 ]] || die "--name requires an argument (the fleet handle)"; name_flag="$2"; shift 2 ;;
             -*) die "Unknown flag: $1" ;;
             *) positional+=("$1"); shift ;;
         esac
@@ -477,7 +485,7 @@ cmd_up() {
     local target="${positional[0]}"
     local domains=("${positional[@]:1}")
     local domain
-    local ssh_user ssh_host
+    local ssh_user ssh_host handle
     local zone_id_list=()
 
     # Parse user@host
@@ -489,9 +497,17 @@ cmd_up() {
         ssh_host="$target"
     fi
 
-    # The host becomes a filename + inventory key — keep it to a safe charset.
+    # The fleet handle (inventory key / host_vars file / tunnel name) defaults to the
+    # SSH host but --name decouples it, so a server need not be keyed by its IP.
+    handle="$(up_resolve_handle "$name_flag" "$ssh_host")"
+
+    # The handle becomes a filename + inventory key — keep it to a safe charset. The
+    # ssh_host becomes ansible_host (the SSH target), so validate it too.
+    valid_host_alias "$handle" || die "Invalid handle '${handle}'
+  Must start with a letter or digit, then letters, digits, dot, dash, underscore.
+  (If you passed --name, its value cannot start with '-' or look like a flag.)"
     valid_host_alias "$ssh_host" || die "Invalid host '${ssh_host}'
-  Use letters, digits, dot, dash, underscore (IPv6 literals need a named alias)."
+  Use letters, digits, dot, dash, underscore (an IPv6 literal isn't valid here — use a hostname)."
     # The user is written into inventory.ini via sed — keep it to a safe charset too.
     valid_host_alias "$ssh_user" || die "Invalid SSH user '${ssh_user}' (letters, digits, dot, dash, underscore only)."
 
@@ -507,7 +523,7 @@ cmd_up() {
     # A domain belongs to exactly one server (its CNAMEs point to one tunnel).
     for domain in "${domains[@]}"; do
         local owner; owner="$(domain_owner "$domain")"
-        if [[ -n "$owner" && "$owner" != "$ssh_host" ]]; then
+        if [[ -n "$owner" && "$owner" != "$handle" ]]; then
             die "Domain '${domain}' already belongs to server '${owner}'.
   A domain maps to exactly one server. Run 'remove-domain ${owner} ${domain}' first."
         fi
@@ -582,12 +598,12 @@ cmd_up() {
 
     # ── Step 3: Create or reuse Cloudflare Tunnel ──────────────────
     # Replace chars unsafe for tunnel names (dots, colons in IPv6, slashes)
-    local tunnel_name="miuops-${ssh_host//[:.\/]/-}"
+    local tunnel_name="miuops-${handle//[:.\/]/-}"
     local tunnel_id=""
 
     # Reuse this host's existing tunnel from host_vars (additive — never drops domains)
     local existing_tid
-    existing_tid="$(hv_tunnel "$ssh_host")"
+    existing_tid="$(hv_tunnel "$handle")"
     if [[ -n "$existing_tid" && "$existing_tid" != "<would-be-created>" ]]; then
         tunnel_id="$existing_tid"
         info "Reusing tunnel ID from host_vars: ${tunnel_id}"
@@ -597,7 +613,7 @@ cmd_up() {
     # created only for the passed domains (Step 4); host_vars stores the union so a
     # re-run that passes fewer domains never silently drops the others.
     local merged_domains=() md
-    while IFS= read -r md; do [[ -n "$md" ]] && merged_domains+=("$md"); done < <(hv_domains "$ssh_host")
+    while IFS= read -r md; do [[ -n "$md" ]] && merged_domains+=("$md"); done < <(hv_domains "$handle")
     for domain in "${domains[@]}"; do
         local present=false m
         for m in "${merged_domains[@]:-}"; do [[ "$m" == "$domain" ]] && present=true; done
@@ -710,29 +726,29 @@ ${existing}
 
     # ── Step 5: Write config + converge ────────────────────────────
     if $DRY_RUN; then
-        info "Would write host_vars/${ssh_host}.yml:"
+        info "Would write host_vars/${handle}.yml:"
         echo "domains:"; printf '  - "%s"\n' "${merged_domains[@]}"
         echo "tunnel_id: \"${tunnel_id}\""
-        info "Would upsert inventory.ini host '${ssh_host}' (ansible_user=${ssh_user})"
+        info "Would upsert inventory.ini host '${handle}' (ansible_host=${ssh_host}, ansible_user=${ssh_user})"
         dry "Would install Ansible Galaxy requirements"
-        dry "Would run: ansible-playbook playbook.yml --limit ${ssh_host}"
+        dry "Would run: ansible-playbook playbook.yml --limit ${handle}"
         echo ""
         info "${BOLD}Dry run complete.${NC} Re-run without --dry-run to execute."
     else
-        info "Writing host_vars/${ssh_host}.yml..."
-        write_host_vars "$ssh_host" "$tunnel_id" "${merged_domains[@]}"
+        info "Writing host_vars/${handle}.yml..."
+        write_host_vars "$handle" "$tunnel_id" "${merged_domains[@]}"
 
         info "Updating inventory.ini..."
-        inventory_upsert "$ssh_host" "$ssh_host" "$ssh_user"
+        inventory_upsert "$handle" "$ssh_host" "$ssh_user"
 
-        run_apply "$ssh_host"   # installs Galaxy requirements, then converges
+        run_apply "$handle"   # installs Galaxy requirements, then converges
 
         # Provision the app .env (if present, encrypted under fleet/secrets/) to the
         # host's /opt/stacks/.env at 0600. Decryption is LOCAL; only the plaintext .env
         # crosses the wire (over SSH), never the age key. CI deploy rsync excludes .env,
         # so this operator-set file is authoritative.
-        if [[ -f "${SECRETS_DIR}/${ssh_host}.env" ]]; then
-            sops_provision_env "$ssh_host" "${ssh_user}@${ssh_host}"
+        if [[ -f "${SECRETS_DIR}/${handle}.env" ]]; then
+            sops_provision_env "$handle" "${ssh_user}@${ssh_host}"
         fi
 
         echo ""
