@@ -346,16 +346,33 @@ run_apply() {
     if $NO_APPLY; then info "--no-apply: skipping converge"; return 0; fi
     [[ -f "${FLEET_DIR}/inventory.ini" ]] \
         || die "No fleet inventory at ${FLEET_DIR}/inventory.ini — run from your fleet repo root, or set MIUOPS_FLEET_DIR"
-    # Ansible loads host_vars/ adjacent to the PLAYBOOK (SCRIPT_DIR) as well as the
-    # inventory (FLEET_DIR), and playbook-adjacent OUTRANKS inventory-adjacent. So real
-    # host_vars left in the tool checkout would silently shadow the fleet's — fail closed
-    # rather than converge a host with the wrong (tool-checkout) vars.
+    # Ansible loads host_vars/ AND group_vars/ adjacent to the PLAYBOOK (SCRIPT_DIR) as
+    # well as the inventory (FLEET_DIR), and playbook-adjacent OUTRANKS inventory-adjacent.
+    # So real host_vars/group_vars left in the tool checkout would silently shadow the
+    # fleet's — fail closed rather than converge with the wrong (tool-checkout) vars.
+    # Match any form Ansible actually loads — <name>[.yml|.yaml|.json], an extension-less
+    # file, or a <name>/ directory — not just *.yml. Skip the shipped *.example templates
+    # and editor/backup files (*.bak, *.swp, ...) that Ansible does not load.
     if [[ "${SCRIPT_DIR}" != "${FLEET_DIR}" ]]; then
-        local _shadow="" _hv
-        for _hv in "${SCRIPT_DIR}"/host_vars/*.yml; do [[ -e "$_hv" ]] && { _shadow="$_hv"; break; }; done
-        [[ -z "$_shadow" ]] \
-            || die "Tool checkout has host_vars (${_shadow}) that Ansible would load OVER the fleet's.
-  Move host_vars/ into ${FLEET_DIR}/ (the fleet repo), then retry."
+        local _vdir _entry _base _shadow _lc
+        for _vdir in host_vars group_vars; do
+            _shadow=""
+            for _entry in "${SCRIPT_DIR}/${_vdir}"/*; do
+                [[ -e "$_entry" ]] || continue
+                _base="${_entry##*/}"
+                [[ "$_base" == *.example ]] && continue
+                # Lowercase for the extension test: Ansible also loads all.YML / all.Yaml
+                # (case-insensitively), and a case-sensitive control node would otherwise
+                # let an uppercase-extension shadow slip past a case-sensitive match.
+                _lc="$(printf '%s' "$_base" | tr '[:upper:]' '[:lower:]')"
+                if [[ -d "$_entry" || "$_lc" == *.yml || "$_lc" == *.yaml || "$_lc" == *.json || "$_base" != *.* ]]; then
+                    _shadow="$_entry"; break
+                fi
+            done
+            [[ -z "$_shadow" ]] \
+                || die "Tool checkout has ${_vdir} (${_shadow}) that Ansible would load OVER the fleet's.
+  Move ${_vdir}/ into ${FLEET_DIR}/ (the fleet repo), then retry."
+        done
     fi
     # Tool's ansible.cfg + the fleet inventory, both by absolute path so `cd my-fleet &&
     # miuops apply` from outside the tool checkout still resolves cfg, inventory + host_vars.

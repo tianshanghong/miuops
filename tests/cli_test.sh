@@ -59,8 +59,10 @@ grep -q -- '- ""' "$TMP/fleet/host_vars/solo.yml" && fail "empty domain entry wr
 got="$( export CF_API_TOKEN=x; curl() { printf '{"result":[{"id":"ZONEID123"}],"success":true}\n200\n'; }; cf_zone_id example.com )"
 [ "$got" = "ZONEID123" ] || fail "cf_zone_id did not parse zone id (got: '$got')"
 
-# --- Task 7: cmd_up uses host_vars, never group_vars ---
-grep -q 'group_vars' "$ROOT/miuops" && fail "miuops still references group_vars"
+# --- Task 7: cmd_up writes per-host config to host_vars (verified above it lands under
+# FLEET_DIR/host_vars, never SCRIPT_DIR), never group_vars. group_vars is now a fleet-WIDE
+# config layer with its own read-only shadow guard (below), so we no longer forbid the
+# word -- the per-host invariant is covered by write_host_vars landing in host_vars. ---
 grep -q 'write_host_vars "\$ssh_host"' "$ROOT/miuops" || fail "up does not call write_host_vars"
 
 # --- Task 8: apply targets --limit; --no-apply skips converge ---
@@ -82,10 +84,50 @@ out="$(cd "$ROOT" && ./miuops apply server-a 2>&1 || true)"
 echo "$out" | grep -qiE 'would load over|shadow|tool checkout has host_vars' \
     || fail "apply must refuse when tool-checkout host_vars could shadow the fleet"
 rm -rf "$TMP/tool/host_vars"
+# the same guard covers the non-.yml forms Ansible loads (.yaml here)
+mkdir -p "$TMP/tool/host_vars"; : > "$TMP/tool/host_vars/server-a.yaml"
+out="$(cd "$ROOT" && ./miuops apply server-a 2>&1 || true)"
+echo "$out" | grep -qiE 'tool checkout has host_vars' || fail "host_vars guard missed the .yaml form"
+rm -rf "$TMP/tool/host_vars"
 # positive control: with NO shadowing host_vars, the guard does not fire and apply proceeds
 out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"
 echo "$out" | grep -qiE 'would load over|tool checkout has host_vars' && fail "shadow guard false-fired without tool host_vars"
 echo "$out" | grep -q -- "--limit server-a" || fail "apply --dry-run should proceed when no shadow"
+
+# --- tool-checkout group_vars must NOT silently shadow the fleet's either -- same
+# precedence issue as host_vars (playbook-adjacent SCRIPT_DIR outranks the fleet's), so a
+# fleet-wide group_vars/all left in the tool checkout would override the fleet's silently. ---
+mkdir -p "$TMP/tool/group_vars"; : > "$TMP/tool/group_vars/all.yml"
+out="$(cd "$ROOT" && ./miuops apply server-a 2>&1 || true)"
+echo "$out" | grep -qiE 'would load over|shadow|tool checkout has group_vars' \
+    || fail "apply must refuse when tool-checkout group_vars could shadow the fleet"
+rm -rf "$TMP/tool/group_vars"
+# positive control: with NO shadowing group_vars, the guard does not fire and apply proceeds
+out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"
+echo "$out" | grep -qiE 'tool checkout has group_vars' && fail "group_vars shadow guard false-fired without tool group_vars"
+echo "$out" | grep -q -- "--limit server-a" || fail "apply --dry-run should proceed when no group_vars shadow"
+
+# the guard must catch EVERY form Ansible loads (.yaml, extension-less, a directory),
+# not only *.yml -- a leftover all.yaml in the tool checkout would otherwise silently
+# override the fleet (one such file mis-converges every host).
+for form in yaml noext dir caps; do
+    rm -rf "$TMP/tool/group_vars"; mkdir -p "$TMP/tool/group_vars"
+    case "$form" in
+        yaml)  : > "$TMP/tool/group_vars/all.yaml" ;;
+        noext) : > "$TMP/tool/group_vars/all" ;;
+        dir)   mkdir -p "$TMP/tool/group_vars/all"; : > "$TMP/tool/group_vars/all/x.yml" ;;
+        caps)  : > "$TMP/tool/group_vars/all.YML" ;;   # Ansible loads it case-insensitively
+    esac
+    out="$(cd "$ROOT" && ./miuops apply server-a 2>&1 || true)"
+    echo "$out" | grep -qiE 'tool checkout has group_vars' || fail "group_vars guard missed the '$form' form (Ansible loads it)"
+done
+rm -rf "$TMP/tool/group_vars"
+# but it must NOT false-fire on the shipped template or an editor backup (Ansible loads neither)
+mkdir -p "$TMP/tool/group_vars"; : > "$TMP/tool/group_vars/all.yml.example"; : > "$TMP/tool/group_vars/all.yml.bak"
+out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"
+echo "$out" | grep -qiE 'tool checkout has group_vars' && fail "group_vars guard false-fired on .example/.bak"
+echo "$out" | grep -q -- "--limit server-a" || fail "apply should proceed with only .example/.bak in group_vars"
+rm -rf "$TMP/tool/group_vars"
 
 # --- Task 9: add-domain / remove-domain reject unknown hosts (offline) ---
 out="$(cd "$ROOT" && CF_API_TOKEN=x ./miuops add-domain nope new.example 2>&1 || true)"
