@@ -1,7 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="${MIUOPS_TEST_SCRIPT_DIR:-$(cd "$(dirname "$0")" && pwd)}"
+# Resolve the tool's real dir even when invoked through a symlink (e.g. a
+# /usr/local/bin/miuops symlink into the checkout), so assets are found relative
+# to the real script, not the symlink. A PATH-invoked $0 may be a bare name --
+# resolve it via PATH first, then follow the symlink chain (portable: no
+# readlink -f, which macOS lacks). Use logical `cd` (not `cd -P`) so SCRIPT_DIR
+# keeps the same form as FLEET_DIR (logical $(pwd)); the shadow guard below
+# compares the two by string, and -P would make a symlinked path (e.g. macOS
+# /tmp -> /private/tmp) spuriously differ.
+if [[ -n "${MIUOPS_TEST_SCRIPT_DIR:-}" ]]; then
+    SCRIPT_DIR="$MIUOPS_TEST_SCRIPT_DIR"
+else
+    _src="${BASH_SOURCE[0]}"
+    [[ -e "$_src" ]] || _src="$(command -v -- "$_src" 2>/dev/null || printf '%s' "$_src")"
+    while [[ -L "$_src" ]]; do
+        _dir="$(cd "$(dirname "$_src")" && pwd)"
+        _src="$(readlink "$_src")"
+        [[ "$_src" == /* ]] || _src="${_dir}/${_src}"
+    done
+    SCRIPT_DIR="$(cd "$(dirname "$_src")" && pwd)"
+    unset _src _dir
+fi
 # Tool assets (playbook, roles, ansible.cfg, requirements) live under SCRIPT_DIR — the
 # installed tool. Fleet config (inventory + host_vars) lives under FLEET_DIR — the fleet
 # repo in the current directory. Keeping them apart lets the tool be a referenced
@@ -402,6 +422,9 @@ Usage:
 
   ./miuops remove-domain [--dry-run] [--no-apply] [--force] <host> <domain> [domain ...]
       Remove domain(s) from a host and delete their Cloudflare CNAMEs.
+
+  ./miuops version
+      Print the tool version and the resolved tool/fleet directories.
 
 Options:
   --dry-run     Show what would happen without making changes
@@ -808,6 +831,13 @@ cmd_remove_domain() {
     run_apply "$host"
 }
 
+# Print the tool version + the resolved tool/fleet dirs. Diagnoses where miuops
+# loads its assets from -- notably when invoked through a symlink on PATH.
+cmd_version() {
+    local v; v="$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null || echo dev)"
+    printf 'miuops %s\ntool dir:  %s\nfleet dir: %s\n' "$v" "$SCRIPT_DIR" "$FLEET_DIR"
+}
+
 # ── Main ───────────────────────────────────────────────────────────
 if [[ "${1:-}" != "--source-only" ]]; then
     case "${1:-}" in
@@ -815,6 +845,7 @@ if [[ "${1:-}" != "--source-only" ]]; then
         apply)         shift; cmd_apply "$@" ;;
         add-domain)    shift; cmd_add_domain "$@" ;;
         remove-domain) shift; cmd_remove_domain "$@" ;;
+        version|--version|-v) cmd_version ;;
         *)             usage ;;
     esac
 fi
