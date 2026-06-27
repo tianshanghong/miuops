@@ -41,10 +41,15 @@
   ansible.builtin.assert:
     that:
       - backup_encryption in ['none', 'age']
+      - backup_age_recipients is sequence and backup_age_recipients is not string
       - not (backup_encryption == 'age' and (backup_age_recipients | length == 0))
+      - not (backup_encryption == 'none' and (backup_age_recipients | length > 0))
     fail_msg: >-
       Invalid encryption config. backup_encryption must be one of none|age;
-      age requires backup_age_recipients.
+      backup_age_recipients must be a LIST (a bare string is split per-character
+      into bogus -r args); 'age' requires backup_age_recipients; recipients set
+      with encryption 'none' would upload PLAINTEXT -- set backup_encryption: age,
+      or clear backup_age_recipients.
     quiet: true
   when: backup_enabled | bool
   tags: ['backup']
@@ -72,6 +77,40 @@
     - backup_enabled | bool
     - backup_encryption == 'age'
   tags: ['backup']
+
+# age can encrypt to a YubiKey identity (age1yubikey1...) only via the plugin --
+# plain `age` errors "age-plugin-yubikey: executable file not found". Encryption
+# needs ONLY the public key, so the host needs no YubiKey (the daily backup stays
+# unattended); the key is required only to DECRYPT at restore time, on the
+# operator's machine. So we install it here, gated on a YubiKey recipient.
+- name: Install age-plugin-yubikey (only for YubiKey recipients)
+  when:
+    - backup_enabled | bool
+    - backup_encryption == 'age'
+    - backup_age_recipients | select('match', '^age1yubikey') | list | length > 0
+  tags: ['backup']
+  block:
+    - name: Assert a prebuilt age-plugin-yubikey exists for this architecture
+      ansible.builtin.assert:
+        that: ansible_facts['architecture'] in ['x86_64', 'amd64']
+        fail_msg: >-
+          A YubiKey backup recipient (age1yubikey1...) needs age-plugin-yubikey,
+          which upstream ships for amd64 Linux only (this host is
+          {{ ansible_facts['architecture'] }}). Use a native age recipient, or
+          install age-plugin-yubikey for this architecture yourself.
+        quiet: true
+
+    - name: Download age-plugin-yubikey .deb (pinned + checksum)
+      ansible.builtin.get_url:
+        url: "https://github.com/str4d/age-plugin-yubikey/releases/download/v{{ backup_age_plugin_yubikey_version }}/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}-{{ backup_age_plugin_yubikey_deb_revision }}_amd64.deb"
+        dest: "/tmp/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}-{{ backup_age_plugin_yubikey_deb_revision }}_amd64.deb"
+        checksum: "sha256:{{ backup_age_plugin_yubikey_deb_sha256 }}"
+        mode: '0644'
+      register: _apy_deb
+
+    - name: Install age-plugin-yubikey (apt resolves the libpcsclite dependency)
+      ansible.builtin.apt:
+        deb: "{{ _apy_deb.dest }}"
 
 # ---- Config + secrets --------------------------------------------------------
 - name: Create backup config directory

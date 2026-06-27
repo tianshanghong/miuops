@@ -56,6 +56,20 @@ backup_randomized_delay_sec: "45m"
 backup_encryption: "none"
 backup_age_recipients: []
 
+# When a recipient is a YubiKey identity (age1yubikey1...), the host needs
+# age-plugin-yubikey -- plain `age` cannot wrap a key for a plugin recipient
+# without it. The role installs it automatically in that case. Encryption uses
+# only the public key, so NO YubiKey is needed on the server (the daily backup
+# runs unattended); the YubiKey is required only to DECRYPT at restore time, on
+# the operator's machine. Pinned to the last release that ships a Linux .deb:
+# v0.5.1 DROPPED the Linux build, and the binary is amd64-only (no arm64 Linux
+# build) -- this release is effectively frozen upstream. For a newer build use a
+# distro package or `cargo install age-plugin-yubikey`. A version bump must change
+# version + deb_revision + sha256 TOGETHER (the .deb filename embeds the revision).
+backup_age_plugin_yubikey_version: "0.5.0"
+backup_age_plugin_yubikey_deb_revision: "1"
+backup_age_plugin_yubikey_deb_sha256: "bf7a02418de04b3d3df9791e185d493eb344829bca4009247a41bc4d7630b47f"
+
 # --- AWS credentials --------------------------------------------------------
 # Supplied via environment variables at apply time so secrets stay env-only and
 # never get written into the repo. Export before running, e.g.:
