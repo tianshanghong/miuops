@@ -42,9 +42,12 @@
     that:
       - backup_encryption in ['none', 'age']
       - not (backup_encryption == 'age' and (backup_age_recipients | length == 0))
+      - not (backup_encryption == 'none' and (backup_age_recipients | length > 0))
     fail_msg: >-
       Invalid encryption config. backup_encryption must be one of none|age;
-      age requires backup_age_recipients.
+      'age' requires backup_age_recipients; and recipients set with encryption
+      'none' would upload PLAINTEXT -- set backup_encryption: age, or clear
+      backup_age_recipients.
     quiet: true
   when: backup_enabled | bool
   tags: ['backup']
@@ -97,8 +100,8 @@
 
     - name: Download age-plugin-yubikey .deb (pinned + checksum)
       ansible.builtin.get_url:
-        url: "https://github.com/str4d/age-plugin-yubikey/releases/download/v{{ backup_age_plugin_yubikey_version }}/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}-1_amd64.deb"
-        dest: "/tmp/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}-1_amd64.deb"
+        url: "https://github.com/str4d/age-plugin-yubikey/releases/download/v{{ backup_age_plugin_yubikey_version }}/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}-{{ backup_age_plugin_yubikey_deb_revision }}_amd64.deb"
+        dest: "/tmp/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}-{{ backup_age_plugin_yubikey_deb_revision }}_amd64.deb"
         checksum: "sha256:{{ backup_age_plugin_yubikey_deb_sha256 }}"
         mode: '0644'
       register: _apy_deb
