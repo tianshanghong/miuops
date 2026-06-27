@@ -108,6 +108,13 @@ AWS credentials are **not** in host_vars — export them as environment variable
 `/etc/miuops-backup/backup.env` (mode `0600`, root) and sourced by the script,
 so they never appear in `ps` / the process table.
 
+When `backup_age_recipients` includes a YubiKey identity (`age1yubikey1...`), the
+role installs **age-plugin-yubikey** on the host automatically (pinned `.deb` +
+checksum; amd64 only — `age` cannot encrypt to a plugin recipient without it).
+Encryption uses only the public key, so the host needs no YubiKey and the daily
+backup runs unattended — the YubiKey is required only to *decrypt* at restore
+time, on the operator's machine.
+
 ## Files on the host
 
 | Path | Mode | Purpose |
