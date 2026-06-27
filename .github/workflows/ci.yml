@@ -53,6 +53,12 @@ jobs:
       - name: Install Ansible
         run: pip install ansible
 
+      - name: Template render assertions (observability/backup config + secrets)
+        # jinja2 ships with Ansible (installed above). Stateless render of the
+        # config.alloy.j2 / backup.env.j2 templates, asserting secrets + endpoints
+        # land in the right places -- the net for the config/secret-split + SOPS work.
+        run: python3 tests/render_templates_test.py
+
       - name: Stack policy-check (self-test of the compose linter)
         # PyYAML is pulled in by Ansible above; the linter rejects compose files that
         # publish to non-loopback, set privileged, use host networking, or omit cap_drop.
