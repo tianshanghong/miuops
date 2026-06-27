@@ -36,6 +36,15 @@ NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 SERVER="${SERVER:?SERVER is required}"
 [[ "$SERVER" =~ $NAME_RE ]] || err "Refusing to deploy: invalid server name '${SERVER}'"
 
+# A server with no stack directory is a clean skip (exit 0) -- check this BEFORE
+# the SSH secrets, so a server removed from the fleet (or one whose Environment
+# has no secrets) is a no-op, not a "No SSH_HOST" failure. discover lists every
+# changed server including deletions, so a removed stack dir would otherwise red
+# the run with a misleading secrets error.
+STACKS_DIR="${STACKS_DIR:-fleet/stacks}"; STACKS_DIR="${STACKS_DIR%/}"
+src="${GITHUB_WORKSPACE:-.}/${STACKS_DIR}/${SERVER}"
+[ -d "$src" ] || { note "No stacks for '${SERVER}' (${STACKS_DIR}/${SERVER} absent) — nothing to deploy."; exit 0; }
+
 # Fail fast on missing secrets BEFORE any network action, naming the server. A
 # typo'd Environment resolves to empty secrets (no cross-server fallback exists),
 # so this fails CLOSED — it can never reuse another server's key.
@@ -44,13 +53,7 @@ SERVER="${SERVER:?SERVER is required}"
 [ -n "${SSH_PRIVATE_KEY:-}" ] || err "No SSH_PRIVATE_KEY for environment '${SERVER}'."
 SSH_PORT="${SSH_PORT:-22}"
 [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || err "Invalid SSH_PORT '${SSH_PORT}' for '${SERVER}' (must be numeric)."
-STACKS_DIR="${STACKS_DIR:-fleet/stacks}"; STACKS_DIR="${STACKS_DIR%/}"
 REMOTE_STACKS_DIR="${REMOTE_STACKS_DIR:-/opt/stacks}"; REMOTE_STACKS_DIR="${REMOTE_STACKS_DIR%/}"
-
-src="${GITHUB_WORKSPACE:-.}/${STACKS_DIR}/${SERVER}"
-# A server with no stack directory (e.g. just removed from the fleet) is a clean
-# skip, never a blind rsync of a nonexistent source.
-[ -d "$src" ] || { note "No stacks for '${SERVER}' (${STACKS_DIR}/${SERVER} absent) — nothing to deploy."; exit 0; }
 
 # Per-run private key + known_hosts in a 0700 temp dir; gone on exit.
 sshdir="$(mktemp -d)"; chmod 700 "$sshdir"
