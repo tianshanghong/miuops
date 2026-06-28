@@ -7,7 +7,7 @@ End-to-end walkthrough: from bare server to running services. For a condensed ve
 | Requirement | Purpose |
 |---|---|
 | Cloudflare account with your domain(s) | DNS, CDN, WAF |
-| Cloudflare API token | DNS records — zone lookup + CNAME management (scope to all zones you'll use) |
+| Cloudflare API token | DNS records — zone lookup + CNAME management (DNS-only: the **Edit zone DNS** template, scoped to your zone(s); see [Secret Model](SECRETS.md)) |
 | Server with SSH access (Debian/Ubuntu) | Target machine |
 | Local tools: `ansible`, `cloudflared`, `jq`, `curl`, `ssh` | The CLI checks these and guides you |
 | aws CLI (configured with admin credentials) | Backup bucket setup (Step 2) |
@@ -143,9 +143,44 @@ One bucket serves the whole fleet; each server backs up under its own
 tarballs), with a per-server prefix-scoped IAM user so a compromised server can
 touch only its own backups.
 
-Save the output — you'll need `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-`AWS_REGION`, and the bucket name for the server's encrypted
-`fleet/secrets/<server>.env`.
+Route the output by nature — see [Secret Model](SECRETS.md):
+
+- **Config** (not secret) → versioned in `fleet/host_vars/<server>.yml`: `backup_enabled: true`,
+  `backup_s3_bucket`, `backup_aws_region`, and `backup_volumes`.
+- **The AWS credentials** (secret) → SOPS-encrypted in `fleet/secrets/<server>.vars.json`:
+
+  ```bash
+  printf '{ "backup_aws_access_key_id": "AKIA...", "backup_aws_secret_access_key": "..." }\n' \
+      > fleet/secrets/<server>.vars.json
+  sops --encrypt --in-place fleet/secrets/<server>.vars.json
+  ```
+
+  (WAL-G database backups read the same credentials from the stack's app `.env` in Step 4.)
+
+## Step 3b: Deployed secrets + observability
+
+Server-side secrets are **SOPS-encrypted in the fleet** and decrypted at converge with your
+age key — never typed as per-apply env. Beyond the per-server backup creds above, the
+**Grafana Cloud token** goes in `fleet/secrets/all.vars.json` (fleet-wide), with the push
+endpoints set once in `fleet/group_vars/all.yml` (config):
+
+```bash
+printf '{ "grafana_cloud_token": "glc_..." }\n' > fleet/secrets/all.vars.json
+sops --encrypt --in-place fleet/secrets/all.vars.json
+```
+
+Observability is **on by default** — once the endpoints + token are set, every server ships
+metrics + logs with no per-server obs config (see [Observability](OBSERVABILITY.md)). At
+`miuops apply <server>` the CLI decrypts `all.vars.json` + `<server>.vars.json` and hands
+them to Ansible, so you unlock **only the age key** — no `GRAFANA_CLOUD_TOKEN` / `AWS_*` export.
+
+> Two cautions (see [Secret Model](SECRETS.md)): the `printf … > *.vars.json` writes the
+> secret in **plaintext** to disk + shell history until `sops` rewrites it — confirm it
+> encrypted before committing (`git grep -L sops -- 'fleet/secrets/*'` prints nothing), or
+> edit in place with `sops fleet/secrets/<file>`. And a host's `<server>.vars.json` loads
+> **only** on a targeted `miuops apply <server>`; a whole-fleet `apply` (or a missing file)
+> falls back to `AWS_*` from your shell — `unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY`
+> once they're SOPS'd so a stale value can't silently win.
 
 ## Step 4: Wire the deploy environment and app secrets
 
@@ -170,9 +205,11 @@ so a compromised or buggy deploy holds only that one server's key — no lateral
    The deploy workflow targets `environment: <server>`, so each server reads only its own
    environment's secrets.
 
-3. **Fill in app secrets, encrypted.** Copy the env template, fill in real values (domains,
-   backup credentials from Step 3, and service-specific variables), encrypt it in place with
-   SOPS, and commit the ciphertext:
+3. **Fill in app secrets, encrypted.** This `.env` is the per-stack app environment
+   (domains, the WAL-G *database*-backup credentials, service-specific variables) — distinct
+   from the deployed vars in Step 3b; the **host** backup role's AWS creds live in
+   `fleet/secrets/<server>.vars.json`, not here. Copy the template, fill in real values,
+   encrypt it in place with SOPS, and commit the ciphertext:
 
    ```bash
    cp .env.example fleet/secrets/server-01.env
