@@ -11,11 +11,15 @@
 # the tool checkout is never committed; commit it in your fleet repo instead.)
 
 # --- Grafana Cloud observability (shared by the whole fleet) -------------------
-# The push endpoints + user IDs are identical across servers, so they belong here
-# rather than duplicated in every host_vars file. The token is a secret — keep it
-# out of git (export GRAFANA_CLOUD_TOKEN, or the SOPS-encrypted fleet secret).
+# The push endpoints + user IDs are CONFIG (not secret) and identical across servers,
+# so they live here — versioned, never via per-apply env. When observability_enabled is
+# true the role REQUIRES all four (it asserts they are non-empty, failing the converge
+# LOUD if one is missing). Uncomment and fill:
 # observability_enabled: true
 # grafana_cloud_prometheus_url:  "https://prometheus-prod-XX.grafana.net/api/prom/push"
 # grafana_cloud_prometheus_user: "1234567"
 # grafana_cloud_loki_url:        "https://logs-prod-XX.grafana.net/loki/api/v1/push"
 # grafana_cloud_loki_user:       "1234567"
+#
+# The TOKEN is a SECRET — it does NOT go here. It bridges via the environment
+# (export GRAFANA_CLOUD_TOKEN) until the SOPS-encrypted fleet secret supplies it.

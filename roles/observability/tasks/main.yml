@@ -26,10 +26,12 @@
       - grafana_cloud_loki_user | length > 0
       - grafana_cloud_token | length > 0
     fail_msg: >-
-      Observability is partially configured: the Grafana Cloud endpoint is set but one
-      or more of the others are empty. Set ALL of them (see docs/OBSERVABILITY.md) --
-      grafana_cloud_prometheus_url, grafana_cloud_prometheus_user, grafana_cloud_loki_url,
-      grafana_cloud_loki_user, and the token grafana_cloud_token.
+      Observability is partially configured: the Grafana Cloud endpoint is set but one or
+      more values are empty. The endpoints are CONFIG -- set ALL of them in
+      group_vars/all.yml (grafana_cloud_prometheus_url, grafana_cloud_prometheus_user,
+      grafana_cloud_loki_url, grafana_cloud_loki_user). The token is a SECRET -- export
+      GRAFANA_CLOUD_TOKEN (until the SOPS-in-fleet secret supplies it). See
+      docs/OBSERVABILITY.md.
     quiet: true
   when: observability_active | bool
   tags: ['observability']

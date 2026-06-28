@@ -23,18 +23,17 @@ observability_scrape_interval: "60s"
 # Set to "" to skip scraping it.
 observability_cloudflared_metrics: "127.0.0.1:2000"
 
-# --- Grafana Cloud connection (supplied via environment variables at apply time) ---
-# Nothing is stored on disk by default. Export these before running, e.g.:
-#   export GRAFANA_CLOUD_PROM_URL=...  GRAFANA_CLOUD_PROM_USER=... \
-#          GRAFANA_CLOUD_LOKI_URL=...  GRAFANA_CLOUD_LOKI_USER=... \
-#          GRAFANA_CLOUD_TOKEN=...
-#   ./miuops apply <host>
-# The TOKEN must stay env-only (never on disk). The URLs + instance IDs are not secret;
-# if you tire of exporting them you may instead set the grafana_cloud_* vars in
-# gitignored config (they override these env-lookup defaults). Scope the Access Policy
-# to metrics:write + logs:write.
-grafana_cloud_prometheus_url:  "{{ lookup('env', 'GRAFANA_CLOUD_PROM_URL')  | default('', true) }}"
-grafana_cloud_prometheus_user: "{{ lookup('env', 'GRAFANA_CLOUD_PROM_USER') | default('', true) }}"
-grafana_cloud_loki_url:        "{{ lookup('env', 'GRAFANA_CLOUD_LOKI_URL')  | default('', true) }}"
-grafana_cloud_loki_user:       "{{ lookup('env', 'GRAFANA_CLOUD_LOKI_USER') | default('', true) }}"
-grafana_cloud_token:           "{{ lookup('env', 'GRAFANA_CLOUD_TOKEN')     | default('', true) }}"
+# --- Grafana Cloud connection — config/secret split ---
+# The push URLs + numeric user IDs are NOT secret and are identical across the fleet,
+# so they are versioned CONFIG: set them once in fleet/group_vars/all.yml (see
+# group_vars/all.yml.example). These defaults are empty; the role asserts they are
+# non-empty, so a missing one fails the converge LOUD rather than silently shipping an
+# empty endpoint. They never touch the environment.
+grafana_cloud_prometheus_url:  ""
+grafana_cloud_prometheus_user: ""
+grafana_cloud_loki_url:        ""
+grafana_cloud_loki_user:       ""
+# The TOKEN is the one SECRET here. It bridges via the environment for now (export
+# GRAFANA_CLOUD_TOKEN; scope the Access Policy to metrics:write + logs:write); the
+# SOPS-in-fleet migration decrypts it at converge and supplies it as an extra-var.
+grafana_cloud_token:           "{{ lookup('env', 'GRAFANA_CLOUD_TOKEN') | default('', true) }}"
