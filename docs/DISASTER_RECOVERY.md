@@ -263,43 +263,30 @@ docker start CONTAINER [CONTAINER...]
 
 ## Scenario 4: Credential rotation
 
-If an AWS access key is compromised, rotate it immediately.
-
-### 1. Create a new access key
-
-```bash
-aws iam create-access-key --user-name PROJECT-backup
-```
-
-Save the new `AccessKeyId` and `SecretAccessKey`.
-
-### 2. Delete the old key
+If a server's AWS backup key is compromised (or on a routine schedule), rotate it
+with one command from your fleet repo:
 
 ```bash
-aws iam delete-access-key --user-name PROJECT-backup --access-key-id OLD_KEY_ID
+miuops backup-rotate --server <server>
 ```
 
-### 3. Update the server's `.env`
+`miuops backup-rotate` does the whole dance safely:
 
-Update `/opt/stacks/.env` on the server with the new credentials:
+1. mints a new access key for the server's scoped IAM user;
+2. writes it into `fleet/secrets/<server>.vars.json` (host volume backups) **and**,
+   if the server runs WAL-G, syncs it into `fleet/secrets/<server>.env` (the stack
+   env WAL-G reads) — both SOPS-encrypted, merged not clobbered;
+3. runs `miuops apply <server>` to push the new key to the host;
+4. and **only after that apply succeeds** deletes the old key.
 
-```
-AWS_ACCESS_KEY_ID=new_key_id
-AWS_SECRET_ACCESS_KEY=new_secret_key
-```
+Because both credential locations are updated and pushed *before* the old key is
+deleted, neither the host volume backup nor WAL-G is ever stranded on a dead key.
+If the apply fails it stops **before** the delete, so the server keeps a working key
+— re-run `miuops apply <server>`, then the old key can be removed. It refuses unless
+the IAM user has exactly one key, so a rotation is never ambiguous. Commit the
+updated `fleet/secrets/<server>.*` afterward.
 
-The `.env` lives on the server (not a GitHub secret) — edit it over SSH
-(`ssh <user>@<server>`), then redeploy.
-
-### 4. Redeploy
-
-Push to `main` (or re-run the deploy workflow) so containers pick up the new credentials:
-
-```bash
-git commit --allow-empty -m "Rotate AWS credentials" && git push
-```
-
-### 5. Verify
+### Verify
 
 ```bash
 # Check that backups still work
