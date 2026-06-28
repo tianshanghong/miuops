@@ -505,6 +505,33 @@ obs_opted_out() {
         "${FLEET_DIR}/host_vars/${1}.yml" "${FLEET_DIR}/group_vars/all.yml"
 }
 
+# Resolve the fleet's backup S3 bucket for this host ($1 = handle). The bucket name is
+# CONFIG with ONE versioned home, so a server is never onboarded against a re-typed bucket:
+# host_vars/<h>.yml overrides the fleet-wide group_vars/all.yml. Prints the bucket (surrounding
+# quotes + an inline trailing comment stripped), or nothing if unset.
+#
+# grep is not a YAML parser, so the match is hardened against the ways it lies:
+#   * anchored to COLUMN 0 -- the blessed home is a TOP-LEVEL key, so a commented-out line,
+#     the key as a substring in a comment, AND a same-named key NESTED under another map all
+#     fail to match (an indented `backup_s3_bucket:` belongs to a parent, not the fleet);
+#   * `tail -1` takes the LAST top-level occurrence -- YAML/Ansible resolve a duplicated key
+#     to the last one, so the CLI agrees with what a converge would actually apply;
+#   * `-a` treats the file as text, so a stray NUL byte can't make grep emit "Binary file
+#     <path> matches" on stdout and have that become the "bucket".
+# Defensive under `set -euo pipefail` (grep no-match is expected, not fatal); the S3 bucket
+# charset has no '#', so the inline-comment strip cannot truncate a valid value.
+resolve_backup_bucket() {
+    local _h="$1" _f _line _val
+    for _f in "${FLEET_DIR}/host_vars/${_h}.yml" "${FLEET_DIR}/group_vars/all.yml"; do
+        [ -f "$_f" ] || continue
+        _line="$(grep -aE '^backup_s3_bucket[[:space:]]*:' "$_f" 2>/dev/null | tail -1 || true)"
+        [ -n "$_line" ] || continue
+        _val="$(printf '%s' "$_line" | sed -E 's/^backup_s3_bucket[[:space:]]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/; s/[[:space:]]*$//')"
+        if [ -n "$_val" ]; then printf '%s' "$_val"; return 0; fi
+    done
+    return 0
+}
+
 cmd_up() {
     # Parse flags and positional args in any order
     local positional=() name_flag=""
