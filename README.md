@@ -110,7 +110,7 @@ Day-to-day domain/converge commands are in [Daily Operations](docs/DAILY_OPS.md)
 | Cloudflare Tunnel | `cloudflared` | Zero exposed ports; wildcard + root DNS records; systemd service. |
 | SSH hardening | `ssh` | Key-only login (`PasswordAuthentication no`). |
 | Metadata block | `metadata-block` | Blocks containers from reaching the cloud metadata endpoint (`169.254.0.0/16`). |
-| Observability | `observability` | Grafana Alloy host binary shipping metrics + logs to Grafana Cloud (opt-in, off by default). |
+| Observability | `observability` | Grafana Alloy host binary shipping metrics + logs to Grafana Cloud (on by default; activates once the Grafana Cloud connection is configured). |
 | Volume backup | `backup` | Host `systemd` timer that tars Docker volumes to S3 — no container, no `docker.sock`. |
 | Security upgrades | `unattended-upgrades` | Automatic unattended security patches, no auto-reboot. |
 

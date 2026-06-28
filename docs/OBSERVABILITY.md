@@ -1,12 +1,14 @@
 # Observability — Grafana Alloy → Grafana Cloud
 
-Optional, opt-in per host. Each enabled server runs **Grafana Alloy** as a host systemd
-service that ships **metrics + logs** to **Grafana Cloud**. It is egress-only (no inbound
-port; the agent pushes out), so it fits the tunnel-only model.
+On by default. Each server runs **Grafana Alloy** as a host systemd service that ships
+**metrics + logs** to **Grafana Cloud**. It is egress-only (no inbound port; the agent
+pushes out), so it fits the tunnel-only model.
 
 **Collected:** host metrics (CPU/mem/disk/net), per-container metrics (cAdvisor),
 cloudflared metrics (`127.0.0.1:2000`), and all Docker container logs (apps + Traefik).
-Disabled by default — a host without `observability_enabled: true` is untouched.
+On by default — it activates once the connection (below) is configured; an
+enabled-but-unconfigured host skips with a warning, so a fleet that hasn't set up Grafana
+Cloud still converges. Opt a host out with `observability_enabled: false`.
 
 ## 1. Get the connection details from Grafana Cloud
 
@@ -35,12 +37,13 @@ posture as `CF_API_TOKEN`). The URLs + instance IDs are not secret; if you tire 
 exporting them you may instead set the matching `grafana_cloud_*` vars in gitignored
 config (they override the env-lookup defaults) — but keep the token env-only.
 
-## 3. Enable a host
+## 3. On by default — opt out per host
 
-Set this in that host's gitignored `host_vars/<host>.yml`:
+Observability is **on by default** and activates once the connection above is set. To
+turn it off for a specific host, set in that host's gitignored `host_vars/<host>.yml`:
 
 ```yaml
-observability_enabled: true
+observability_enabled: false
 ```
 
 ## 4. Deploy
@@ -57,9 +60,10 @@ Grafana Cloud **Docker / Linux Node** integrations for ready-made dashboards.
 ## Notes
 
 - The token is rendered into `/etc/alloy/config.alloy` on the server at mode `0600`.
-- If `observability_enabled` is true but any required value is unset, the play
-  **fails fast and prints the exact env var names** to export — so a forgotten or
-  misspelled variable is caught with a clear hint, not a half-started agent.
+- On by default but unconfigured (no Grafana endpoint) → the role **skips with a
+  warning**, so the converge still succeeds. A **partial** config (endpoint set but
+  another value missing) **fails fast** with the missing names — a half-configured agent
+  is never shipped.
 - **Docker 29+ (overlayfs):** Docker 29 made `overlayfs` the default storage driver,
   which dropped the on-disk layer layout the old cAdvisor read. cAdvisor v0.54+
   (bundled in Alloy >= 1.14) instead resolves each container's read-write layer

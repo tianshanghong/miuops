@@ -232,4 +232,53 @@ write_host_vars notunnel "" a.example b.example
 out="$(cd "$ROOT" && MIUOPS_TEST_SCRIPT_DIR="$TMP/tool" ./miuops remove-domain notunnel a.example 2>&1 || true)"
 echo "$out" | grep -qi 'no tunnel_id' || fail "remove-domain must require a non-empty tunnel_id"
 
+# --- U4: observability on by default + graceful skip + an `up` nudge ---
+# default-on: the obs role is enabled unless a host opts out (no more silently-off).
+grep -qE '^observability_enabled:[[:space:]]+true' "$ROOT/roles/observability/defaults/main.yml" \
+    || fail "observability_enabled must default to true (obs on by default)"
+
+# obs_configured <handle>: true iff the Grafana push endpoint is set for this host --
+# in group_vars/all.yml (its blessed home) OR the host's host_vars. A COMMENTED key
+# must NOT count (the operator who left a stub is exactly who the nudge is for).
+mkdir -p "$TMP/fleet/group_vars" "$TMP/fleet/host_vars"
+: > "$TMP/fleet/group_vars/all.yml"
+obs_configured srv && fail "obs_configured must be false when nothing sets the endpoint"
+echo '# grafana_cloud_prometheus_url: "https://x"' > "$TMP/fleet/group_vars/all.yml"
+obs_configured srv && fail "obs_configured must be false for a COMMENTED endpoint (#2)"
+printf 'grafana_cloud_prometheus_url: ""\n' > "$TMP/fleet/group_vars/all.yml"
+obs_configured srv && fail "obs_configured must be false for an EMPTY-valued stub"
+echo 'grafana_cloud_prometheus_url: "https://x/api/prom/push"' > "$TMP/fleet/group_vars/all.yml"
+obs_configured srv || fail "obs_configured must be true when group_vars/all sets the endpoint"
+: > "$TMP/fleet/group_vars/all.yml"
+echo 'grafana_cloud_prometheus_url: "https://x"' > "$TMP/fleet/host_vars/srv.yml"
+obs_configured srv || fail "obs_configured must be true when the host's host_vars sets the endpoint (#3)"
+rm -f "$TMP/fleet/host_vars/srv.yml"
+
+# obs_opted_out <handle>: true iff observability_enabled is a YAML false, in host_vars
+# OR group_vars, tolerant of spacing/quoting/case (#4).
+: > "$TMP/fleet/group_vars/all.yml"
+obs_opted_out srv && fail "obs_opted_out must be false when nothing disables obs"
+for spelling in 'observability_enabled: false' 'observability_enabled : false' \
+                'observability_enabled: "false"' 'observability_enabled: False' \
+                'observability_enabled: no'; do
+    printf '%s\n' "$spelling" > "$TMP/fleet/host_vars/srv.yml"
+    obs_opted_out srv || fail "obs_opted_out must catch host_vars opt-out spelling: [$spelling]"
+done
+rm -f "$TMP/fleet/host_vars/srv.yml"
+# A non-false value must NOT count as opt-out (the false|no|off alternation must not
+# prefix-match nope/offline/true -- else obs would silently never run).
+for nonfalse in 'observability_enabled: true' 'observability_enabled: nope' \
+                'observability_enabled: offline' 'observability_enabled: notyet'; do
+    printf '%s\n' "$nonfalse" > "$TMP/fleet/host_vars/srv.yml"
+    obs_opted_out srv && fail "obs_opted_out must NOT fire on a non-false value: [$nonfalse]"
+done
+rm -f "$TMP/fleet/host_vars/srv.yml"
+printf 'observability_enabled: false\n' > "$TMP/fleet/group_vars/all.yml"
+obs_opted_out srv || fail "obs_opted_out must catch a group_vars opt-out (#4)"
+rm -rf "$TMP/fleet/group_vars" "$TMP/fleet/host_vars"
+
+# `up` nudges via obs_configured + the robust obs_opted_out.
+grep -qF 'obs_configured' "$ROOT/miuops" || fail "up must use obs_configured to nudge"
+grep -qF 'obs_opted_out'  "$ROOT/miuops" || fail "up must use obs_opted_out (robust opt-out check)"
+
 echo "ALL CLI HELPER TESTS PASSED"

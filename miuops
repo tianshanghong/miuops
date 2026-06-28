@@ -467,6 +467,23 @@ EOF
 # server need not be keyed by its IP.
 up_resolve_handle() { printf '%s' "${1:-$2}"; }
 
+# True iff the Grafana Cloud push endpoint is configured for this host ($1 = handle) --
+# in the fleet-wide group_vars/all.yml (its blessed home) or the host's host_vars. The
+# anchored match rejects a commented-out stub, so the operator who left one still gets
+# the nudge. `up` uses this because observability is on by default.
+obs_configured() {
+    grep -qsE "^[[:space:]]*grafana_cloud_prometheus_url[[:space:]]*:[[:space:]]*[\"']?[^[:space:]\"'#]" \
+        "${FLEET_DIR}/group_vars/all.yml" "${FLEET_DIR}/host_vars/${1}.yml"
+}
+
+# True iff observability is explicitly disabled for this host ($1 = handle) -- in its
+# host_vars or the fleet group_vars -- matching a YAML false (false/no/off, any case,
+# optionally quoted), tolerant of whitespace around the colon.
+obs_opted_out() {
+    grep -qsiE '^[[:space:]]*observability_enabled[[:space:]]*:[[:space:]]*"?(false|no|off)"?[[:space:]]*($|#)' \
+        "${FLEET_DIR}/host_vars/${1}.yml" "${FLEET_DIR}/group_vars/all.yml"
+}
+
 cmd_up() {
     # Parse flags and positional args in any order
     local positional=() name_flag=""
@@ -758,6 +775,14 @@ ${existing}
             info "Domain: *.${domain} -> Cloudflare Tunnel -> Traefik"
         done
         echo ""
+        # Observability is on by default; nudge if this fleet hasn't configured its
+        # Grafana endpoints and the host hasn't opted out -- otherwise it only surfaces
+        # as a graceful skip at converge.
+        if ! obs_configured "$handle" && ! obs_opted_out "$handle"; then
+            warn "Observability runs by default, but the Grafana Cloud endpoints aren't set in
+  ${FLEET_DIR}/group_vars/all.yml — set them there (+ export GRAFANA_CLOUD_TOKEN), or set
+  observability_enabled: false in host_vars to opt out. See docs/OBSERVABILITY.md."
+        fi
         info "Next: create your private fleet repo from miuops-fleet-template"
     fi
 }

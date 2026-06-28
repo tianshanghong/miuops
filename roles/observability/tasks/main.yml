@@ -2,7 +2,22 @@
 # Grafana Alloy -> Grafana Cloud, run as a host systemd service.
 # No-op unless observability_enabled.
 
-- name: Ensure Grafana Cloud connection is configured
+- name: Note that observability is on by default but unconfigured (skipping)
+  # Default-on, but gracefully skip when no Grafana Cloud endpoint is set -- a fleet
+  # that hasn't configured observability still converges, just without monitoring. The
+  # `up` command nudges about this too; here it surfaces at converge as well.
+  ansible.builtin.debug:
+    msg: >-
+      Observability is on by default but unconfigured (grafana_cloud_prometheus_url is
+      empty) -- skipping this role. Set the Grafana Cloud endpoints (group_vars/all.yml)
+      and the token, or set observability_enabled: false in host_vars to opt out.
+      See docs/OBSERVABILITY.md.
+  when: observability_enabled | bool and not (observability_active | bool)
+  tags: ['observability']
+
+- name: Ensure the Grafana Cloud connection is complete
+  # Reached only when ACTIVE (the endpoint is set) -- so an empty value here means a
+  # PARTIAL config, which must fail loud rather than ship a half-configured agent.
   ansible.builtin.assert:
     that:
       - grafana_cloud_prometheus_url | length > 0
@@ -11,12 +26,12 @@
       - grafana_cloud_loki_user | length > 0
       - grafana_cloud_token | length > 0
     fail_msg: >-
-      observability_enabled is true but one or more Grafana Cloud values are unset.
-      Export these environment variables before running (see docs/OBSERVABILITY.md):
-      GRAFANA_CLOUD_PROM_URL, GRAFANA_CLOUD_PROM_USER, GRAFANA_CLOUD_LOKI_URL,
-      GRAFANA_CLOUD_LOKI_USER, GRAFANA_CLOUD_TOKEN.
+      Observability is partially configured: the Grafana Cloud endpoint is set but one
+      or more of the others are empty. Set ALL of them (see docs/OBSERVABILITY.md) --
+      grafana_cloud_prometheus_url, grafana_cloud_prometheus_user, grafana_cloud_loki_url,
+      grafana_cloud_loki_user, and the token grafana_cloud_token.
     quiet: true
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
 
 # ---- Install Alloy from Grafana's apt repository -------------------------------------
@@ -27,7 +42,7 @@
     name: python3-debian
     state: present
     update_cache: true
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
 
 - name: Create apt keyrings directory
@@ -35,7 +50,7 @@
     path: /etc/apt/keyrings
     state: directory
     mode: '0755'
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
 
 - name: Add Grafana apt signing key
@@ -43,7 +58,7 @@
     url: https://apt.grafana.com/gpg-full.key
     dest: /etc/apt/keyrings/grafana.asc
     mode: '0644'
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
 
 - name: Add Grafana apt repository
@@ -55,7 +70,7 @@
     components: main
     signed_by: /etc/apt/keyrings/grafana.asc
     state: present
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
 
 - name: Install Alloy (pinned)
@@ -63,7 +78,7 @@
     name: "alloy={{ observability_alloy_version }}"
     state: present
     update_cache: true
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
 
 # ---- Run Alloy as root ----------------------------------------------------------------
@@ -75,7 +90,7 @@
     path: /etc/systemd/system/alloy.service.d
     state: directory
     mode: '0755'
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
 
 - name: Run Alloy as root, constrained by a systemd sandbox
@@ -100,7 +115,7 @@
       SystemCallFilter=@system-service
       SystemCallErrorNumber=EPERM
     mode: '0644'
-  when: observability_enabled | bool
+  when: observability_active | bool
   notify: Restart Alloy
   tags: ['observability']
 
@@ -109,7 +124,7 @@
     path: /etc/default/alloy
     regexp: '^CUSTOM_ARGS='
     line: 'CUSTOM_ARGS="--server.http.listen-addr=127.0.0.1:12345"'
-  when: observability_enabled | bool
+  when: observability_active | bool
   notify: Restart Alloy
   tags: ['observability']
 
@@ -121,7 +136,7 @@
     group: root
     mode: '0600'
   no_log: true
-  when: observability_enabled | bool
+  when: observability_active | bool
   notify: Restart Alloy
   tags: ['observability']
 
@@ -134,7 +149,7 @@
     owner: root
     group: root
     mode: '0770'
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
 
 - name: Enable + start Alloy
@@ -143,5 +158,5 @@
     enabled: true
     state: started
     daemon_reload: true
-  when: observability_enabled | bool
+  when: observability_active | bool
   tags: ['observability']
