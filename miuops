@@ -944,6 +944,31 @@ cmd_version() {
     printf 'miuops %s\ntool dir:  %s\nfleet dir: %s\n' "$v" "$SCRIPT_DIR" "$FLEET_DIR"
 }
 
+# Set up a server's host-side backup identity. The bucket name is CONFIG with one
+# versioned home, so the CLI resolves it (host_vars -> fleet group_vars) and hands it
+# to the setup script as MIUOPS_BUCKET -- the operator never re-types a project/bucket
+# (the divergent-bucket footgun). Fails closed when no bucket is configured: the first
+# server must set backup_s3_bucket in group_vars/all.yml first.
+cmd_backup_setup() {
+    local host="" bucket
+    local pass_through=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --server)   [[ $# -ge 2 ]] || die "backup-setup: --server requires a value"; host="$2"; shift 2 ;;
+            --server=*)  host="${1#*=}"; shift ;;
+            *)           pass_through+=("$1"); shift ;;   # --region / --yes forwarded as-is
+        esac
+    done
+    [[ -n "$host" ]] || die "backup-setup: --server <name> is required"
+    bucket="$(resolve_backup_bucket "$host")"
+    [[ -n "$bucket" ]] || die "backup-setup: no backup_s3_bucket configured in ${FLEET_DIR}/group_vars/all.yml (or host_vars/${host}.yml). Set the fleet bucket there once -- the first server creates it; see docs/SECRETS.md."
+    if [[ ${#pass_through[@]} -gt 0 ]]; then
+        MIUOPS_BUCKET="$bucket" "${SCRIPT_DIR}/scripts/setup-s3-backup.sh" --server "$host" "${pass_through[@]}"
+    else
+        MIUOPS_BUCKET="$bucket" "${SCRIPT_DIR}/scripts/setup-s3-backup.sh" --server "$host"
+    fi
+}
+
 # ── Main ───────────────────────────────────────────────────────────
 if [[ "${1:-}" != "--source-only" ]]; then
     case "${1:-}" in
@@ -951,6 +976,7 @@ if [[ "${1:-}" != "--source-only" ]]; then
         apply)         shift; cmd_apply "$@" ;;
         add-domain)    shift; cmd_add_domain "$@" ;;
         remove-domain) shift; cmd_remove_domain "$@" ;;
+        backup-setup)  shift; cmd_backup_setup "$@" ;;
         version|--version|-v) cmd_version ;;
         *)             usage ;;
     esac

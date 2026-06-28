@@ -161,13 +161,24 @@ echo "        S3 Backup Bucket Setup                "
 echo "=============================================="
 echo ""
 
-if [[ -z "$PROJECT_NAME" ]]; then
-    read -rp "Enter project name (used as bucket prefix, e.g. myproject): " PROJECT_NAME
-fi
-
-if [[ -z "$PROJECT_NAME" ]]; then
-    echo "Error: Project name cannot be empty."
-    exit 1
+# Bucket name: `miuops backup-setup` resolves the fleet bucket from versioned config and
+# passes it as MIUOPS_BUCKET, so the operator never re-types a project/bucket (the
+# divergent-bucket footgun). Standalone use still accepts --project (bucket = <project>-backup).
+if [[ -n "${MIUOPS_BUCKET:-}" ]]; then
+    BUCKET_NAME="$MIUOPS_BUCKET"
+else
+    if [[ -z "$PROJECT_NAME" ]]; then
+        read -rp "Enter project name (used as bucket prefix, e.g. myproject): " PROJECT_NAME
+    fi
+    if [[ -z "$PROJECT_NAME" ]]; then
+        echo "Error: Project name cannot be empty (or run 'miuops backup-setup', which resolves the fleet bucket from group_vars)."
+        exit 1
+    fi
+    if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        echo "Error: invalid project name '${PROJECT_NAME}' — use lowercase letters, digits, hyphens (the S3 bucket charset)."
+        exit 1
+    fi
+    BUCKET_NAME="${PROJECT_NAME}-backup"
 fi
 
 if [[ -z "$SERVER" ]]; then
@@ -183,9 +194,11 @@ fi
 # Fail-closed: validate both identifiers BEFORE they are interpolated into the IAM
 # policy JSON, AWS CLI arguments, the S3 prefix, and the IAM user name. A crafted
 # value (quotes, spaces, '..', shell/JSON metachars) must be rejected here, never
-# relied on being blocked incidentally by AWS's own naming rules.
-if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    echo "Error: invalid project name '${PROJECT_NAME}' — use lowercase letters, digits, hyphens (the S3 bucket charset)."
+# relied on being blocked incidentally by AWS's own naming rules. The bucket may come
+# from --project (constrained above) or MIUOPS_BUCKET (config) -- validate the final
+# name regardless of source.
+if [[ ! "$BUCKET_NAME" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+    echo "Error: invalid bucket name '${BUCKET_NAME}' — use lowercase letters, digits, dots, hyphens (the S3 bucket charset)."
     exit 1
 fi
 if [[ ! "$SERVER" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
@@ -193,7 +206,6 @@ if [[ ! "$SERVER" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     exit 1
 fi
 
-BUCKET_NAME="${PROJECT_NAME}-backup"
 # Per-server IAM user: "<bucket>-<server>". Each server gets its own user + key
 # pair scoped to its own "<server>/" prefix only.
 IAM_USER="${BUCKET_NAME}-${SERVER}"
@@ -229,8 +241,20 @@ fi
 echo ""
 echo "--- Creating S3 bucket ---"
 
-if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+# head-bucket fails for BOTH "absent" (404) and "present-but-can't-stat" (403 / throttle
+# / network). Only a real 404 may take the create path; any other failure must NOT fall
+# through to create + reconfigure, or a transient blip could re-touch a shared bucket we
+# simply could not confirm. Capture rc + message and branch on a genuine 404.
+head_rc=0
+head_out="$(aws s3api head-bucket --bucket "$BUCKET_NAME" 2>&1)" || head_rc=$?
+if [[ $head_rc -eq 0 ]]; then
     echo "Bucket $BUCKET_NAME already exists, skipping creation."
+    bucket_preexisted=true
+elif ! printf '%s\n' "$head_out" | grep -qE '\(404\)|Not Found'; then
+    echo "Error: could not stat bucket '$BUCKET_NAME' (not a 404 / not confirmed absent):" >&2
+    printf '%s\n' "$head_out" >&2
+    echo "Refusing to create or reconfigure a bucket that cannot be confirmed absent — re-run when AWS is reachable." >&2
+    exit 1
 else
     if [[ "$AWS_REGION" == "us-east-1" ]]; then
         aws s3api create-bucket \
@@ -245,7 +269,17 @@ else
             --object-lock-enabled-for-bucket
     fi
     echo "Bucket created: $BUCKET_NAME"
+    bucket_preexisted=false
 fi
+
+# Bucket-level config (encryption / public-access / Object Lock / lifecycle) is applied
+# ONCE, when the bucket is first created. Adding a SERVER to an existing fleet bucket must
+# NOT re-touch the shared bucket -- a server onboard mints only its own IAM identity (below).
+if [[ "$bucket_preexisted" == true ]]; then
+    echo ""
+    echo "Reusing the existing fleet bucket — not re-applying bucket-level config"
+    echo "(encryption / public-access / Object Lock / lifecycle stay as first set)."
+else
 
 # -- Default encryption -------------------------------------------------------
 
@@ -343,6 +377,7 @@ aws s3api put-bucket-lifecycle-configuration \
     }'
 
 echo "Lifecycle rules configured."
+fi
 
 # -- Create IAM user ----------------------------------------------------------
 
