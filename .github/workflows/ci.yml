@@ -30,7 +30,8 @@ jobs:
             tests/sops_test.sh tests/setup_s3_backup_noninteractive_test.sh \
             tests/backup_role_lint_test.sh tests/script_dir_resolution_test.sh \
             tests/observability_role_lint_test.sh \
-            tests/config_secret_split_test.sh
+            tests/config_secret_split_test.sh \
+            tests/secrets_docs_lint_test.sh
           bash tests/cli_test.sh
           bash tests/script_dir_resolution_test.sh
           bash tests/discover_changed_servers_test.sh
@@ -39,6 +40,7 @@ jobs:
           bash tests/backup_role_lint_test.sh
           bash tests/observability_role_lint_test.sh
           bash tests/config_secret_split_test.sh
+          bash tests/secrets_docs_lint_test.sh
           bash tests/ssh_deploy_key_validation_test.sh
           bash scripts/test/iam-policy-check.sh
           bash tests/setup_s3_backup_noninteractive_test.sh
