@@ -971,6 +971,83 @@ cmd_backup_setup() {
     fi
 }
 
+# Rotate a server's backup access key safely. AWS never returns an existing key's
+# secret, so a key is replaced, not recovered: create a fresh one, write it (merged)
+# into the fleet, push it to the host with apply, and ONLY then delete the old key --
+# a failed apply never leaves the server without a working key. Refuses unless the IAM
+# user has exactly one key (0 -> backup-setup; 2 -> resolve the extra first).
+cmd_backup_rotate() {
+    local host="" assume_yes=false
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --server)   [[ $# -ge 2 ]] || die "backup-rotate: --server requires a value"; host="$2"; shift 2 ;;
+            --server=*)  host="${1#*=}"; shift ;;
+            -y | --yes) assume_yes=true; shift ;;
+            *)          die "backup-rotate: unknown argument '$1'" ;;
+        esac
+    done
+    [[ -n "$host" ]] || die "backup-rotate: --server <name> is required"
+    command -v aws >/dev/null 2>&1 || die "backup-rotate: aws CLI not found."
+    command -v jq  >/dev/null 2>&1 || die "backup-rotate: jq not found."
+    local bucket; bucket="$(resolve_backup_bucket "$host")"
+    [[ -n "$bucket" ]] || die "backup-rotate: no backup_s3_bucket configured for ${host}. Run 'miuops backup-setup --server ${host}' first."
+    local iam_user="${bucket}-${host}"
+
+    # Require EXACTLY one existing key, so the rotation is never ambiguous.
+    local keys n old_key
+    keys="$(aws iam list-access-keys --user-name "$iam_user" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>/dev/null || true)"
+    n=$(printf '%s' "$keys" | wc -w | tr -d ' ')
+    if [[ "$n" -eq 0 ]]; then
+        die "backup-rotate: ${iam_user} has no access key. Run 'miuops backup-setup --server ${host}' to create one."
+    elif [[ "$n" -ne 1 ]]; then
+        die "backup-rotate: ${iam_user} has ${n} access keys (need exactly 1). Delete the extra one in AWS, then re-run."
+    fi
+    old_key="$keys"
+
+    # write_backup_secret lives in the setup script's library; source it once (the
+    # test stubs it, so guard on already-defined).
+    if ! declare -F write_backup_secret >/dev/null 2>&1; then
+        # shellcheck source=/dev/null
+        MIUOPS_S3_SETUP_LIB=1 . "${SCRIPT_DIR}/scripts/setup-s3-backup.sh"
+    fi
+    require_sops
+
+    if [[ "$assume_yes" != true ]]; then
+        printf 'Rotate the backup key for %s (the old key %s is deleted only after the new one is live)? [y/N] ' "$iam_user" "$old_key"
+        local reply; read -r reply
+        [[ "$reply" == [yY] ]] || die "Aborted."
+    fi
+
+    # 1. create the new key
+    info "Creating a new access key for ${iam_user}..."
+    local new_json new_akid new_secret
+    new_json="$(aws iam create-access-key --user-name "$iam_user")" || die "backup-rotate: create-access-key failed."
+    new_akid="$(printf '%s' "$new_json" | jq -r '.AccessKey.AccessKeyId')"
+    new_secret="$(printf '%s' "$new_json" | jq -r '.AccessKey.SecretAccessKey')"
+    # Guard a malformed-but-successful response: jq -r prints "null" (exit 0) for a missing
+    # field, which set -e won't catch -- so validate the key looks real BEFORE we write it
+    # or touch the old key, keeping the never-leave-the-host-without-a-key invariant total.
+    if [[ "$new_akid" != AKIA* || -z "$new_secret" || "$new_secret" == null ]]; then
+        unset new_secret new_json
+        die "backup-rotate: create-access-key returned an unexpected response (no usable key) -- aborting before any change to the old key ${old_key}."
+    fi
+    # 2. write it (merged) into the fleet, encrypted
+    if ! write_backup_secret "$FLEET_ROOT" "fleet/secrets/${host}.vars.json" "$new_akid" "$new_secret"; then
+        unset new_secret new_json
+        die "backup-rotate: created key ${new_akid} but failed to write it. The old key ${old_key} is still active; resolve the new key manually."
+    fi
+    unset new_secret new_json
+    # 3. push the new key to the host
+    info "Applying ${host} to push the new key..."
+    if ! run_apply "$host"; then
+        die "backup-rotate: apply failed -- NOT deleting the old key ${old_key} (the host still has a working key, no gap). The new key is already written to the fleet; recover by re-running 'miuops apply ${host}' to push it, then deleting the OLD key ${old_key} in AWS yourself -- the user now has 2 keys, so backup-rotate will refuse until the old one is gone."
+    fi
+    # 4. only now is it safe to delete the old key
+    aws iam delete-access-key --user-name "$iam_user" --access-key-id "$old_key" \
+        || die "backup-rotate: the new key is live, but deleting the old key ${old_key} failed -- delete it manually in AWS."
+    info "Rotated ${iam_user}: new key ${new_akid} is live + written; old key ${old_key} deleted."
+}
+
 # ── Main ───────────────────────────────────────────────────────────
 if [[ "${1:-}" != "--source-only" ]]; then
     case "${1:-}" in
@@ -979,6 +1056,7 @@ if [[ "${1:-}" != "--source-only" ]]; then
         add-domain)    shift; cmd_add_domain "$@" ;;
         remove-domain) shift; cmd_remove_domain "$@" ;;
         backup-setup)  shift; cmd_backup_setup "$@" ;;
+        backup-rotate) shift; cmd_backup_rotate "$@" ;;
         version|--version|-v) cmd_version ;;
         *)             usage ;;
     esac
