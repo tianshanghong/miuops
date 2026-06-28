@@ -33,13 +33,15 @@ grafana_cloud_loki_url:        "https://logs-prod-XX.grafana.net/loki/api/v1/pus
 grafana_cloud_loki_user:       "0000000"
 ```
 
-The **token is the one secret** — it is never versioned. Supply it via the environment
-each deploy (same posture as `CF_API_TOKEN`); the SOPS-in-fleet migration will decrypt it
-at converge instead:
+The **token is the one secret** — it is never versioned. SOPS-encrypt it in the fleet,
+where the converge decrypts it with your age key — no per-apply env:
 
 ```bash
-export GRAFANA_CLOUD_TOKEN="glc_..."
+printf '{ "grafana_cloud_token": "glc_..." }\n' > fleet/secrets/all.vars.json
+sops --encrypt --in-place fleet/secrets/all.vars.json
 ```
+
+(A bare `export GRAFANA_CLOUD_TOKEN=...` still works as a fallback. See [Secret Model](SECRETS.md) — including the plaintext-before-commit caveat.)
 
 ## 3. On by default — opt out per host
 
@@ -52,7 +54,7 @@ observability_enabled: false
 
 ## 4. Deploy
 
-With `GRAFANA_CLOUD_TOKEN` exported (the endpoints come from `group_vars/all`):
+With your age key unlocked (the converge decrypts the token from `all.vars.json`; the endpoints come from `group_vars/all`):
 
 ```bash
 miuops apply <host>        # or: ansible-playbook playbook.yml --limit <host> --tags observability
@@ -67,8 +69,8 @@ Grafana Cloud **Docker / Linux Node** integrations for ready-made dashboards.
 - On by default but unconfigured (no Grafana endpoint) → the role **skips with a
   warning**, so the converge still succeeds. A **partial** config (the endpoint set but
   another value missing) **fails fast** — set all endpoints in `group_vars/all` and
-  export `GRAFANA_CLOUD_TOKEN` (until the SOPS-in-fleet secret supplies it); a
-  half-configured agent is never shipped.
+  the token in `fleet/secrets/all.vars.json` (SOPS); a half-configured agent is never
+  shipped.
 - **Docker 29+ (overlayfs):** Docker 29 made `overlayfs` the default storage driver,
   which dropped the on-disk layer layout the old cAdvisor read. cAdvisor v0.54+
   (bundled in Alloy >= 1.14) instead resolves each container's read-write layer

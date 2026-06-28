@@ -41,4 +41,28 @@ grep -qiF 'operator-local' "$DOC" || fail "SECRETS.md must state CF_API_TOKEN st
 grep -qiE 'edit zone dns|zone:read' "$DOC" \
     || fail "SECRETS.md must scope CF_API_TOKEN to DNS (the 'Edit zone DNS' template / Zone:Read); it needs NO tunnel perms (tunnel = cloudflared, not the token)"
 
+# The onboarding walkthrough + the backup-setup script must teach the latest
+# deployed-secret model (*.vars.json, decrypted at converge with the age key), not the
+# pre-SOPS env bridge -- so a new server is onboarded the current way, not led to export
+# the Grafana token / AWS creds per apply.
+INST="$ROOT/docs/INSTALLATION.md"
+SETUP="$ROOT/scripts/setup-s3-backup.sh"
+[ -f "$INST" ] || fail "docs/INSTALLATION.md is missing"
+grep -qF 'all.vars.json' "$INST" \
+    || fail "INSTALLATION.md must cover the fleet-wide deployed secret all.vars.json (the Grafana token)"
+grep -qE '<(host|server)>\.vars\.json' "$INST" \
+    || fail "INSTALLATION.md must reference the per-server <server>.vars.json deployed secret (the AWS backup creds)"
+grep -qF 'vars.json' "$SETUP" \
+    || fail "setup-s3-backup.sh must point the host-backup creds at fleet/secrets/<server>.vars.json (SOPS), not env-export"
+# ...and must NOT also tell operators to export them (a stale 'Next Steps' footer drifting
+# back to the env bridge -- the contradiction a substring-presence check would miss).
+grep -qiF 'export the aws creds' "$SETUP" \
+    && fail "setup-s3-backup.sh must not tell operators to export the AWS creds (route them to fleet/secrets/<server>.vars.json, SOPS)"
+
+# OBSERVABILITY.md must teach the SOPS token (all.vars.json), not a per-apply env export.
+OBS="$ROOT/docs/OBSERVABILITY.md"
+[ -f "$OBS" ] || fail "docs/OBSERVABILITY.md is missing"
+grep -qF 'all.vars.json' "$OBS" \
+    || fail "OBSERVABILITY.md must reference the SOPS-encrypted token in fleet/secrets/all.vars.json (not a per-apply export)"
+
 echo "ALL SECRETS DOCS LINT CHECKS PASSED"
