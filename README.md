@@ -149,7 +149,8 @@ ansible-playbook playbook.yml --tags docker
 
 ## Backup Setup
 
-- `scripts/setup-s3-backup.sh --server <server>` — Create the shared S3 bucket (Object Lock + lifecycle) and a per-server, prefix-scoped IAM user for backups
+- `miuops backup-setup --server <server>` — mint this server's prefix-scoped IAM user and write its key into the fleet (SOPS-encrypted; merged, never clobbered); creates the shared bucket (Object Lock + lifecycle) on the first server. The bucket name is resolved once from `fleet/group_vars/all.yml`, never re-typed. (`scripts/setup-s3-backup.sh` is the underlying script.)
+- `miuops backup-rotate --server <server>` — rotate a server's key safely: create the new key, write + apply it, and delete the old one only after the new one is live
 - `images/postgres-walg/` — Custom PostgreSQL 17 + WAL-G image for continuous WAL archiving to S3
 
 One shared `{project}-backup` bucket holds every server's backups under a per-server prefix (`<server>/…`); each server gets its own IAM user scoped to only its prefix (no Delete, no cross-prefix access), so a compromised server's key can touch only its own backups. Within a server's prefix the host-side `backup` role stores volume tarballs under `<server>/vol/` and WAL-G stores database backups under `<server>/db/`. The volume backup is a host `systemd` timer — no container, no `docker.sock` mount; see [roles/backup/README.md](roles/backup/README.md). Object Lock (Governance, 30 days) prevents deletion; S3 lifecycle transitions to Glacier at 30 days and expires at 90 days.

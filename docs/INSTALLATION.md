@@ -128,34 +128,36 @@ ansible-playbook playbook.yml
 
 ## Step 3: Set up backups
 
+Name the shared bucket once in `fleet/group_vars/all.yml` (config — the whole fleet shares
+one bucket), then mint each server's own backup identity with a single command from your
+fleet repo:
+
 ```bash
-./scripts/setup-s3-backup.sh
+# one-time, fleet-wide (config, not a secret):
+#   fleet/group_vars/all.yml:  backup_s3_bucket: <your-fleet>-backup
+
+miuops backup-setup --server <server>      # needs your AWS admin creds in the environment
 ```
 
-The script prompts for a project name and AWS region (default: `us-west-2`), then creates:
-- S3 bucket `{project}-backup` with Object Lock (Governance, 30 days)
-- Lifecycle rules: transition to Glacier at 30 days, expire at 90 days
-- IAM user with PutObject/GetObject/ListBucket only (no Delete)
-- Access key credentials
+`miuops backup-setup` resolves the bucket from versioned config (never re-typed), creates it
+on the first server (Object Lock Governance 30 days; Glacier at 30 days, expire at 90 days),
+and mints an IAM user scoped to **only** this server's `<server>/` prefix (PutObject/GetObject/
+ListBucket — no Delete, no cross-prefix). It then writes the new access key straight into
+`fleet/secrets/<server>.vars.json`, **SOPS-encrypted** — the secret never hits disk in
+plaintext, and an existing file is merged, not clobbered. There is nothing to copy or paste.
 
-One bucket serves the whole fleet; each server backs up under its own
-`<server>/` prefix (`<server>/db/…` for WAL-G, `<server>/vol/…` for volume
-tarballs), with a per-server prefix-scoped IAM user so a compromised server can
-touch only its own backups.
+One bucket serves the whole fleet; each server backs up under its own `<server>/` prefix
+(`<server>/db/…` for WAL-G, `<server>/vol/…` for volume tarballs), so a compromised server
+can touch only its own backups.
 
-Route the output by nature — see [Secret Model](SECRETS.md):
+Then set the **config** (not secret) in `fleet/host_vars/<server>.yml` — `backup_enabled: true`,
+`backup_volumes`, and `backup_aws_region` if it isn't `us-west-2` (the bucket comes from
+group_vars) — commit the fleet repo, and `miuops apply <server>`. (WAL-G database backups read
+the same credentials from the stack's app `.env` in Step 4.)
 
-- **Config** (not secret) → versioned in `fleet/host_vars/<server>.yml`: `backup_enabled: true`,
-  `backup_s3_bucket`, `backup_aws_region`, and `backup_volumes`.
-- **The AWS credentials** (secret) → SOPS-encrypted in `fleet/secrets/<server>.vars.json`:
-
-  ```bash
-  printf '{ "backup_aws_access_key_id": "AKIA...", "backup_aws_secret_access_key": "..." }\n' \
-      > fleet/secrets/<server>.vars.json
-  sops --encrypt --in-place fleet/secrets/<server>.vars.json
-  ```
-
-  (WAL-G database backups read the same credentials from the stack's app `.env` in Step 4.)
+To replace a key later, `miuops backup-rotate --server <server>` mints a new key, applies it,
+and deletes the old one only after the new one is live — so a rotation never leaves the server
+without a working key.
 
 ## Step 3b: Deployed secrets + observability
 

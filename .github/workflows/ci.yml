@@ -38,12 +38,14 @@ jobs:
             tests/backup_bucket_resolve_test.sh \
             tests/backup_setup_cmd_test.sh \
             tests/backup_setup_script_test.sh \
-            tests/backup_rotate_test.sh
+            tests/backup_rotate_test.sh \
+            tests/backup_docs_lint_test.sh
           bash tests/cli_test.sh
           bash tests/backup_bucket_resolve_test.sh
           bash tests/backup_setup_cmd_test.sh
           bash tests/backup_setup_script_test.sh
           bash tests/backup_rotate_test.sh
+          bash tests/backup_docs_lint_test.sh
           bash tests/script_dir_resolution_test.sh
           bash tests/discover_changed_servers_test.sh
           bash tests/deploy_workflow_lint_test.sh
