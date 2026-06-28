@@ -68,6 +68,7 @@ dry()  { echo -e "  ${YELLOW}[dry-run]${NC} $1"; }
 
 DRY_RUN=false
 NO_APPLY=false
+APPLY_TAGS=""
 
 # ── Validation ──────────────────────────────────────────────────────
 # Use [[ =~ ]] (whole-string anchored) rather than `grep` (line-oriented), so a
@@ -379,6 +380,7 @@ run_apply() {
     export ANSIBLE_CONFIG="${SCRIPT_DIR}/ansible.cfg"
     local cmd=(ansible-playbook -i "${FLEET_DIR}/inventory.ini" "${SCRIPT_DIR}/playbook.yml")
     [[ -n "$host" ]] && cmd+=(--limit "$host")
+    [[ -n "${APPLY_TAGS:-}" ]] && cmd+=(--tags "${APPLY_TAGS}")
 
     # If a host is targeted and its tunnel credential is committed encrypted under
     # fleet/secrets/, decrypt it LOCALLY to a private temp file and hand Ansible the
@@ -395,6 +397,23 @@ run_apply() {
             cmd+=(-e "cloudflared_credentials_src=${_cred_tmp}")
         fi
     fi
+
+    # Deployed secrets (SOPS-in-fleet): decrypt the fleet-wide secrets (all.vars.json --
+    # the Grafana token) and, when a host is targeted, that host's secrets
+    # (<host>.vars.json -- the AWS backup creds) to private temp files, each handed to
+    # Ansible as extra-vars. Like the tunnel cred above, the plaintext lives only on this
+    # control node, is shredded on return, and extra-vars OUTRANK the roles' defaults --
+    # so at converge the operator supplies ONLY the age key, never a per-apply
+    # GRAFANA_CLOUD_TOKEN / AWS_*. (Per-host secrets need a targeted host, mirroring the
+    # tunnel cred; a whole-fleet apply carries only the fleet-wide all.vars.json.)
+    local _sf _stmp
+    for _sf in "${SECRETS_DIR}/all.vars.json" "${host:+${SECRETS_DIR}/${host}.vars.json}"; do
+        [[ -n "$_sf" && -f "$_sf" ]] || continue
+        require_sops
+        _stmp="$(sops_decrypt_to_tmp "$_sf")"
+        _SOPS_TMPS+=("$_stmp")   # shredded by the global EXIT/INT/TERM trap
+        cmd+=(-e "@${_stmp}")
+    done
 
     if $DRY_RUN; then
         dry "Would install Ansible Galaxy requirements"
@@ -414,6 +433,8 @@ cmd_apply() {
         case "$1" in
             --dry-run)  DRY_RUN=true; shift ;;
             --no-apply) NO_APPLY=true; shift ;;
+            --tags)     [[ $# -ge 2 ]] || die "--tags requires an argument"; APPLY_TAGS="$2"; shift 2 ;;
+            --tags=*)   APPLY_TAGS="${1#*=}"; shift ;;
             -*) die "Unknown flag: $1" ;;
             *)  host="$1"; shift ;;
         esac
