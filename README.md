@@ -168,6 +168,7 @@ One shared `{project}-backup` bucket holds every server's backups under a per-se
 
 - [Architecture](docs/ARCHITECTURE.md) — Design decisions, network model, and system diagram
 - [Installation Guide](docs/INSTALLATION.md) — Full end-to-end setup walkthrough
+- [Secret Model](docs/SECRETS.md) — Where each secret lives: config in versioned vars, deployed secrets SOPS-encrypted in the fleet, the Cloudflare token operator-local
 - [Scaling & Advanced](docs/SCALING.md) — Optional patterns (env grouping, SOPS, YubiKey)
 - [Repository Structure](docs/STRUCTURE.md) — Directory layout and role descriptions
 - [Disaster Recovery](docs/DISASTER_RECOVERY.md) — Backup restore procedures for all failure scenarios

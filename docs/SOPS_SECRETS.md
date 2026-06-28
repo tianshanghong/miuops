@@ -1,7 +1,8 @@
 # Secrets with SOPS + age
 
-miuops encrypts the secrets your fleet needs — the Cloudflare Tunnel credential
-and each server's application `.env` — with [SOPS](https://github.com/getsops/sops)
+miuops encrypts the secrets your fleet needs — the Cloudflare Tunnel credential,
+each server's application `.env`, and the deployed vars (the Grafana Cloud token and a
+server's AWS backup creds) — with [SOPS](https://github.com/getsops/sops)
 and [age](https://github.com/FiloSottile/age). The ciphertext is safe to commit
 to your fleet repo under `fleet/secrets/`; the matching age **private key** lives
 only on your machine (or a YubiKey) and **never** enters CI.
@@ -136,6 +137,23 @@ matches.
 
   SOPS encrypts only the **values** in a `.env`, so a `git diff` still shows which
   keys changed without leaking their values.
+
+- **Deployed vars** (`fleet/secrets/all.vars.json`, `fleet/secrets/<host>.vars.json`) —
+  JSON objects of Ansible vars: the Grafana Cloud token (fleet-wide) and a server's AWS
+  backup credentials (per-host). At converge miuops decrypts each present file to a
+  `0600` temp and passes it to Ansible as `-e @<temp>` extra-vars, which **outrank** the
+  role defaults — so the secret renders into the on-host config with no per-apply env.
+  `<host>.vars.json` loads only for a targeted `apply <host>`. Encrypt one with:
+
+  ```bash
+  printf '{ "grafana_cloud_token": "glc_..." }\n' > fleet/secrets/all.vars.json
+  sops --encrypt --in-place fleet/secrets/all.vars.json
+  ```
+
+  As with every example here, the file is plaintext until `sops` rewrites it — confirm it
+  encrypted before committing (see [Never commit plaintext](#never-commit-plaintext)). See
+  [SECRETS.md](SECRETS.md) for the full secret model (config vs deployed secret vs the
+  operator-local Cloudflare token).
 
 ## Verify it works — round-trip and tamper
 
