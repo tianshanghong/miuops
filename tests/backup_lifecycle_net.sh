@@ -2,7 +2,7 @@
 #
 # Verification-net foundation for the backup-credential lifecycle program
 # (miuops backup-setup / backup-rotate). It locks the ONE mechanism the safe
-# secret-write unit (U3) is built on, with a POSITIVE control AND a NEGATIVE
+# secret-write unit is built on, with a POSITIVE control AND a NEGATIVE
 # fixture so a green run is meaningful:
 #
 #   stdin->sops write is plaintext-safe. A per-server backup credential
@@ -11,7 +11,7 @@
 #     * round-trip back to the EXACT secret, and
 #     * leave NO plaintext copy of the secret anywhere on disk.
 #   This is the construction `miuops backup-{setup,rotate}` MUST use so an
-#   interrupted write can never strand a cleartext key in the fleet repo (F3),
+#   interrupted write can never strand a cleartext key in the fleet repo,
 #   replacing the legacy "write plaintext file, then sops -e -i" pattern.
 #
 # The NEGATIVE fixture (a deliberately-leaked plaintext file) proves the
@@ -79,7 +79,7 @@ leak_scan() { grep -rlF "$SECRET" "$1" 2>/dev/null; }
 if [ -n "$(leak_scan "$TMP")" ]; then
   fail "a plaintext copy of the secret exists on disk: $(leak_scan "$TMP")"
 fi
-echo "ok  - stdin->sops write is plaintext-safe and round-trips (F3 mechanism)"
+echo "ok  - stdin->sops write is plaintext-safe and round-trips"
 
 # ── NEGATIVE fixture: a deliberately-leaked plaintext file MUST be caught by
 #    the same scan -- proving the leak check has teeth (not theater). ─────────

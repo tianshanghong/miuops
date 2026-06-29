@@ -68,7 +68,7 @@ got="$( export CF_API_TOKEN=x; curl() { printf '{"result":[{"id":"ZONEID123"}],"
 # word -- the per-host invariant is covered by write_host_vars landing in host_vars. ---
 grep -qF 'write_host_vars "$handle"' "$ROOT/miuops" || fail "up does not call write_host_vars with the resolved handle"
 
-# --- U8: up --name decouples the fleet handle (inventory key / host_vars / tunnel /
+# --- up --name decouples the fleet handle (inventory key / host_vars / tunnel /
 # domain owner) from the SSH target, so a server need not be keyed by its IP. ---
 [ "$(up_resolve_handle myname 198.51.100.7)" = "myname" ]      || fail "up_resolve_handle must prefer --name"
 [ "$(up_resolve_handle '' 198.51.100.7)" = "198.51.100.7" ]    || fail "up_resolve_handle must default to the ssh host"
@@ -232,7 +232,7 @@ write_host_vars notunnel "" a.example b.example
 out="$(cd "$ROOT" && MIUOPS_TEST_SCRIPT_DIR="$TMP/tool" ./miuops remove-domain notunnel a.example 2>&1 || true)"
 echo "$out" | grep -qi 'no tunnel_id' || fail "remove-domain must require a non-empty tunnel_id"
 
-# --- U4: observability on by default + graceful skip + an `up` nudge ---
+# --- observability on by default + graceful skip + an `up` nudge ---
 # default-on: the obs role is enabled unless a host opts out (no more silently-off).
 grep -qE '^observability_enabled:[[:space:]]+true' "$ROOT/roles/observability/defaults/main.yml" \
     || fail "observability_enabled must default to true (obs on by default)"

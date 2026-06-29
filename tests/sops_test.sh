@@ -159,28 +159,28 @@ echo "ok: env provisioning targets /opt/stacks/.env at mode 0600"
 grep -q 'cloudflared_credentials_src=' "$ROOT/miuops" \
     || fail "CLI must pass -e cloudflared_credentials_src=<decrypted temp> to the playbook"
 
-# ── 4b. U6 deployed-secret loop: run_apply decrypts fleet/secrets/{all,<host>}.vars.json
+# ── 4b. deployed-secret loop: run_apply decrypts fleet/secrets/{all,<host>}.vars.json
 # into Ansible extra-vars (-e @<decrypted-tmp>), so the Grafana token + AWS creds reach
 # the converge with ONLY the age key -- no per-apply env. Plus --tags passthrough (which
-# the U6 e2e uses to converge obs+backup in isolation). ───────────────────────────────
+# the deployed-secret e2e uses to converge obs+backup in isolation). ───────────────────────────────
 printf '[bare_metal]\nu6host ansible_host=192.0.2.9\n' > "$TMP/fleet/inventory.ini"
 printf '{ "grafana_cloud_token": "glc_U6TESTtoken" }\n' > "$TMP/fleet/secrets/all.vars.json"
 printf '{ "backup_aws_access_key_id": "AKIAU6TEST", "backup_aws_secret_access_key": "x" }\n' > "$TMP/fleet/secrets/u6host.vars.json"
 ( cd "$TMP" && sops -e -i fleet/secrets/all.vars.json && sops -e -i fleet/secrets/u6host.vars.json ) \
-    || fail "could not SOPS-encrypt the U6 deployed secrets"
+    || fail "could not SOPS-encrypt the deployed secrets"
 # Dry-run run_apply in a SUBSHELL (its EXIT/INT/TERM trap stays isolated from this
 # test's) and confirm the cmd carries one `-e @` per present vars.json. The cloudflared
 # cred uses `-e cloudflared_credentials_src=` (no `@`) + u6host has no tunnel, so the
-# `-e @` count is purely the U6 deployed secrets.
+# `-e @` count is purely the deployed secrets.
 # shellcheck disable=SC1090
 u6out="$( source "$ROOT/miuops" --source-only; DRY_RUN=true APPLY_TAGS="" run_apply u6host 2>&1 )" \
     || fail "run_apply dry-run failed with SOPS deployed secrets present"
 u6n="$(printf '%s' "$u6out" | grep -o -- '-e @' | wc -l | tr -d ' ' || true)"   # count OCCURRENCES (both -e @ sit on one line, so grep -c would undercount to 1); trailing || true so the disabled-loop case (0 matches -> grep exits 1 under pipefail) doesn't abort before the fail msg below
 [ "${u6n:-0}" -ge 2 ] \
     || fail "run_apply must pass each fleet/secrets/*.vars.json as -e @<tmp> (got ${u6n} '-e @', expected >=2): $u6out"
-echo "ok: U6 loop decrypts all.vars.json + <host>.vars.json into -e @ extra-vars"
+echo "ok: deployed-secret loop decrypts all.vars.json + <host>.vars.json into -e @ extra-vars"
 # --tags passthrough: `apply <host> --tags X` parses through to the converge cmd
-# (the U6 e2e uses this to converge obs+backup in isolation).
+# (the deployed-secret e2e uses this to converge obs+backup in isolation).
 # shellcheck disable=SC1090
 u6tags="$( source "$ROOT/miuops" --source-only; cmd_apply u6host --tags observability,backup --dry-run 2>&1 )"
 printf '%s' "$u6tags" | grep -q -- '--tags observability,backup' \
