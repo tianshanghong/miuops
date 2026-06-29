@@ -63,6 +63,46 @@ gen_iam_policy() {
 EOF
 }
 
+# Write a server's new AWS backup credentials into <fleet_root>/<rel> (a
+# fleet/secrets/<server>.vars.json), SOPS-encrypted, with two guarantees:
+#   * no plaintext on disk -- the creds go stdin->sops, and a merge decrypts the
+#     existing object only into memory/a pipe, so an interrupted write can never
+#     strand a cleartext key in the fleet repo;
+#   * merge, never clobber -- if the file already holds OTHER keys (e.g. a deployed
+#     token), they are preserved; only the two backup-cred keys are (over)written.
+#   $1 = fleet repo root (holds .sops.yaml)   $2 = repo-relative target path
+#   $3 = access key id   $4 = secret access key
+# The fresh path needs no age identity (encryption uses only the .sops.yaml
+# recipient); the merge path decrypts the existing file (age identity / YubiKey).
+write_backup_secret() {
+    local root="$1" rel="$2" akid="$3" secret="$4" creds tmp existing
+    # printf is a builtin, so the secret never lands in any process's argv (no `ps`
+    # leak). The values go in unescaped: an AWS key id/secret is base64-ish
+    # ([A-Za-z0-9/+]=) with no '"' or '\', so the JSON stays well-formed -- and if one
+    # ever did contain those, sops would reject the malformed JSON and the write fails
+    # closed (no partial/garbage file), rather than letting a value break out.
+    creds="$(printf '{"backup_aws_access_key_id":"%s","backup_aws_secret_access_key":"%s"}' "$akid" "$secret")"
+    # Temp ends in .tmp and lives in fleet/secrets/ -- so even an orphan left by a
+    # mid-write SIGKILL is ciphertext AND already gitignored (fleet/secrets/* + the
+    # *.tmp glob), never a plaintext leak and never accidentally committable. On a
+    # handled error it is removed explicitly below.
+    tmp="${root}/${rel}.$$.tmp"
+    if [ -f "${root}/${rel}" ]; then
+        existing="$( cd "$root" && sops --decrypt --output-type json "$rel" )" \
+            || { echo "Error: cannot decrypt existing ${rel} to merge (is the age identity / YubiKey available?)." >&2; return 1; }
+        ( cd "$root" && printf '%s\n%s' "$existing" "$creds" \
+            | jq -s '.[0] * .[1]' \
+            | sops --encrypt --input-type json --output-type json --filename-override "$rel" /dev/stdin ) > "$tmp" \
+            || { rm -f "$tmp"; echo "Error: failed to write merged ${rel}." >&2; return 1; }
+    else
+        ( cd "$root" && printf '%s' "$creds" \
+            | sops --encrypt --input-type json --output-type json --filename-override "$rel" /dev/stdin ) > "$tmp" \
+            || { rm -f "$tmp"; echo "Error: failed to encrypt ${rel}." >&2; return 1; }
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "${root}/${rel}"
+}
+
 # When sourced as a library (by the iam-policy check), define the functions above and
 # stop here -- do NOT run the interactive provisioning flow or touch AWS.
 if [ -n "${MIUOPS_S3_SETUP_LIB:-}" ]; then
@@ -411,6 +451,40 @@ echo ""
 echo "--- Creating access key ---"
 
 EXISTING_KEYS=$(aws iam list-access-keys --user-name "$IAM_USER" --query 'AccessKeyMetadata[].AccessKeyId' --output text)
+
+# Invoked by `miuops backup-setup` (MIUOPS_FLEET_ROOT set): write the credential into the
+# fleet SOPS-encrypted instead of printing it, with re-run semantics. AWS never returns an
+# existing key's secret, so we only mint+write when the user has NO key; an existing key
+# with a vars.json is a no-op; an existing key with NO vars.json must be rotated.
+if [[ -n "${MIUOPS_FLEET_ROOT:-}" ]]; then
+    command -v sops >/dev/null 2>&1 \
+        || { echo "Error: sops is required to write the encrypted credential (brew install sops)." >&2; exit 1; }
+    secret_rel="fleet/secrets/${SERVER}.vars.json"
+    if [[ -n "$EXISTING_KEYS" ]]; then
+        if [[ -f "${MIUOPS_FLEET_ROOT}/${secret_rel}" ]]; then
+            echo "Already set up: ${IAM_USER} has an access key and ${secret_rel} exists — nothing to do."
+            echo "To replace the key, run:  miuops backup-rotate --server ${SERVER}"
+            exit 0
+        fi
+        echo "Error: ${IAM_USER} already has an access key, but ${secret_rel} is missing." >&2
+        echo "AWS does not return an existing key's secret, so it cannot be written now." >&2
+        echo "Run:  miuops backup-rotate --server ${SERVER}   (mints a fresh key and writes it)" >&2
+        exit 1
+    fi
+    new_key_json=$(aws iam create-access-key --user-name "$IAM_USER")
+    new_akid=$(echo "$new_key_json" | jq -r '.AccessKey.AccessKeyId')
+    new_secret=$(echo "$new_key_json" | jq -r '.AccessKey.SecretAccessKey')
+    if ! write_backup_secret "$MIUOPS_FLEET_ROOT" "$secret_rel" "$new_akid" "$new_secret"; then
+        echo "Error: created IAM key ${new_akid} but failed to write it encrypted to ${secret_rel}." >&2
+        exit 1
+    fi
+    unset new_secret new_key_json
+    echo ""
+    echo "Wrote ${secret_rel} (SOPS-encrypted; access key ${new_akid})."
+    echo "Set backup_enabled + backup_volumes in host_vars/${SERVER}.yml (bucket + region come from"
+    echo "group_vars), commit the fleet repo, then:  miuops apply ${SERVER}"
+    exit 0
+fi
 
 if [[ -n "$EXISTING_KEYS" ]]; then
     echo "IAM user already has access key(s): $EXISTING_KEYS"

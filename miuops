@@ -962,10 +962,12 @@ cmd_backup_setup() {
     [[ -n "$host" ]] || die "backup-setup: --server <name> is required"
     bucket="$(resolve_backup_bucket "$host")"
     [[ -n "$bucket" ]] || die "backup-setup: no backup_s3_bucket configured in ${FLEET_DIR}/group_vars/all.yml (or host_vars/${host}.yml). Set the fleet bucket there once -- the first server creates it; see docs/SECRETS.md."
+    # MIUOPS_FLEET_ROOT lets the script write the new credential into the fleet
+    # (fleet/secrets/<host>.vars.json, SOPS-encrypted) instead of printing it.
     if [[ ${#pass_through[@]} -gt 0 ]]; then
-        MIUOPS_BUCKET="$bucket" "${SCRIPT_DIR}/scripts/setup-s3-backup.sh" --server "$host" "${pass_through[@]}"
+        MIUOPS_BUCKET="$bucket" MIUOPS_FLEET_ROOT="$FLEET_ROOT" "${SCRIPT_DIR}/scripts/setup-s3-backup.sh" --server "$host" "${pass_through[@]}"
     else
-        MIUOPS_BUCKET="$bucket" "${SCRIPT_DIR}/scripts/setup-s3-backup.sh" --server "$host"
+        MIUOPS_BUCKET="$bucket" MIUOPS_FLEET_ROOT="$FLEET_ROOT" "${SCRIPT_DIR}/scripts/setup-s3-backup.sh" --server "$host"
     fi
 }
 
