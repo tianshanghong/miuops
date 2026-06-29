@@ -54,5 +54,18 @@ else
   ok "roles/backup/README.md does not teach env-export as the primary creds path"
 fi
 
+# DISASTER_RECOVERY's key-rotation scenario must use the command, not the old manual
+# aws-iam create/delete + hand-edit-the-.env dance.
+if grep -qF 'miuops backup-rotate' "$ROOT/docs/DISASTER_RECOVERY.md"; then
+  ok "DISASTER_RECOVERY rotation uses 'miuops backup-rotate'"
+else
+  bad "DISASTER_RECOVERY does not use 'miuops backup-rotate' for key rotation"
+fi
+if grep -qF 'aws iam create-access-key' "$ROOT/docs/DISASTER_RECOVERY.md"; then
+  bad "DISASTER_RECOVERY still documents the manual 'aws iam create-access-key' rotation steps"
+else
+  ok "DISASTER_RECOVERY dropped the manual aws-iam rotation steps"
+fi
+
 echo "== ${pass} passed, ${fail} failed =="
 [ "$fail" -eq 0 ]

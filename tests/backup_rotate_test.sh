@@ -52,6 +52,7 @@ REC
       . "'"$ROOT"'/miuops" --source-only 2>/dev/null
       require_sops()        { :; }   # the sops binary is a converge dep, not needed to unit-test the rotation flow (CI lint stage has no sops)
       write_backup_secret() { echo "WRITE $2" >> "'"$log"'"; return 0; }
+      sync_backup_env()     { echo "ENVSYNC $2" >> "'"$log"'"; return 0; }
       run_apply()           { echo "APPLY $*" >> "'"$log"'"; return '"$apply_rc"'; }
       cmd_backup_rotate --server web1 --yes
     ' >/dev/null 2>>"$log" ) || rc=$?
@@ -59,13 +60,20 @@ REC
   printf '%s %s' "$log" "$rc"
 }
 
-seq_of() { grep -oE 'CREATE|WRITE|APPLY|DELETE' "$1" | tr '\n' ' '; }
+seq_of() { grep -oE 'CREATE|WRITE|ENVSYNC|APPLY|DELETE' "$1" | tr '\n' ' '; }
+pos_of() { grep -n "$2" "$1" | head -1 | cut -d: -f1; }
 
 # 1. exactly 1 key + apply OK -> full sequence, old key deleted, exit 0
 read -r log rc <<< "$(run_rotate 1 0)"
-[ "$(seq_of "$log")" = "CREATE WRITE APPLY DELETE " ] \
-  && ok "happy path: create -> write -> apply -> delete, in order" \
+[ "$(seq_of "$log")" = "CREATE WRITE ENVSYNC APPLY DELETE " ] \
+  && ok "happy path: create -> write -> sync-env -> apply -> delete, in order" \
   || bad "happy path wrong sequence: '$(seq_of "$log")'"
+# WAL-G safety: the stack .env is synced BEFORE the old key is deleted (else WAL-G
+# would be stranded on a deleted key). Require both present + ENVSYNC earlier.
+env_at="$(pos_of "$log" ENVSYNC)"; del_at="$(pos_of "$log" DELETE)"
+{ [ -n "$env_at" ] && [ -n "$del_at" ] && [ "$env_at" -lt "$del_at" ]; } \
+  && ok "WAL-G .env synced before the old key is deleted" \
+  || bad "old key deleted before (or without) the .env sync"
 grep -q 'DELETE .*AKIAOLD1' "$log" && ok "deletes the OLD key (AKIAOLD1)" || bad "did not delete the old key"
 { [ "$rc" = 0 ]; } && ok "happy path exit 0" || bad "happy path exit $rc"
 rm -rf "$(dirname "$log")"
@@ -95,7 +103,7 @@ rm -rf "$(dirname "$log")"
 #    WITHOUT erroring (so set -e does NOT catch it) -> the guard must abort BEFORE
 #    write/apply/delete, so the old key is never touched (safety invariant stays total).
 read -r log rc <<< "$(run_rotate 1 0 '{"AccessKey":{}}')"
-{ [ "$rc" != 0 ] && grep -q 'CREATE' "$log" && ! grep -qE 'WRITE|APPLY|DELETE' "$log"; } \
+{ [ "$rc" != 0 ] && grep -q 'CREATE' "$log" && ! grep -qE 'WRITE|ENVSYNC|APPLY|DELETE' "$log"; } \
   && ok "malformed create response: aborts before write/apply/delete (old key untouched)" \
   || bad "malformed create: did not abort cleanly (rc=$rc seq='$(seq_of "$log")')"
 rm -rf "$(dirname "$log")"

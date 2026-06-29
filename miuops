@@ -1036,6 +1036,13 @@ cmd_backup_rotate() {
         unset new_secret new_json
         die "backup-rotate: created key ${new_akid} but failed to write it. The old key ${old_key} is still active; resolve the new key manually."
     fi
+    # The same key also feeds WAL-G via the stack env -- sync it BEFORE apply (so apply
+    # pushes both) and BEFORE the delete, or WAL-G would be stranded on the deleted key.
+    # No-op when the server has no fleet/secrets/<host>.env carrying AWS creds.
+    if ! sync_backup_env "$FLEET_ROOT" "fleet/secrets/${host}.env" "$new_akid" "$new_secret"; then
+        unset new_secret new_json
+        die "backup-rotate: wrote the new key to vars.json but failed to sync it into fleet/secrets/${host}.env. The old key ${old_key} is still active; resolve manually before deleting it."
+    fi
     unset new_secret new_json
     # 3. push the new key to the host
     info "Applying ${host} to push the new key..."

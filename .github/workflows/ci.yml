@@ -34,6 +34,7 @@ jobs:
             tests/secrets_docs_lint_test.sh \
             tests/backup_lifecycle_net.sh \
             tests/backup_secret_write_test.sh \
+            tests/backup_env_sync_test.sh \
             tests/backup_setup_write_test.sh \
             tests/backup_bucket_resolve_test.sh \
             tests/backup_setup_cmd_test.sh \
@@ -72,6 +73,7 @@ jobs:
           bash tests/sops_test.sh
           bash tests/backup_lifecycle_net.sh
           bash tests/backup_secret_write_test.sh
+          bash tests/backup_env_sync_test.sh
           bash tests/backup_setup_write_test.sh
 
       - name: Install Ansible
