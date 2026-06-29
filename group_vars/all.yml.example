@@ -23,3 +23,15 @@
 #
 # The TOKEN is a SECRET — it does NOT go here. It bridges via the environment
 # (export GRAFANA_CLOUD_TOKEN) until the SOPS-encrypted fleet secret supplies it.
+
+# --- Backup destination (shared by the whole fleet) ---------------------------
+# One S3 bucket for the whole fleet; each server backs up under its own <server>/
+# prefix with its own scoped IAM key. The bucket name, client-side encryption mode,
+# and age recipients are CONFIG, identical across servers, so they live here once
+# (single source of truth) — `miuops backup-setup` reads the bucket from here and never
+# asks you to re-type it. The per-server AWS key is a SECRET that `miuops backup-setup`
+# writes into fleet/secrets/<server>.vars.json (SOPS); it is NOT set here. Uncomment:
+# backup_s3_bucket: "your-fleet-backup"
+# backup_encryption: age          # none | age (client-side encryption before upload)
+# backup_age_recipients:
+#   - "age1..."                   # or ssh-ed25519 / age1yubikey1... (decrypt-side key)

@@ -7,3 +7,13 @@ tunnel_id: ""   # this server's Cloudflare tunnel UUID (miuops fills this in)
 # Optional firewall posture override for this server (defaults are generic-safe):
 # firewall_management_networks_v4: ["203.0.113.0/24"]
 # firewall_ssh_ratelimit_enabled: false
+
+# Backups — PER-SERVER only: the on/off switch and this server's volume list. The
+# shared bucket + encryption + age recipients are fleet-wide and live ONCE in
+# group_vars/all.yml (not here). Run `miuops backup-setup --server <name>` to mint
+# this server's key. Uncomment to enable:
+# backup_enabled: true
+# backup_volumes:
+#   - name: myapp_data           # docker volume name
+#     stop: [myapp-1]            # containers to stop for an at-rest snapshot ([] = hot copy)
+# backup_aws_region: us-west-2   # only if this server's bucket isn't in us-west-2

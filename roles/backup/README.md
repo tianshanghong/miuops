@@ -39,18 +39,23 @@ the writer first.
    `AWS_*` export. (A bare `export AWS_ACCESS_KEY_ID/...SECRET...` still works as a
    fallback for a whole-fleet apply or a host without a `.vars.json`.)
 
-## Configuration (host_vars schema)
+## Configuration
+
+Fleet-wide values — `backup_s3_bucket`, `backup_encryption`, `backup_age_recipients` —
+are identical across servers and live **once** in `group_vars/all.yml`. Per-server
+values (`backup_enabled`, `backup_volumes`, `backup_aws_region`, …) live in
+`host_vars/<host>.yml`.
 
 | Variable | Default | Description |
 |---|---|---|
-| `backup_enabled` | `false` | Master switch. Role is a no-op when false. |
-| `backup_volumes` | `[]` | List of `{ name, stop }` items (below). |
-| `backup_s3_bucket` | `""` | Destination bucket name (no `s3://`). One bucket for the whole fleet. Required. |
+| `backup_enabled` | `false` | Master switch. Role is a no-op when false. **Per-server** (host_vars). |
+| `backup_volumes` | `[]` | List of `{ name, stop }` items (below). **Per-server** (host_vars). |
+| `backup_s3_bucket` | `""` | Destination bucket name (no `s3://`). One bucket for the whole fleet — **fleet-wide, set in group_vars** (single source). Required. |
 | `backup_s3_prefix` | `"{{ inventory_hostname }}/vol"` | Key prefix, rooted at this server's name. Objects land under `<server>/vol/<volume>/`. Must start with `<inventory_hostname>/` (the role asserts it). |
 | `backup_schedule` | `"*-*-* 02:00:00"` | systemd `OnCalendar` expression. |
 | `backup_randomized_delay_sec` | `"45m"` | `RandomizedDelaySec` to smear the start. |
-| `backup_encryption` | `"none"` | `none` \| `age`. |
-| `backup_age_recipients` | `[]` | age recipients (`age1...`, `ssh-ed25519`/`ssh-rsa`, or `age1yubikey1...`). |
+| `backup_encryption` | `"none"` | `none` \| `age`. **Fleet-wide** (group_vars). |
+| `backup_age_recipients` | `[]` | age recipients (`age1...`, `ssh-ed25519`/`ssh-rsa`, or `age1yubikey1...`). **Fleet-wide** (group_vars). |
 | `backup_aws_access_key_id` | from `<host>.vars.json` | AWS key. Written by `miuops backup-setup`; falls back to env `AWS_ACCESS_KEY_ID`. |
 | `backup_aws_secret_access_key` | from `<host>.vars.json` | AWS secret. Written by `miuops backup-setup`; falls back to env `AWS_SECRET_ACCESS_KEY`. |
 | `backup_aws_region` | `us-west-2` | AWS region. **Config** — set in host_vars (not env). |
@@ -84,19 +89,21 @@ until the next manual intervention.
 ### Example
 
 ```yaml
-# host_vars/<host>.yml
-backup_enabled: true
+# group_vars/all.yml — fleet-wide (one bucket + shared encryption/recipients)
 backup_s3_bucket: "myfleet-backup"      # one bucket for the whole fleet
-backup_aws_region: "us-west-2"          # config (not a secret); defaults to us-west-2
-# backup_s3_prefix defaults to "{{ inventory_hostname }}/vol" — leave it unset
-# unless you have a reason to change the trailing segment (keep the
-# "<server>/" root or the role's assert fails).
-backup_schedule: "*-*-* 02:00:00"
 backup_encryption: "age"
 backup_age_recipients:
   - "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p"
   # or an SSH public key:
   # - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA..."
+
+# host_vars/<host>.yml — per server
+backup_enabled: true
+backup_aws_region: "us-west-2"          # config (not a secret); defaults to us-west-2
+# backup_s3_prefix defaults to "{{ inventory_hostname }}/vol" — leave it unset
+# unless you have a reason to change the trailing segment (keep the
+# "<server>/" root or the role's assert fails).
+backup_schedule: "*-*-* 02:00:00"
 backup_volumes:
   - name: app_uploads        # stateful: stop the writer for an at-rest copy
     stop: [app]
