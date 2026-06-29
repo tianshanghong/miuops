@@ -279,12 +279,17 @@ miuops backup-rotate --server <server>
 3. runs `miuops apply <server>` to push the new key to the host;
 4. and **only after that apply succeeds** deletes the old key.
 
-Because both credential locations are updated and pushed *before* the old key is
-deleted, neither the host volume backup nor WAL-G is ever stranded on a dead key.
+The host volume backup reloads `backup.env` on every (oneshot) run, so it uses the new
+key immediately. WAL-G/postgres is a long-running container that reads the key from
+`/opt/stacks/.env` **once at start** — so **if the server runs WAL-G, redeploy its stack
+after rotating** so the container reloads the new key (it is already in the fleet's
+`<server>.env` from step 2; the redeploy just restarts the container with it).
+`backup-rotate` prints this reminder when the server has a stack env.
+
 If the apply fails it stops **before** the delete, so the server keeps a working key
 — re-run `miuops apply <server>`, then the old key can be removed. It refuses unless
-the IAM user has exactly one key, so a rotation is never ambiguous. Commit the
-updated `fleet/secrets/<server>.*` afterward.
+the IAM user has exactly one key, so a rotation is never ambiguous. Commit the updated
+`fleet/secrets/<server>.*` afterward.
 
 ### Verify
 
