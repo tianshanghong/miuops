@@ -71,10 +71,11 @@ backup_age_plugin_yubikey_deb_revision: "1"
 backup_age_plugin_yubikey_deb_sha256: "bf7a02418de04b3d3df9791e185d493eb344829bca4009247a41bc4d7630b47f"
 
 # --- AWS credentials --------------------------------------------------------
-# config/secret split. The ACCESS KEY + SECRET are SECRETS: they bridge via the
-# environment for now (export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY before
-# `./miuops apply`); the SOPS-in-fleet migration decrypts them at converge and supplies
-# them as extra-vars. They render into /etc/miuops-backup/backup.env (0600, root); the
+# config/secret split. The ACCESS KEY + SECRET are SECRETS: `miuops backup-setup`
+# writes them SOPS-encrypted to fleet/secrets/<host>.vars.json, and `miuops apply`
+# decrypts them at converge and supplies them as extra-vars (which outrank these
+# env-lookup defaults -- the bare AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY export is
+# the fallback). They render into /etc/miuops-backup/backup.env (0600, root); the
 # script sources that file, so credentials never appear in argv / `ps` output.
 backup_aws_access_key_id: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') | default('', true) }}"
 backup_aws_secret_access_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') | default('', true) }}"

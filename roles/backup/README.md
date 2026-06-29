@@ -24,22 +24,20 @@ the writer first.
 
 ## Quick start
 
-1. Create the shared S3 bucket + this server's scoped IAM user (Object Lock +
-   lifecycle): `scripts/setup-s3-backup.sh --server <server>` (one bucket is
-   shared by the whole fleet and with WAL-G; each server gets its own prefix +
-   IAM user — see the repo README and the **Fleet isolation** section below).
-2. Export the AWS **credentials** (the two secrets) in the shell you run miuOps from:
-
-   ```bash
-   export AWS_ACCESS_KEY_ID=AKIA...
-   export AWS_SECRET_ACCESS_KEY=...
-   ```
-
-   The region is **config, not a secret** — set `backup_aws_region` in host_vars
-   (step 3; it defaults to `us-west-2`), not via the environment.
-
-3. Configure the host in `host_vars/<host>.yml` (see schema below).
-4. Apply: `./miuops apply <host>` (or `ansible-playbook playbook.yml --tags backup --limit <host>`).
+1. From your fleet repo, mint this server's backup identity and write its key
+   into the fleet (encrypted): `miuops backup-setup --server <server>`. One
+   bucket is shared by the whole fleet (and with WAL-G); each server gets its own
+   prefix + scoped IAM user — see the repo README and the **Fleet isolation**
+   section below. The command writes `fleet/secrets/<server>.vars.json` for you
+   (SOPS-encrypted, merged not clobbered) — there is no key to copy or export. To
+   replace a key later: `miuops backup-rotate --server <server>`.
+2. Configure the host in `host_vars/<host>.yml` (see schema below) and set
+   `backup_enabled: true`. The region is **config, not a secret** — set
+   `backup_aws_region` there (defaults to `us-west-2`).
+3. Apply: `miuops apply <host>`. The CLI decrypts `<host>.vars.json` and hands the
+   AWS credentials to Ansible as extra-vars, so you unlock only your age key — no
+   `AWS_*` export. (A bare `export AWS_ACCESS_KEY_ID/...SECRET...` still works as a
+   fallback for a whole-fleet apply or a host without a `.vars.json`.)
 
 ## Configuration (host_vars schema)
 
@@ -53,8 +51,8 @@ the writer first.
 | `backup_randomized_delay_sec` | `"45m"` | `RandomizedDelaySec` to smear the start. |
 | `backup_encryption` | `"none"` | `none` \| `age`. |
 | `backup_age_recipients` | `[]` | age recipients (`age1...`, `ssh-ed25519`/`ssh-rsa`, or `age1yubikey1...`). |
-| `backup_aws_access_key_id` | env `AWS_ACCESS_KEY_ID` | AWS key. Keep env-only. |
-| `backup_aws_secret_access_key` | env `AWS_SECRET_ACCESS_KEY` | AWS secret. Keep env-only. |
+| `backup_aws_access_key_id` | from `<host>.vars.json` | AWS key. Written by `miuops backup-setup`; falls back to env `AWS_ACCESS_KEY_ID`. |
+| `backup_aws_secret_access_key` | from `<host>.vars.json` | AWS secret. Written by `miuops backup-setup`; falls back to env `AWS_SECRET_ACCESS_KEY`. |
 | `backup_aws_region` | `us-west-2` | AWS region. **Config** — set in host_vars (not env). |
 | `backup_s3_endpoint_url` | `""` | Optional S3-compatible endpoint override. |
 
@@ -106,10 +104,11 @@ backup_volumes:
     stop: []
 ```
 
-AWS credentials are **not** in host_vars — export them as environment variables
-(above) so they stay out of the repo. They are rendered on the host into
-`/etc/miuops-backup/backup.env` (mode `0600`, root) and sourced by the script,
-so they never appear in `ps` / the process table.
+AWS credentials are **not** in host_vars — `miuops backup-setup` writes them
+SOPS-encrypted to `fleet/secrets/<host>.vars.json`, which `miuops apply` decrypts
+and hands to this role (a bare `AWS_*` environment export is the fallback). Either
+way they are rendered on the host into `/etc/miuops-backup/backup.env` (mode `0600`,
+root) and sourced by the script, so they never appear in `ps` / the process table.
 
 When `backup_age_recipients` includes a YubiKey identity (`age1yubikey1...`), the
 role installs **age-plugin-yubikey** on the host automatically (pinned `.deb` +

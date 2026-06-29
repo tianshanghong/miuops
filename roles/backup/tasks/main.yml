@@ -14,9 +14,10 @@
       - backup_aws_region | length > 0
     fail_msg: >-
       backup_enabled is true but the destination/credentials are incomplete.
-      Set backup_s3_bucket + backup_aws_region in host_vars (region is config, not
-      secret; it defaults to us-west-2). Export the secret AWS credentials before
-      running (see roles/backup/README.md): AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+      Set backup_s3_bucket (here or in group_vars) + backup_aws_region in
+      host_vars (region is config, not secret; default us-west-2), then run
+      'miuops backup-setup --server <host>' to mint and write the AWS creds
+      into the encrypted <host>.vars.json (see roles/backup/README.md).
     quiet: true
   when: backup_enabled | bool
   tags: ['backup']
