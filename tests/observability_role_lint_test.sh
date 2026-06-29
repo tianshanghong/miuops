@@ -6,7 +6,7 @@
 # assert.
 #
 # This is a TRIPWIRE pinning that contract so a future edit can't (a) flip the default
-# back to off [the silently-unmonitored regression U4 exists to kill], (b) re-gate the
+# back to off [the silently-unmonitored regression this guards against], (b) re-gate the
 # role on the RAW observability_enabled so default-on hard-fails every unconfigured
 # adopter, or (c) drop the unconfigured-skip warning.
 set -euo pipefail
