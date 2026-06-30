@@ -1,0 +1,178 @@
+name: Build age-plugin-yubikey
+
+# Build age-plugin-yubikey from the upstream source tag for amd64 + arm64 Linux and publish
+# each BINARY (with a sibling .sha256) to a release. `age` discovers plugins by name on PATH,
+# so the fleet just needs the binary on PATH -- no .deb wrapper. Built in transparent CI from a
+# pinned upstream source tag; the backup role installs the arch-appropriate binary to
+# /usr/local/bin and pins it by sha256.
+#
+# SUPPLY-CHAIN TRUST: the binary is NOT byte-reproducible across builds -- upstream's
+# dependencies generate code at compile time (proc-macros) non-deterministically, which is a
+# Rust/codegen-level issue outside this workflow's control. We do NOT claim independent
+# reproducibility. Instead the trust anchors are: (a) a TRANSPARENT CI build (public logs) from a
+# PINNED upstream tag, with the resolved upstream commit SHA recorded + optionally verified; and
+# (b) the backup role PINS the published sha256, so a tampered/swapped binary in transit or at
+# rest is rejected. The reproducibility knobs below (SOURCE_DATE_EPOCH, codegen-units=1,
+# remap-path-prefix) are kept as best-effort hardening and to benefit automatically if upstream
+# ever makes its codegen deterministic.
+#
+# ASSET CONTRACT (for the backup role): assets are age-plugin-yubikey_<ver>_<arch> where <arch>
+# is the DEBIAN arch -- amd64 / arm64 (= `dpkg --print-architecture`) -- NOT `uname -m`.
+#
+# Triggered manually (or by the auto-sync workflow) with the upstream version. Optionally pass
+# the expected upstream commit SHA to fail closed if the (mutable) tag was re-pushed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "age-plugin-yubikey upstream version, no leading v (e.g. 0.5.0)"
+        required: true
+        default: "0.5.0"
+      expected_sha:
+        # Required so a re-pushed (mutable) upstream tag fails closed instead of silently
+        # building a different commit. Look it up with:
+        #   gh api repos/str4d/age-plugin-yubikey/git/refs/tags/v<version> --jq .object.sha
+        description: "Required: the full upstream commit SHA the tag must resolve to (re-tag protection)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      VER: ${{ inputs.version }}
+      TAG: age-plugin-yubikey-v${{ inputs.version }}
+    steps:
+      # Gate the whole workflow: this dispatch input flows into a checkout ref and several shell
+      # commands. Require a real X.Y(.Z) version -- digits/dots only, no leading, trailing, or
+      # empty (double-dot) components -- and reject everything else up front.
+      - name: Validate the version input
+        run: |
+          case "$VER" in
+            *[!0-9.]* ) echo "::error::version may contain only digits and dots (got '$VER')"; exit 1 ;;
+            .* | *. )   echo "::error::version has a leading/trailing dot (got '$VER')"; exit 1 ;;
+            *..* )      echo "::error::version has an empty component (got '$VER')"; exit 1 ;;
+            [0-9]*.[0-9]* ) : ;;
+            * )         echo "::error::version must be at least X.Y (got '$VER')"; exit 1 ;;
+          esac
+
+      - name: Create the release if it does not exist
+        run: |
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" \
+              --notes "age-plugin-yubikey ${VER}, built from the upstream source tag in CI for amd64 + arm64 Linux. Each binary ships a sibling .sha256; the resolved upstream commit SHA is recorded in the build logs. Provenance is this transparent CI build from the pinned upstream tag; the miuOps backup role installs the binary on PATH and pins it by sha256 (tamper-evidence). NOTE: the binary is not byte-reproducible across builds due to upstream compile-time codegen non-determinism."
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    env:
+      VER: ${{ inputs.version }}
+      ARCH: ${{ matrix.arch }}
+      TAG: age-plugin-yubikey-v${{ inputs.version }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      # The arm64 runner is still in public preview; record the image version for provenance.
+      - name: Record runner image version
+        run: echo "runner=${ImageOS:-?} image=${ImageVersion:-?} arch=${ARCH}"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libpcsclite-dev build-essential
+
+      # Build from upstream's own source at the pinned tag -- provenance is a public CI run from
+      # str4d/age-plugin-yubikey@v<version>. Checked out under upstream/ so the repo's
+      # rust-toolchain.toml only governs the build steps below.
+      - name: Check out upstream age-plugin-yubikey
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: str4d/age-plugin-yubikey
+          ref: v${{ inputs.version }}
+          persist-credentials: false
+          path: upstream
+
+      # The tag is a lightweight, mutable ref. Record the commit it resolved to (audit), and if
+      # the caller pinned an expected SHA, fail closed when the tag no longer matches it.
+      - name: Resolve + verify the upstream commit SHA
+        working-directory: upstream
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "PROVENANCE: str4d/age-plugin-yubikey v${VER} -> ${sha}"
+          if [ -n "$EXPECTED_SHA" ] && [ "$sha" != "$EXPECTED_SHA" ]; then
+            echo "::error::tag v${VER} resolves to ${sha}, not the expected ${EXPECTED_SHA} (upstream re-tag?)"; exit 1
+          fi
+
+      # Best-effort determinism hardening (does not fully reproduce -- see the header note):
+      # SOURCE_DATE_EPOCH (build-script timestamps), codegen-units=1 (no parallel-codegen
+      # nondeterminism), remap-path-prefix ($HOME/cargo paths out of the binary). Strip the
+      # shipped binary.
+      - name: Build the binary
+        working-directory: upstream
+        env:
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"; export SOURCE_DATE_EPOCH
+          export RUSTFLAGS="--remap-path-prefix=${HOME}=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=."
+          # --locked needs upstream's committed Cargo.lock (present at the tags we build).
+          cargo build --release --locked
+          strip target/release/age-plugin-yubikey
+
+      - name: Smoke test -- the binary runs
+        working-directory: upstream
+        run: ./target/release/age-plugin-yubikey --version
+
+      - name: Rename, checksum, and upload to the release
+        working-directory: upstream
+        run: |
+          bin="age-plugin-yubikey_${VER}_${ARCH}"
+          cp target/release/age-plugin-yubikey "$bin"
+          sha256sum "$bin" | tee "${bin}.sha256"
+          gh release upload "$TAG" --repo "$REPO" --clobber "$bin" "${bin}.sha256"
+
+  # Completeness gate: a single-arch failure (fail-fast is off so the other arch still runs)
+  # leaves a release that LOOKS done but is missing an arch. Make that visibly red.
+  verify-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      VER: ${{ inputs.version }}
+      TAG: age-plugin-yubikey-v${{ inputs.version }}
+    steps:
+      - name: Assert both arches' binaries are present
+        run: |
+          assets="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name')"
+          missing=0
+          for want in \
+            "age-plugin-yubikey_${VER}_amd64" "age-plugin-yubikey_${VER}_amd64.sha256" \
+            "age-plugin-yubikey_${VER}_arm64" "age-plugin-yubikey_${VER}_arm64.sha256"; do
+            if printf '%s\n' "$assets" | grep -Fqx "$want"; then
+              echo "ok: $want"
+            else
+              echo "::error::missing release asset: $want"; missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
