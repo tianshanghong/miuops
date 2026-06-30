@@ -137,7 +137,7 @@ jobs:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
         run: |
           SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"; export SOURCE_DATE_EPOCH
-          export RUSTFLAGS="-Cremap-path-prefix=${HOME}=. -Cremap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=."
+          export RUSTFLAGS="--remap-path-prefix=${HOME}=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=."
           cargo build --release --locked
           cargo run --release --locked --example generate-docs
           cargo deb --no-build
@@ -153,7 +153,7 @@ jobs:
         run: |
           cargo clean
           SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"; export SOURCE_DATE_EPOCH
-          export RUSTFLAGS="-Cremap-path-prefix=${HOME}=. -Cremap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=."
+          export RUSTFLAGS="--remap-path-prefix=${HOME}=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=."
           cargo build --release --locked
           cargo run --release --locked --example generate-docs
           cargo deb --no-build
