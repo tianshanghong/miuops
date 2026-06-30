@@ -131,6 +131,21 @@ jobs:
       # generated) manpage asset, then package without rebuilding. Reproducibility knobs:
       # SOURCE_DATE_EPOCH (archive mtimes) + codegen-units=1 (no parallel-codegen nondeterminism)
       # + remap-path-prefix ($HOME/cargo paths out of the binary).
+      - name: Write the canonical-tar helper (for a byte-reproducible data.tar)
+        run: |
+          cat > "${RUNNER_TEMP}/canon.py" <<'PYEOF'
+          import tarfile, os, sys
+          sde = int(os.environ["SOURCE_DATE_EPOCH"])
+          ti = tarfile.open(sys.argv[1], "r:*")
+          to = tarfile.open(sys.argv[2], "w", format=tarfile.GNU_FORMAT)
+          for m in sorted(ti.getmembers(), key=lambda x: x.name):
+              m.mtime = sde
+              m.uid = m.gid = 0
+              m.uname = m.gname = "root"
+              to.addfile(m, ti.extractfile(m) if m.isreg() else None)
+          to.close()
+          PYEOF
+
       - name: Build the .deb (reproducibly)
         working-directory: upstream
         env:
@@ -141,13 +156,17 @@ jobs:
           cargo build --release --locked
           cargo run --release --locked --example generate-docs
           cargo deb --no-build
-          # cargo-deb's data.tar.xz is not byte-reproducible. Rebuild the .deb with dpkg-deb,
-          # the canonical Debian packer, which honours SOURCE_DATE_EPOCH (clamps the tar mtimes
-          # and the ar timestamps) and --root-owner-group (0:0) -- so two clean builds yield a
-          # byte-identical .deb whose sha is safe to pin.
+          # cargo-deb's data.tar has tar-header padding (the uname field) that is not byte-stable
+          # across builds, and neither dpkg-deb nor tar(1) normalise it. Rewrite data.tar with
+          # Python's tarfile (which zeroes all header padding) at a fixed mtime/owner, recompress
+          # single-thread, and reassemble with deterministic ar -- so two clean builds yield a
+          # byte-identical .deb. The payload files are already reproducible.
           deb="$(realpath target/debian/*.deb)"; pk="$(mktemp -d)"
-          dpkg-deb -R "$deb" "$pk/x"
-          dpkg-deb --root-owner-group --threads-max=1 --build "$pk/x" "$pk/out.deb"
+          ( cd "$pk" && ar x "$deb" )
+          python3 "${RUNNER_TEMP}/canon.py" "$pk/data.tar.xz" "$pk/data.tar"
+          rm "$pk/data.tar.xz"
+          xz -9e -T1 "$pk/data.tar"
+          ( cd "$pk" && ar Drc out.deb debian-binary control.tar.xz data.tar.xz )
           mv -f "$pk/out.deb" "$deb"
           cp target/debian/*.deb "${RUNNER_TEMP}/build1.deb"
 
@@ -165,13 +184,17 @@ jobs:
           cargo build --release --locked
           cargo run --release --locked --example generate-docs
           cargo deb --no-build
-          # cargo-deb's data.tar.xz is not byte-reproducible. Rebuild the .deb with dpkg-deb,
-          # the canonical Debian packer, which honours SOURCE_DATE_EPOCH (clamps the tar mtimes
-          # and the ar timestamps) and --root-owner-group (0:0) -- so two clean builds yield a
-          # byte-identical .deb whose sha is safe to pin.
+          # cargo-deb's data.tar has tar-header padding (the uname field) that is not byte-stable
+          # across builds, and neither dpkg-deb nor tar(1) normalise it. Rewrite data.tar with
+          # Python's tarfile (which zeroes all header padding) at a fixed mtime/owner, recompress
+          # single-thread, and reassemble with deterministic ar -- so two clean builds yield a
+          # byte-identical .deb. The payload files are already reproducible.
           deb="$(realpath target/debian/*.deb)"; pk="$(mktemp -d)"
-          dpkg-deb -R "$deb" "$pk/x"
-          dpkg-deb --root-owner-group --threads-max=1 --build "$pk/x" "$pk/out.deb"
+          ( cd "$pk" && ar x "$deb" )
+          python3 "${RUNNER_TEMP}/canon.py" "$pk/data.tar.xz" "$pk/data.tar"
+          rm "$pk/data.tar.xz"
+          xz -9e -T1 "$pk/data.tar"
+          ( cd "$pk" && ar Drc out.deb debian-binary control.tar.xz data.tar.xz )
           mv -f "$pk/out.deb" "$deb"
           if cmp -s target/debian/*.deb "${RUNNER_TEMP}/build1.deb"; then
             echo "REPRODUCIBLE: two clean builds are byte-identical on ${ARCH}"
