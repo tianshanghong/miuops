@@ -184,62 +184,38 @@ directory. The archive is **not gzip-compressed** (extract with `tar -xf`, not
 numbers — deterministic ownership even when the restore host has a different
 `/etc/passwd` than the source.
 
-**1. List backups for the volume:**
+**1. Restore the volume's data to a staging directory.** `miuops backup-restore`
+resolves the bucket from your fleet config, finds the volume's object (the latest, or
+`--at <ts>`), downloads it, decrypts it (age) with your operator identity, and untars
+it **byte-identical** into `--target` (which must be empty). Run it **on the server as
+root** so the tar's `--numeric-owner` UIDs/GIDs are restored faithfully:
 
 ```bash
-aws s3 ls s3://PROJECT-backup/<server>/vol/VOLUME_NAME/ --region REGION
+miuops backup-restore --server SERVER --volume VOLUME_NAME --target ./restored
+#   --at 20260629T030000Z    # an exact backup; omit for the latest
 ```
 
-If encrypted, files have a `.age` extension (e.g. `backup-YYYYMMDDTHHMMSSZ.tar.age`).
+It **fails closed**: a tampered or truncated object aborts the restore and wipes the
+partial target — you never get a silently-corrupt restore. Decryption uses your age
+identity (`SOPS_AGE_KEY_FILE` / default `keys.txt` / a plugged-in YubiKey); the host
+only ever held the public recipient. List what is available first with
+`aws s3 ls s3://PROJECT-backup/SERVER/vol/VOLUME_NAME/ --region REGION` if needed.
 
-**2. Download the backup:**
-
-```bash
-# Unencrypted
-aws s3 cp s3://PROJECT-backup/<server>/vol/VOLUME_NAME/backup-YYYYMMDDTHHMMSSZ.tar . --region REGION
-
-# Encrypted (include the .age extension)
-aws s3 cp s3://PROJECT-backup/<server>/vol/VOLUME_NAME/backup-YYYYMMDDTHHMMSSZ.tar.age . --region REGION
-```
-
-**3. Decrypt the backup (if encrypted):**
-
-```bash
-# age (asymmetric — identity file, SSH private key, or YubiKey-backed identity)
-age --decrypt -i key.txt -o backup-YYYYMMDDTHHMMSSZ.tar backup-YYYYMMDDTHHMMSSZ.tar.age
-```
-
-Install age with `apt install age` (Debian/Ubuntu) or download it from
-[github.com/FiloSottile/age](https://github.com/FiloSottile/age). The role
-encrypts to a public key only, so decryption needs the matching private key or
-identity file — transfer it to the server temporarily and remove it afterward, or
-keep the key off the host and decrypt on your laptop while streaming the plaintext
-over SSH (see [Backup Encryption](BACKUP_ENCRYPTION.md)). For a YubiKey-backed
-recipient, decrypt where the key is plugged in, with `age-plugin-yubikey`
-installed.
-
-**4. Stop the consumers of the volume:**
+**2. Stop the consumers of the volume:**
 
 ```bash
 docker stop CONTAINER [CONTAINER...]
 ```
 
-**5. Extract into the target volume:**
-
-`--numeric-owner` keeps the restored files' UIDs/GIDs as numbers, so ownership is
-correct even when this host's `/etc/passwd` differs from the source host's.
+**3. Replace the volume's contents with the restored data** (`cp -a` preserves the
+numeric ownership `backup-restore` set):
 
 ```bash
-docker run --rm \
-  -v VOLUME_NAME:/restore \
-  -v "$(pwd)/backup-YYYYMMDDTHHMMSSZ.tar:/backup.tar:ro" \
-  alpine sh -c "cd /restore && tar --numeric-owner -xf /backup.tar"
+docker run --rm -v VOLUME_NAME:/v -v "$(pwd)/restored:/restored:ro" alpine \
+  sh -c 'rm -rf /v/* /v/..?* 2>/dev/null; cp -a /restored/. /v/'
 ```
 
-To restore into a clean volume, clear it first (inside the same `alpine` shell:
-`rm -rf /restore/* /restore/..?* 2>/dev/null; tar --numeric-owner -xf /backup.tar`).
-
-**6. Restart the consumers:**
+**4. Restart the consumers:**
 
 ```bash
 docker start CONTAINER [CONTAINER...]

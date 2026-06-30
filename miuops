@@ -532,6 +532,23 @@ resolve_backup_bucket() {
     return 0
 }
 
+# Resolve backup_s3_prefix the same versioned way as the bucket (host_vars then
+# group_vars), defaulting to "<host>/vol" -- the backup role's default. It is
+# operator-overridable (the role only asserts it starts with "<host>/"), so restore
+# must look under the SAME prefix the backup wrote to, not a hardcoded one.
+resolve_backup_prefix() {
+    local _h="$1" _f _line _val
+    for _f in "${FLEET_DIR}/host_vars/${_h}.yml" "${FLEET_DIR}/group_vars/all.yml"; do
+        [ -f "$_f" ] || continue
+        _line="$(grep -aE '^backup_s3_prefix[[:space:]]*:' "$_f" 2>/dev/null | tail -1 || true)"
+        [ -n "$_line" ] || continue
+        _val="$(printf '%s' "$_line" | sed -E 's/^backup_s3_prefix[[:space:]]*:[[:space:]]*//; s/[[:space:]]*#.*$//; s/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/; s/[[:space:]]*$//')"
+        if [ -n "$_val" ]; then printf '%s' "$_val"; return 0; fi
+    done
+    printf '%s' "${_h}/vol"
+    return 0
+}
+
 cmd_up() {
     # Parse flags and positional args in any order
     local positional=() name_flag=""
@@ -1068,6 +1085,122 @@ cmd_backup_rotate() {
     fi
 }
 
+# Restore a volume backup from S3 -- the inverse of the host backup role's
+# `tar | age | s3 cp` pipeline. Resolves the bucket + prefix from versioned config,
+# finds the volume's object (<prefix>/<volume>/backup-<ts>.tar[.age]; prefix defaults
+# to <server>/vol), downloads it, decrypts it (age) when it is .tar.age, and untars it
+# into --target byte-identical to the original volume data. Decryption uses the
+# operator's age identity: SOPS_AGE_KEY_FILE, else sops's default keys.txt, else a
+# bare `age -d` (a plugged-in YubiKey plugin reads its own recipient stanza) -- the
+# host only ever held the public recipient. Fails closed: any stage error wipes the
+# partial target, so a failed restore never leaves garbage. "A backup you cannot
+# restore is not a backup."
+cmd_backup_restore() {
+    local host="" volume="" at="" target=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --server)    [[ $# -ge 2 ]] || die "backup-restore: --server requires a value"; host="$2"; shift 2 ;;
+            --server=*)  host="${1#*=}"; shift ;;
+            --volume)    [[ $# -ge 2 ]] || die "backup-restore: --volume requires a value"; volume="$2"; shift 2 ;;
+            --volume=*)  volume="${1#*=}"; shift ;;
+            --at)        [[ $# -ge 2 ]] || die "backup-restore: --at requires a value"; at="$2"; shift 2 ;;
+            --at=*)      at="${1#*=}"; shift ;;
+            --target)    [[ $# -ge 2 ]] || die "backup-restore: --target requires a value"; target="$2"; shift 2 ;;
+            --target=*)  target="${1#*=}"; shift ;;
+            *)           die "backup-restore: unknown argument '$1'" ;;
+        esac
+    done
+    [[ -n "$host"   ]] || die "backup-restore: --server <name> is required"
+    [[ -n "$volume" ]] || die "backup-restore: --volume <name> is required"
+    [[ -n "$target" ]] || die "backup-restore: --target <dir> is required"
+    # Validate operator inputs (mirrors cmd_up's valid_host_alias): host reaches a
+    # host_vars FILE PATH in resolve_backup_bucket/_prefix, so an unchecked '../..'
+    # would read an arbitrary YAML; volume + at flow into S3 keys + a grep filter.
+    valid_host_alias "$host" || die "backup-restore: invalid server name '${host}'."
+    [[ "$volume" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "backup-restore: invalid volume name '${volume}' (expected [A-Za-z0-9._-])."
+    if [[ -n "$at" ]]; then
+        [[ "$at" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "backup-restore: --at must be a UTC timestamp YYYYMMDDTHHMMSSZ (e.g. 20260629T030000Z)."
+    fi
+    command -v aws >/dev/null 2>&1 || die "backup-restore: aws CLI not found."
+    command -v tar >/dev/null 2>&1 || die "backup-restore: tar not found."
+
+    local bucket; bucket="$(resolve_backup_bucket "$host")"
+    [[ -n "$bucket" ]] || die "backup-restore: no backup_s3_bucket configured for ${host}. Run 'miuops backup-setup --server ${host}' first."
+
+    # Look under the SAME prefix the backup role wrote to (resolved, default <host>/vol).
+    local prefix; prefix="$(resolve_backup_prefix "$host")/${volume}"
+
+    # Find the volume's backup objects, then pick one (--at exact, else latest).
+    local names object
+    names="$(aws s3 ls "s3://${bucket}/${prefix}/" 2>/dev/null | awk '{print $NF}' | grep -E '^backup-[0-9TZ]+\.tar(\.age)?$' || true)"
+    [[ -n "$names" ]] || die "backup-restore: no backup found for volume '${volume}' on '${host}' (s3://${bucket}/${prefix}/)."
+    if [[ -n "$at" ]]; then
+        # Literal (not regex) match: $at is a validated timestamp, and matching the two
+        # exact candidate names means a stray metachar could never select a wrong object.
+        object="$(printf '%s\n' "$names" | grep -Fx -e "backup-${at}.tar" -e "backup-${at}.tar.age" | head -1 || true)"
+        [[ -n "$object" ]] || die "backup-restore: no backup at '${at}' for volume '${volume}' on '${host}'."
+    else
+        object="$(printf '%s\n' "$names" | sort | tail -1)"   # the YYYYMMDDTHHMMSSZ ts sorts chronologically
+    fi
+
+    local encrypted=false
+    [[ "$object" == *.age ]] && encrypted=true
+    if $encrypted; then
+        command -v age >/dev/null 2>&1 || die "backup-restore: ${object} is age-encrypted but 'age' is not installed."
+    fi
+
+    mkdir -p "$target" || die "backup-restore: cannot create target '${target}'."
+    [[ -z "$(ls -A "$target" 2>/dev/null)" ]] || die "backup-restore: target '${target}' is not empty -- refusing to overwrite."
+
+    info "Restoring s3://${bucket}/${prefix}/${object} -> ${target}"
+
+    # age identity: SOPS_AGE_KEY_FILE, else sops's default keys.txt if present, else a
+    # bare `age -d` (a plugged-in YubiKey plugin reads its own recipient stanza). This
+    # mirrors how sops finds the operator's key; the host only held the recipient.
+    local age_id_args=()
+    if [[ -n "${SOPS_AGE_KEY_FILE:-}" ]]; then
+        age_id_args=(-i "$SOPS_AGE_KEY_FILE")
+    elif [[ -f "$(sops_age_default_keys)" ]]; then
+        age_id_args=(-i "$(sops_age_default_keys)")
+    fi
+
+    # download | (decrypt) | untar. Capture EVERY stage via PIPESTATUS so a download,
+    # decrypt (age MAC), or tar failure can't hide behind the last command's status.
+    # The object is attacker-influenceable (anyone holding the scoped write key), so the
+    # untar must contain a malicious archive: we rely on modern tar's secure-by-default
+    # extraction -- both GNU and bsdtar strip a leading '/' and refuse '..' members --
+    # rather than a GNU-only flag (the operator may restore on macOS/bsdtar); the
+    # traversal test verifies containment on the host's actual tar. Suspend `set -e`
+    # ONLY around the pipe (a bare failing pipe would abort before the wipe); save +
+    # restore errexit so this stays correct even if ever called from a conditional.
+    local -a statuses
+    local _restore_errexit=""; [[ $- == *e* ]] && _restore_errexit=1
+    set +e
+    if $encrypted; then
+        aws s3 cp "s3://${bucket}/${prefix}/${object}" - \
+          | age -d ${age_id_args[@]+"${age_id_args[@]}"} \
+          | tar -C "$target" --numeric-owner -xf -
+    else
+        aws s3 cp "s3://${bucket}/${prefix}/${object}" - \
+          | tar -C "$target" --numeric-owner -xf -
+    fi
+    statuses=("${PIPESTATUS[@]}")
+    [[ -n "$_restore_errexit" ]] && set -e
+
+    local idx st
+    for idx in "${!statuses[@]}"; do
+        st="${statuses[$idx]}"
+        [ "$st" -eq 0 ] && continue
+        # Wipe the partial extraction, then VERIFY it is gone before saying so -- never
+        # report "wiped" while leaving data behind.
+        find "$target" -mindepth 1 -exec rm -rf {} + 2>/dev/null || true
+        [[ -z "$(ls -A "$target" 2>/dev/null)" ]] \
+          || die "backup-restore: restore failed (pipeline stage ${idx} exit ${st}) AND the partial target '${target}' could not be fully wiped -- inspect/remove it manually."
+        die "backup-restore: restore failed (pipeline stage ${idx} exit ${st}) -- partial target wiped, no data left."
+    done
+    info "Restored volume '${volume}' to ${target} (from ${object})."
+}
+
 # ── Main ───────────────────────────────────────────────────────────
 if [[ "${1:-}" != "--source-only" ]]; then
     case "${1:-}" in
@@ -1077,6 +1210,7 @@ if [[ "${1:-}" != "--source-only" ]]; then
         remove-domain) shift; cmd_remove_domain "$@" ;;
         backup-setup)  shift; cmd_backup_setup "$@" ;;
         backup-rotate) shift; cmd_backup_rotate "$@" ;;
+        backup-restore) shift; cmd_backup_restore "$@" ;;
         version|--version|-v) cmd_version ;;
         *)             usage ;;
     esac
