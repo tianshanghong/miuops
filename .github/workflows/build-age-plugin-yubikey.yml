@@ -147,7 +147,7 @@ jobs:
           # byte-identical .deb whose sha is safe to pin.
           deb="$(realpath target/debian/*.deb)"; pk="$(mktemp -d)"
           dpkg-deb -R "$deb" "$pk/x"
-          dpkg-deb --root-owner-group --build "$pk/x" "$pk/out.deb"
+          dpkg-deb --root-owner-group --threads-max=1 --build "$pk/x" "$pk/out.deb"
           mv -f "$pk/out.deb" "$deb"
           cp target/debian/*.deb "${RUNNER_TEMP}/build1.deb"
 
@@ -171,7 +171,7 @@ jobs:
           # byte-identical .deb whose sha is safe to pin.
           deb="$(realpath target/debian/*.deb)"; pk="$(mktemp -d)"
           dpkg-deb -R "$deb" "$pk/x"
-          dpkg-deb --root-owner-group --build "$pk/x" "$pk/out.deb"
+          dpkg-deb --root-owner-group --threads-max=1 --build "$pk/x" "$pk/out.deb"
           mv -f "$pk/out.deb" "$deb"
           if cmp -s target/debian/*.deb "${RUNNER_TEMP}/build1.deb"; then
             echo "REPRODUCIBLE: two clean builds are byte-identical on ${ARCH}"
