@@ -77,12 +77,8 @@ sudo systemctl restart cloudflared
 
 ## Manual backup trigger
 
-### PostgreSQL (WAL-G base backup)
-
-```bash
-cd $STACK_DIR
-docker compose exec postgres walg-backup.sh
-```
+miuOps backs up Docker volumes only; databases are outsourced to managed Postgres
+(see the provider's tooling for database backups).
 
 ### Volume backup (host-side `backup` role)
 
@@ -98,9 +94,6 @@ systemctl list-timers miuops-backup.timer
 ### List existing backups
 
 ```bash
-# PostgreSQL base backups
-docker compose exec postgres wal-g backup-list
-
 # Volume tarballs in S3 (one prefix per volume)
 aws s3 ls s3://PROJECT-backup/<server>/vol/ --recursive --region REGION
 ```

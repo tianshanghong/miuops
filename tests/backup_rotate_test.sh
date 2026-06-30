@@ -31,8 +31,8 @@ run_rotate() {
   fleet="$(mktemp -d)"; bin="$(mktemp -d)"; log="$fleet/log"; : > "$log"
   mkdir -p "$fleet/fleet/group_vars" "$fleet/fleet/secrets"
   echo 'backup_s3_bucket: wwang-fleet-backup' > "$fleet/fleet/group_vars/all.yml"
-  # seed a stack env so the rotation's "redeploy WAL-G" reminder fires (the reminder
-  # only checks the file's presence, so an empty marker is enough here).
+  # seed a stack env present, to prove rotation ignores it (databases are managed; no
+  # stack holds a backup key, so a stack env must NOT trigger any redeploy reminder).
   [ "$seed_env" = 1 ] && : > "$fleet/fleet/secrets/web1.env"
   case "$nkeys" in
     0) list='echo ""' ;;
@@ -55,7 +55,6 @@ REC
       . "'"$ROOT"'/miuops" --source-only 2>/dev/null
       require_sops()        { :; }   # the sops binary is a converge dep, not needed to unit-test the rotation flow (CI lint stage has no sops)
       write_backup_secret() { echo "WRITE $2" >> "'"$log"'"; return 0; }
-      sync_backup_env()     { echo "ENVSYNC $2" >> "'"$log"'"; return 0; }
       run_apply()           { echo "APPLY $* tags=${APPLY_TAGS:-none}" >> "'"$log"'"; return '"$apply_rc"'; }
       cmd_backup_rotate --server web1 --yes
     ' >>"$log" 2>&1 ) || rc=$?
@@ -63,20 +62,13 @@ REC
   printf '%s %s' "$log" "$rc"
 }
 
-seq_of() { grep -oE 'CREATE|WRITE|ENVSYNC|APPLY|DELETE' "$1" | tr '\n' ' '; }
-pos_of() { grep -n "$2" "$1" | head -1 | cut -d: -f1; }
+seq_of() { grep -oE 'CREATE|WRITE|APPLY|DELETE' "$1" | tr '\n' ' '; }
 
 # 1. exactly 1 key + apply OK -> full sequence, old key deleted, exit 0
 read -r log rc <<< "$(run_rotate 1 0)"
-[ "$(seq_of "$log")" = "CREATE WRITE ENVSYNC APPLY DELETE " ] \
-  && ok "happy path: create -> write -> sync-env -> apply -> delete, in order" \
+[ "$(seq_of "$log")" = "CREATE WRITE APPLY DELETE " ] \
+  && ok "happy path: create -> write -> apply -> delete, in order" \
   || bad "happy path wrong sequence: '$(seq_of "$log")'"
-# WAL-G safety: the stack .env is synced BEFORE the old key is deleted (else WAL-G
-# would be stranded on a deleted key). Require both present + ENVSYNC earlier.
-env_at="$(pos_of "$log" ENVSYNC)"; del_at="$(pos_of "$log" DELETE)"
-{ [ -n "$env_at" ] && [ -n "$del_at" ] && [ "$env_at" -lt "$del_at" ]; } \
-  && ok "WAL-G .env synced before the old key is deleted" \
-  || bad "old key deleted before (or without) the .env sync"
 grep -q 'DELETE .*AKIAOLD1' "$log" && ok "deletes the OLD key (AKIAOLD1)" || bad "did not delete the old key"
 # The rotation's converge is scoped to the backup role (a full converge would re-run
 # every role and can hang on an interactive prompt on a not-fully-configured host).
@@ -84,9 +76,9 @@ grep -q 'APPLY .*tags=backup' "$log" \
   && ok "rotation's apply is scoped to the backup role (--tags backup)" \
   || bad "rotation's apply is NOT scoped to backup (tags=$(grep -oE 'APPLY .*tags=[a-z]+' "$log" | grep -oE 'tags=[a-z]+'))"
 { [ "$rc" = 0 ]; } && ok "happy path exit 0" || bad "happy path exit $rc"
-# No stack env -> no WAL-G redeploy reminder.
-grep -qi 'redeploy that stack' "$log" && bad "WAL-G reminder shown when the host has no stack env" \
-  || ok "no WAL-G reminder when the host has no stack env"
+# No stack env -> no (retired) redeploy reminder.
+grep -qi 'redeploy that stack' "$log" && bad "a retired redeploy reminder was shown (no stack env)" \
+  || ok "no retired redeploy reminder when the host has no stack env"
 rm -rf "$(dirname "$log")"
 
 # 2. apply FAILS -> abort BEFORE delete (old key kept), non-zero exit
@@ -114,17 +106,17 @@ rm -rf "$(dirname "$log")"
 #    WITHOUT erroring (so set -e does NOT catch it) -> the guard must abort BEFORE
 #    write/apply/delete, so the old key is never touched (safety invariant stays total).
 read -r log rc <<< "$(run_rotate 1 0 '{"AccessKey":{}}')"
-{ [ "$rc" != 0 ] && grep -q 'CREATE' "$log" && ! grep -qE 'WRITE|ENVSYNC|APPLY|DELETE' "$log"; } \
+{ [ "$rc" != 0 ] && grep -q 'CREATE' "$log" && ! grep -qE 'WRITE|APPLY|DELETE' "$log"; } \
   && ok "malformed create response: aborts before write/apply/delete (old key untouched)" \
   || bad "malformed create: did not abort cleanly (rc=$rc seq='$(seq_of "$log")')"
 rm -rf "$(dirname "$log")"
 
-# 6. host has a stack env (e.g. WAL-G) -> rotation reminds the operator to redeploy it
-#    so the long-running container reloads the new key (the host volume backup already has it).
+# 6. host has a stack env present -> rotation still succeeds and does NOT print a
+#    retired redeploy reminder (databases are managed; no stack holds a backup key).
 read -r log rc <<< "$(run_rotate 1 0 '' 1)"
-{ [ "$rc" = 0 ] && grep -qi 'redeploy that stack' "$log"; } \
-  && ok "stack env present: reminds to redeploy the WAL-G stack for the new key" \
-  || bad "no WAL-G redeploy reminder when the host has a stack env (rc=$rc)"
+{ [ "$rc" = 0 ] && ! grep -qi 'redeploy that stack' "$log"; } \
+  && ok "stack env present: rotation succeeds with no retired redeploy reminder" \
+  || bad "stack env present: unexpected redeploy reminder or failure (rc=$rc)"
 rm -rf "$(dirname "$log")"
 
 echo "== ${pass} passed, ${fail} failed =="

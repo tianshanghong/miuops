@@ -20,8 +20,6 @@ and stacks) lives in your **separate fleet repo**, created from `miuops-fleet-te
 │   ├── backup/                # Host-side Docker volume backup (systemd timer)
 │   └── unattended-upgrades/   # Automatic security upgrades
 ├── .github/workflows/         # Reusable deploy.yml + the stack policy-check
-├── images/
-│   └── postgres-walg/         # PostgreSQL 17 + WAL-G Docker image
 ├── miuops                     # CLI entry point (miuops up)
 ├── scripts/
 │   └── setup-s3-backup.sh     # Shared S3 bucket + per-server prefix-scoped IAM
@@ -40,7 +38,3 @@ and stacks) lives in your **separate fleet repo**, created from `miuops-fleet-te
 - **observability** *(opt-in, off by default)* — Runs Grafana Alloy as a host systemd service that ships host + container + cloudflared metrics and Docker container logs to Grafana Cloud. Enabled per host via `observability_enabled`; egress-only (no inbound port). See [OBSERVABILITY.md](OBSERVABILITY.md).
 - **backup** — A host `systemd` timer that stops a volume's writers, tars the volume, optionally encrypts, and streams it to S3 — no container, no `docker.sock`. See [DISASTER_RECOVERY.md](DISASTER_RECOVERY.md).
 - **unattended-upgrades** — Installs and enables automatic unattended security upgrades with no automatic reboot.
-
-## Images
-
-- **postgres-walg** — Custom PostgreSQL 17 image with WAL-G baked in. Provides continuous WAL archiving to S3 and a `walg-backup.sh` helper for daily base backups.

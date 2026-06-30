@@ -9,20 +9,6 @@ updates:
     commit-message:
       prefix: "ci(deps)"
 
-  # Base image of the postgres-walg build (Dockerfile FROM postgres:17).
-  - package-ecosystem: "docker"
-    directory: "/images/postgres-walg"
-    schedule:
-      interval: "weekly"
-    commit-message:
-      prefix: "build(deps)"
-    ignore:
-      # postgres major bumps require a deliberate pg_upgrade of live data —
-      # don't auto-PR them. Remove this entry to intentionally move to a new major.
-      - dependency-name: "postgres"
-        update-types: ["version-update:semver-major"]
-
 # Not covered by Dependabot (no manager): the Alloy image pin in
-# roles/observability/defaults/main.yml, the Ansible Galaxy collections in
-# requirements.yml, and the WAL-G ARG in images/postgres-walg/Dockerfile.
-# These are low-churn — bump them manually.
+# roles/observability/defaults/main.yml and the Ansible Galaxy collections in
+# requirements.yml. These are low-churn — bump them manually.

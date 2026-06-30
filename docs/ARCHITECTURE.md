@@ -10,7 +10,6 @@ Design rationale and internal architecture of miuOps.
 | GitHub Actions | GitOps for service deployment | The fleet repo's caller workflow invokes the miuOps reusable `deploy.yml`, which syncs compose files via SSH + rsync and runs `docker compose up -d`. Server never pulls from git. |
 | Cloudflare Tunnel | Zero exposed ports | All ingress flows through Cloudflare. No public-facing ports on the server. |
 | Traefik | Stateless reverse proxy | Label-based service discovery, no config files to manage per-service. |
-| WAL-G | PostgreSQL backup | Physical backup + continuous WAL archiving to S3, baked into a custom PG image. |
 | Host-side volume backup | Docker volume backup | A host `systemd` timer (Ansible `backup` role) tars each volume and streams it to S3. No container, no `docker.sock` mount — the daemon socket is root-equivalent, so nothing gets it. |
 | Tool as dependency | Public tool + private fleet repo | miuOps is open-source; the fleet config is private. The fleet repo consumes miuOps as a referenced dependency (reusable workflows + the CLI), so it never forks the tool. |
 | Single bucket per fleet | Per-server prefix + scoped IAM | One S3 bucket for the whole fleet, a per-server prefix, and a per-server prefix-scoped IAM user — a compromised server reaches only its own backups. One lifecycle + Object-Lock config to manage. |
@@ -50,8 +49,6 @@ miuOps/
 ├── playbook.yml
 ├── scripts/
 │   └── setup-s3-backup.sh
-├── images/
-│   └── postgres-walg/        # Custom PG image with WAL-G
 └── docs/
 ```
 
@@ -105,14 +102,12 @@ The deploy logic is the **reusable workflow** from miuOps, pinned to a tag. Per-
 │  fleet repo (priv) │  │  [apps — GitOps-owned]             │
 │  - fleet/stacks    │  │  ├─ App containers                 │
 │  - caller deploy ─────▶  │   (per-stack networks)         │
-│    (per-server     │SSH│  ├─ PG + WAL-G ──────┐              │
-│     Environment)   │  │  ├─ volume backup ───┤  (systemd    │
-│  - SOPS secrets    │  │  │                   │   timer,     │
-│                    │  │  └─ Docker volumes   │   host-side) │
-└────────────────────┘  │                      ▼              │
-                        │     S3: {project}-backup            │
+│    (per-server     │SSH│  ├─ volume backup ───┐  (systemd    │
+│     Environment)   │  │  │                    │   timer,     │
+│  - SOPS secrets    │  │  └─ Docker volumes    │   host-side) │
+│                    │  │                       ▼              │
+└────────────────────┘  │     S3: {project}-backup            │
                         │     └─ <server>/                    │
-                        │        ├─ db/* (WAL-G)              │
                         │        └─ vol/* (volume tarballs)   │
                         └────────────────────────────────────┘
 ```
@@ -194,7 +189,6 @@ prefix, sub-prefixes separate data by type.
 ```
 s3://{project}-backup/
   └── <server>/
-      ├── db/{app-name}/    ← WAL-G (base backups + WAL segments)
       └── vol/{volume}/     ← host-side volume tarballs (backup role)
 ```
 
@@ -219,11 +213,11 @@ streams `tar → encrypt → S3`).
 
 **Consistency.** Stopping the writer before tarring yields an at-rest snapshot.
 Volumes whose writers tolerate a fuzzy copy (append-only logs, rebuildable
-caches) can be listed with an empty stop-set for a hot copy. PostgreSQL is best
-handled by WAL-G (continuous archiving) rather than a stop-the-world tar of its
-data volume.
+caches) can be listed with an empty stop-set for a hot copy. Databases are best
+served by managed Postgres (point-in-time recovery) rather than a stop-the-world
+tar of a self-hosted data volume.
 
-**Why one bucket for the fleet?** One lifecycle policy and one Object Lock config to manage, rather than one per server. Per-server isolation comes from the prefix layout and the per-server scoped IAM user, not from separate buckets. Adding a database means picking a new `WALG_S3_PREFIX` under that server's prefix, no AWS operations needed.
+**Why one bucket for the fleet?** One lifecycle policy and one Object Lock config to manage, rather than one per server. Per-server isolation comes from the prefix layout and the per-server scoped IAM user, not from separate buckets.
 
 **Why a per-server scoped IAM user?** Each server holds only its own access key, scoped to its own prefix — Put, Get, List on `<server>/*`, no Delete. The backup job itself never deletes; retention is enforced entirely by S3 (Object Lock + lifecycle), so a compromised host cannot erase history (its own or any other server's). Object Lock (Governance, 30 days) prevents deletion by anyone without the `s3:BypassGovernanceRetention` permission. Volume backups can optionally be encrypted client-side (age) before upload — see [Backup Encryption](BACKUP_ENCRYPTION.md).
 

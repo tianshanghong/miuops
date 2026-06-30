@@ -17,8 +17,8 @@ backup_enabled: false
 # running -- only safe for volumes whose writers can tolerate a fuzzy snapshot
 # (append-only logs, idempotently-rebuilt caches). For anything stateful
 # (databases, queues) list the writing containers so the archive is taken at
-# rest. Databases are better served by their own log-shipping tool (e.g. WAL-G);
-# use this for the volumes around them.
+# rest. Databases are better served by managed Postgres (or their own backup
+# tooling); use this volume backup for the volumes around them.
 backup_volumes: []
 #   - name: app_uploads
 #     stop: [app]
