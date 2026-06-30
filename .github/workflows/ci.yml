@@ -34,7 +34,7 @@ jobs:
             tests/secrets_docs_lint_test.sh \
             tests/backup_lifecycle_net.sh \
             tests/backup_secret_write_test.sh \
-            tests/backup_env_sync_test.sh \
+            tests/backup_no_db_backup_lint_test.sh \
             tests/backup_setup_write_test.sh \
             tests/backup_bucket_resolve_test.sh \
             tests/backup_setup_cmd_test.sh \
@@ -45,6 +45,7 @@ jobs:
             tests/backup_docs_lint_test.sh \
             tests/backup_config_template_test.sh
           bash tests/cli_test.sh
+          bash tests/backup_no_db_backup_lint_test.sh
           bash tests/backup_bucket_resolve_test.sh
           bash tests/backup_setup_cmd_test.sh
           bash tests/backup_setup_script_test.sh
@@ -77,7 +78,6 @@ jobs:
           bash tests/sops_test.sh
           bash tests/backup_lifecycle_net.sh
           bash tests/backup_secret_write_test.sh
-          bash tests/backup_env_sync_test.sh
           bash tests/backup_setup_write_test.sh
           bash tests/backup_restore_test.sh
           bash tests/backup_verify_test.sh

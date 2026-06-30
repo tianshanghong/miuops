@@ -1053,14 +1053,6 @@ cmd_backup_rotate() {
         unset new_secret new_json
         die "backup-rotate: created key ${new_akid} but failed to write it. The old key ${old_key} is still active; resolve the new key manually."
     fi
-    # The same key also feeds WAL-G via the stack env -- sync it into the fleet's
-    # <host>.env BEFORE the delete so the fleet never points WAL-G at a deleted key. (The
-    # running stack picks up the new .env on its next `miuops up` / stack deploy, not via
-    # the backup-scoped apply below.) No-op when the host has no fleet/secrets/<host>.env.
-    if ! sync_backup_env "$FLEET_ROOT" "fleet/secrets/${host}.env" "$new_akid" "$new_secret"; then
-        unset new_secret new_json
-        die "backup-rotate: wrote the new key to vars.json but failed to sync it into fleet/secrets/${host}.env. The old key ${old_key} is still active; resolve manually before deleting it."
-    fi
     unset new_secret new_json
     # 3. push the new key to the host's backup role. Scope the converge to --tags backup:
     # a rotation only needs backup.env re-rendered (the new creds are passed as extra-vars
@@ -1076,13 +1068,8 @@ cmd_backup_rotate() {
     aws iam delete-access-key --user-name "$iam_user" --access-key-id "$old_key" \
         || die "backup-rotate: the new key is live, but deleting the old key ${old_key} failed -- delete it manually in AWS."
     info "Rotated ${iam_user}: new key ${new_akid} is live + written; old key ${old_key} deleted."
-    # The host volume-backup role reloads backup.env on every (oneshot) run, so it already
-    # uses the new key. A long-running stack container (e.g. WAL-G/postgres) reads the key
-    # from /opt/stacks/.env ONCE at start -- it keeps the old key until the stack is
-    # redeployed. The fleet's <host>.env is already in sync (above), so flag the redeploy.
-    if [[ -f "${FLEET_ROOT}/fleet/secrets/${host}.env" ]]; then
-        info "Note: ${host} has a stack env. If a long-running container reads the AWS key from it (e.g. WAL-G), redeploy that stack so it reloads the new key -- the rotated key is already in the fleet's ${host}.env."
-    fi
+    # The host volume-backup role reloads backup.env on every (oneshot) run, so it uses
+    # the new key on its next scheduled backup -- nothing else to do.
 }
 
 # Restore a volume backup from S3 -- the inverse of the host backup role's

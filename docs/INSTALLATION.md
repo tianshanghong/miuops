@@ -147,13 +147,12 @@ ListBucket — no Delete, no cross-prefix). It then writes the new access key st
 plaintext, and an existing file is merged, not clobbered. There is nothing to copy or paste.
 
 One bucket serves the whole fleet; each server backs up under its own `<server>/` prefix
-(`<server>/db/…` for WAL-G, `<server>/vol/…` for volume tarballs), so a compromised server
+(`<server>/vol/…` for volume tarballs), so a compromised server
 can touch only its own backups.
 
 Then set the **config** (not secret) in `fleet/host_vars/<server>.yml` — `backup_enabled: true`,
 `backup_volumes`, and `backup_aws_region` if it isn't `us-west-2` (the bucket comes from
-group_vars) — commit the fleet repo, and `miuops apply <server>`. (WAL-G database backups read
-the same credentials from the stack's app `.env` in Step 4.)
+group_vars) — commit the fleet repo, and `miuops apply <server>`.
 
 To replace a key later, `miuops backup-rotate --server <server>` mints a new key, applies it,
 and deletes the old one only after the new one is live — so a rotation never leaves the server
@@ -208,7 +207,7 @@ so a compromised or buggy deploy holds only that one server's key — no lateral
    environment's secrets.
 
 3. **Fill in app secrets, encrypted.** This `.env` is the per-stack app environment
-   (domains, the WAL-G *database*-backup credentials, service-specific variables) — distinct
+   (domains, service-specific variables, the managed-database `DATABASE_URL`) — distinct
    from the deployed vars in Step 3b; the **host** backup role's AWS creds live in
    `fleet/secrets/<server>.vars.json`, not here. Copy the template, fill in real values,
    encrypt it in place with SOPS, and commit the ciphertext:

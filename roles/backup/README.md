@@ -16,17 +16,16 @@ Opt-in per host. The whole role is a no-op unless `backup_enabled: true`.
 ## What it is (and isn't) for
 
 Use it for the **volumes around** your apps — uploads, content directories,
-config volumes, caches. For PostgreSQL, prefer a log-shipping tool such as
-WAL-G (continuous archiving) and leave its data volume out of this list; a
-stop-the-world tar of a live database volume is a crash-consistent snapshot at
-best. This job's strength is that it can take an at-rest snapshot by stopping
-the writer first.
+config volumes, caches. For databases, prefer managed Postgres (point-in-time
+recovery) and leave its data volume out of this list; a stop-the-world tar of a
+live database volume is a crash-consistent snapshot at best. This job's strength
+is that it can take an at-rest snapshot by stopping the writer first.
 
 ## Quick start
 
 1. From your fleet repo, mint this server's backup identity and write its key
    into the fleet (encrypted): `miuops backup-setup --server <server>`. One
-   bucket is shared by the whole fleet (and with WAL-G); each server gets its own
+   bucket is shared by the whole fleet; each server gets its own
    prefix + scoped IAM user — see the repo README and the **Fleet isolation**
    section below. The command writes `fleet/secrets/<server>.vars.json` for you
    (SOPS-encrypted, merged not clobbered) — there is no key to copy or export. To
@@ -142,8 +141,8 @@ s3://<bucket>/<server>/vol/<volume>/backup-<UTC ISO8601>.tar[.age]
 ```
 
 The leading `<server>/` segment is `inventory_hostname` (the same identity used
-for `host_vars/<server>.yml` and the GitHub Environment). WAL-G database backups
-share the bucket under the symmetric `s3://<bucket>/<server>/db/<app>` prefix.
+for `host_vars/<server>.yml` and the GitHub Environment). Databases are
+outsourced to managed Postgres — miuOps backs up volumes only.
 
 ## Fleet isolation
 
@@ -167,8 +166,8 @@ an admin profile for a fleet-wide view.)
 
 The job **never deletes** anything. Retention is enforced entirely by S3:
 Object Lock (Governance, 30 days) blocks deletion and the bucket lifecycle
-transitions to Glacier at 30 days and expires at 90. This matches the WAL-G
-side and means a compromised host (or a bug here) cannot erase history.
+transitions to Glacier at 30 days and expires at 90 — so a compromised host
+(or a bug here) cannot erase history.
 
 ## Operations
 
@@ -228,7 +227,7 @@ procedures and encryption key handling (including SSH-key and YubiKey-backed age
   as a host process with the host CLI avoids handing that surface to anything.
 - **awscli for upload.** A single small dependency that streams stdin to an
   object (`aws s3 cp - s3://...`), and AWS credentials are already the
-  project's convention (shared with WAL-G). No extra config file format to
+  project's convention. No extra config file format to
   template. The Debian/Ubuntu `awscli` package is **v1**, which handles the
   streamed `aws s3 cp - s3://...` upload fine. Note the ceiling: a single
   streamed object is capped at S3's 10 000-part multipart limit, ~**78 GiB** per

@@ -103,34 +103,6 @@ write_backup_secret() {
     mv "$tmp" "${root}/${rel}"
 }
 
-# The same per-server key is also consumed by WAL-G via the stack env at
-# <fleet_root>/<rel> (fleet/secrets/<server>.env). Keep its AWS_ACCESS_KEY_ID /
-# AWS_SECRET_ACCESS_KEY in sync with a freshly minted/rotated key so a rotation
-# never leaves WAL-G on a deleted key. No-op when the env is absent or carries no
-# AWS_ACCESS_KEY_ID (not a backup-bearing stack env) -- it never INJECTS creds.
-#   $1 = fleet repo root   $2 = repo-relative .env path   $3 = akid   $4 = secret
-sync_backup_env() {
-    local root="$1" rel="$2" akid="$3" secret="$4" existing tmp
-    [ -f "${root}/${rel}" ] || return 0
-    existing="$( cd "$root" && sops --decrypt --output-type dotenv "$rel" )" \
-        || { echo "Error: cannot decrypt ${rel} to sync the backup key (age identity / YubiKey available?)." >&2; return 1; }
-    printf '%s\n' "$existing" | grep -q '^AWS_ACCESS_KEY_ID=' || return 0
-    tmp="${root}/${rel}.$$.tmp"
-    # awk -v assigns the values literally; an AWS key id/secret is base64-ish
-    # ([A-Za-z0-9/+]=) with no backslash, so there is nothing for awk to re-escape.
-    if ! ( cd "$root" && printf '%s\n' "$existing" \
-            | awk -v akid="$akid" -v secret="$secret" '
-                /^AWS_ACCESS_KEY_ID=/     { print "AWS_ACCESS_KEY_ID=" akid; s1=1; next }
-                /^AWS_SECRET_ACCESS_KEY=/ { print "AWS_SECRET_ACCESS_KEY=" secret; s2=1; next }
-                { print }
-                END { if (!s1) print "AWS_ACCESS_KEY_ID=" akid; if (!s2) print "AWS_SECRET_ACCESS_KEY=" secret }' \
-            | sops --encrypt --input-type dotenv --output-type dotenv --filename-override "$rel" /dev/stdin ) > "$tmp"; then
-        rm -f "$tmp"; echo "Error: failed to write synced ${rel}." >&2; return 1
-    fi
-    chmod 600 "$tmp" 2>/dev/null || true
-    mv "$tmp" "${root}/${rel}"
-}
-
 # When sourced as a library (by the iam-policy check), define the functions above and
 # stop here -- do NOT run the interactive provisioning flow or touch AWS.
 if [ -n "${MIUOPS_S3_SETUP_LIB:-}" ]; then
@@ -506,12 +478,6 @@ if [[ -n "${MIUOPS_FLEET_ROOT:-}" ]]; then
         echo "Error: created IAM key ${new_akid} but failed to write it encrypted to ${secret_rel}." >&2
         exit 1
     fi
-    # If this server runs WAL-G, the same key lives in its stack env too -- keep it in
-    # sync (no-op when there is no fleet/secrets/<server>.env carrying AWS creds).
-    if ! sync_backup_env "$MIUOPS_FLEET_ROOT" "fleet/secrets/${SERVER}.env" "$new_akid" "$new_secret"; then
-        echo "Error: wrote ${secret_rel} but failed to sync the key into fleet/secrets/${SERVER}.env." >&2
-        exit 1
-    fi
     unset new_secret new_key_json
     echo ""
     echo "Wrote ${secret_rel} (SOPS-encrypted; access key ${new_akid})."
@@ -563,13 +529,8 @@ echo "#   backup_aws_region: \"$AWS_REGION\""
 echo "#   backup_s3_prefix: \"${SERVER}/vol\"   # default already derives this from inventory_hostname"
 echo "#   backup_volumes: [ { name: <volume>, stop: [<container>] }, ... ]"
 echo ""
-echo "# WAL-G database backup still reads these from the server's .env"
-echo "# (/opt/stacks/.env), per stack. Keep the '${SERVER}/' root so this"
-echo "# server's scoped IAM user is authorized to write it:"
-echo "#   AWS_ACCESS_KEY_ID=$ACCESS_KEY_ID"
-echo "#   AWS_SECRET_ACCESS_KEY=$SECRET_ACCESS_KEY"
-echo "#   AWS_REGION=$AWS_REGION"
-echo "#   WALG_S3_PREFIX=s3://${BUCKET_NAME}/${SERVER}/db/<app-name>"
+echo "# Databases are NOT backed up by miuOps -- use managed Postgres (set the app's"
+echo "# DATABASE_URL to the managed instance); miuOps backs up Docker volumes only."
 echo ""
 echo "=============================================="
 echo "        Next Steps                            "
@@ -578,11 +539,6 @@ echo ""
 echo "1. Configure + apply the volume backup role (see roles/backup/README.md):"
 echo "   set backup_* in host_vars/${SERVER}.yml, SOPS-encrypt the creds into"
 echo "   fleet/secrets/${SERVER}.vars.json (above), then ./miuops apply ${SERVER}"
-echo "2. For PostgreSQL, add the .env values above to /opt/stacks/.env and use"
-echo "   the pre-built postgres-walg image in your compose file:"
-echo "   image: ghcr.io/tianshanghong/postgres-walg:17"
-echo "3. Add a host cron job for daily base backups:"
-echo "   0 3 * * * cd /opt/stacks/<app-name> && docker compose exec -T -u postgres db walg-backup.sh"
-echo "4. Set up volume backup encryption -- see docs/BACKUP_ENCRYPTION.md"
+echo "2. Set up volume backup encryption -- see docs/BACKUP_ENCRYPTION.md"
 echo "   Strongly recommended: volumes may contain secrets/personal data"
 echo "=============================================="
