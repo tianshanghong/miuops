@@ -45,6 +45,8 @@
       tags: ['metadata-block']
     - role: traefik
       tags: ['traefik']
+    - role: stack-env
+      tags: ['stack-env']
     - role: cloudflared
       tags: ['cloudflared']
     - role: observability

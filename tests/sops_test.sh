@@ -148,13 +148,6 @@ perm="$(stat -c '%a' "$plain" 2>/dev/null || stat -f '%Lp' "$plain")"
 rm -f "$plain"
 echo "ok: sops_decrypt_to_tmp round-trips to a 0600 temp file"
 
-# The .env provisioning command targets /opt/stacks/.env at mode 0600, root-owned.
-type sops_env_install_cmd >/dev/null 2>&1 || fail "sops_env_install_cmd helper is missing"
-cmd="$(sops_env_install_cmd)"
-echo "$cmd" | grep -q '/opt/stacks/.env'      || fail "env provision must target /opt/stacks/.env (got: $cmd)"
-echo "$cmd" | grep -qE '0600|install -m 0600' || fail "env provision must enforce mode 0600 (got: $cmd)"
-echo "ok: env provisioning targets /opt/stacks/.env at mode 0600"
-
 # CLI source must wire the decrypted cred into the playbook via cloudflared_credentials_src.
 grep -q 'cloudflared_credentials_src=' "$ROOT/miuops" \
     || fail "CLI must pass -e cloudflared_credentials_src=<decrypted temp> to the playbook"
@@ -217,13 +210,7 @@ t6="$TMP/setu.out"
   sops_encrypt_tunnel_cred no-such-tunnel-id ) >"$t6" 2>&1 || true
 grep -qi 'unbound variable' "$t6"        && fail "sops_encrypt_tunnel_cred dies under set -u (local-order bug)"
 grep -qi 'Tunnel credential not found' "$t6" || fail "sops_encrypt_tunnel_cred didn't reach its precondition: $(cat "$t6")"
-( # provision helper under set -u
-  # shellcheck source=/dev/null
-  source "$ROOT/miuops" --source-only; set +e +o pipefail
-  sops_provision_env no-such-server user@host ) >"$t6" 2>&1 || true
-grep -qi 'unbound variable' "$t6"         && fail "sops_provision_env dies under set -u (local-order bug)"
-grep -qi 'skipping .env provisioning' "$t6" || fail "sops_provision_env didn't reach its skip path: $(cat "$t6")"
-echo "ok: sops helpers are set -u safe (reach own preconditions, never 'unbound variable')"
+echo "ok: sops_encrypt_tunnel_cred is set -u safe (reaches its own precondition, never 'unbound variable')"
 
 # ── 7. leak hygiene: NO per-function RETURN trap (never fires on die/set -e); the
 # cleanup is NOT armed at top level (so sourcing the CLI can't clobber the sourcer's

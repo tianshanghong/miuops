@@ -112,11 +112,4 @@
     state: directory
     mode: '0755'
   become: true
-
-- name: Create stacks .env file
-  ansible.builtin.copy:
-    content: ""
-    dest: /opt/stacks/.env
-    mode: '0600'
-    force: false
-  become: true
+# /opt/stacks/.env is provisioned from the fleet's sops secret by the stack-env role.

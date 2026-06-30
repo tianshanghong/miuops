@@ -81,8 +81,8 @@ grep -qF '"${ssh_user}@${ssh_host}" true' "$ROOT/miuops"         || fail "the SS
 grep -qF '"$owner" != "$handle"' "$ROOT/miuops"                  || fail "domain-owner check must compare to the handle"
 grep -qF 'hv_tunnel "$handle"' "$ROOT/miuops"                    || fail "tunnel reuse must look up the handle"
 grep -qF 'hv_domains "$handle"' "$ROOT/miuops"                   || fail "domain merge must look up the handle"
-grep -qF '"${SECRETS_DIR}/${handle}.env"' "$ROOT/miuops"         || fail "the app .env path must be keyed by the handle"
-grep -qF 'sops_provision_env "$handle"' "$ROOT/miuops"           || fail "the app .env must be provisioned under the handle"
+grep -qF 'miuops_secrets_dir=' "$ROOT/miuops"                    || fail "apply/up must pass miuops_secrets_dir so the stack-env role provisions /opt/stacks/.env"
+grep -qF 'if [[ -d "${SECRETS_DIR}" ]]; then' "$ROOT/miuops"     || fail "miuops_secrets_dir must be passed only when fleet/secrets/ exists (fresh fleet = clean no-op, not an assert failure)"
 
 # --- Task 8: apply targets --limit; --no-apply skips converge ---
 out="$(cd "$ROOT" && ./miuops apply --dry-run server-a 2>&1 || true)"
