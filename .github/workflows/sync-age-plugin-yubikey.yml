@@ -1,0 +1,96 @@
+name: Sync age-plugin-yubikey
+
+# Watch upstream str4d/age-plugin-yubikey for a newer release than the version the backup role
+# pins, and -- if there is one -- open a tracking ISSUE telling the maintainer to run the build
+# workflow and pin the new shas. Deliberately the minimal, side-effect-free shape: it does NOT
+# auto-dispatch the build, does NOT edit the pinned shas, and does NOT merge anything. A human
+# stays in the loop for every supply-chain change (the binary is not byte-reproducible, so each
+# bump must be human-gated). The issue body carries the exact, copy-pasteable next step.
+#
+# age-plugin-yubikey isn't a declared dependency in any manifest (it's a version + per-arch sha
+# hard-coded in roles/backup/defaults/main.yml), so Dependabot can't track it -- hence this
+# small workflow.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC -- upstream releases are rare; weekly is plenty
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read    # read the pinned version out of the repo
+      issues: write      # open / find the tracking issue
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      UPSTREAM: str4d/age-plugin-yubikey
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Compare upstream's latest release to the pinned version
+        run: |
+          set -euo pipefail
+
+          # The single source of truth for what we ship, read straight from the role defaults.
+          pinned="$(grep -E '^backup_age_plugin_yubikey_version:' roles/backup/defaults/main.yml \
+                    | head -1 | sed -E 's/.*"([0-9.]+)".*/\1/')"
+          [ -n "$pinned" ] || { echo "::error::could not read the pinned version from roles/backup/defaults/main.yml"; exit 1; }
+
+          # Upstream's latest release tag, normalised to a bare version (strip a leading v).
+          latest_tag="$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName)"
+          latest="${latest_tag#v}"
+          [ -n "$latest" ] || { echo "::error::could not read upstream's latest release tag"; exit 1; }
+
+          echo "pinned=$pinned latest=$latest"
+
+          # Highest version wins; if the pinned one is already >= latest, nothing to do. `sort -V`
+          # is version-aware (1.10 > 1.9). Equal => up to date.
+          highest="$(printf '%s\n%s\n' "$pinned" "$latest" | sort -V | tail -1)"
+          if [ "$latest" = "$pinned" ] || [ "$highest" = "$pinned" ]; then
+            echo "Up to date (pinned $pinned >= upstream $latest); no issue."
+            exit 0
+          fi
+
+          # Resolve the upstream commit the new tag points at, so the issue can pre-fill the
+          # build's required expected_sha (re-tag fail-closed).
+          sha="$(gh api "repos/${UPSTREAM}/git/refs/tags/${latest_tag}" --jq '.object.sha' 2>/dev/null || true)"
+
+          title="age-plugin-yubikey ${latest} is available upstream (pinned: ${pinned})"
+
+          # Idempotent: if an open issue with this exact title already exists, don't open another.
+          existing="$(gh issue list --repo "$REPO" --state open --search "in:title \"${title}\"" --json number --jq '.[0].number // empty')"
+          if [ -n "$existing" ]; then
+            echo "Tracking issue already open (#${existing}); nothing to do."
+            exit 0
+          fi
+
+          body="$(cat <<EOF
+          Upstream **${UPSTREAM}** published **${latest_tag}** (resolved commit \`${sha:-unknown}\`); the backup role still pins **${pinned}**.
+
+          This is human-gated on purpose (the binary is not byte-reproducible). To bump:
+
+          1. Dispatch the build for the new version (expected_sha is required -- re-tag fail-closed):
+             \`\`\`
+             gh workflow run build-age-plugin-yubikey.yml -R ${REPO} \\
+               -f version=${latest} -f expected_sha=${sha:-<resolve-it>}
+             \`\`\`
+          2. After it succeeds, read the two published sha256 sidecars from the
+             \`age-plugin-yubikey-v${latest}\` release and update \`roles/backup/defaults/main.yml\`:
+             set \`backup_age_plugin_yubikey_version: "${latest}"\` and both
+             \`backup_age_plugin_yubikey_sha256.{amd64,arm64}\`.
+          3. Open the bump as a small PR; independent review + human merge as usual.
+
+          _Opened automatically by .github/workflows/sync-age-plugin-yubikey.yml._
+          EOF
+          )"
+
+          gh issue create --repo "$REPO" --title "$title" --body "$body" --label dependencies 2>/dev/null \
+            || gh issue create --repo "$REPO" --title "$title" --body "$body"
+          echo "Opened tracking issue: ${title}"
