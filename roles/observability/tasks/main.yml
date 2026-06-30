@@ -80,6 +80,10 @@
     name: "alloy={{ observability_alloy_version }}"
     state: present
     update_cache: true
+    # The version is a hard pin (fleet-wide reproducibility). Enforce it even when a
+    # newer alloy is already installed -- otherwise apt refuses the implied downgrade
+    # ("Packages were downgraded ... without --allow-downgrades") and the converge fails.
+    allow_downgrade: true
   when: observability_active | bool
   tags: ['observability']
 
