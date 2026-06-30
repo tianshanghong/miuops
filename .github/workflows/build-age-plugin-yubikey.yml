@@ -141,17 +141,14 @@ jobs:
           cargo build --release --locked
           cargo run --release --locked --example generate-docs
           cargo deb --no-build
-          # cargo-deb's data.tar.xz is not byte-reproducible (a tar-header-level difference; the
-          # payload files + control.tar.xz are identical across builds). Repackage the .deb
-          # deterministically: sorted entries, clamped mtime/owner, single-thread xz, deterministic
-          # ar -- so two clean builds yield a byte-identical .deb whose sha is safe to pin.
+          # cargo-deb's data.tar.xz is not byte-reproducible. Rebuild the .deb with dpkg-deb,
+          # the canonical Debian packer, which honours SOURCE_DATE_EPOCH (clamps the tar mtimes
+          # and the ar timestamps) and --root-owner-group (0:0) -- so two clean builds yield a
+          # byte-identical .deb whose sha is safe to pin.
           deb="$(realpath target/debian/*.deb)"; pk="$(mktemp -d)"
-          ( cd "$pk" && ar x "$deb" )
-          mkdir "$pk/x" && tar -C "$pk/x" -xf "$pk/data.tar.xz" && rm "$pk/data.tar.xz"
-          ( cd "$pk/x" && find . -mindepth 1 | LC_ALL=C sort | tar --no-recursion --files-from=- --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner --format=gnu -cf "$pk/data.tar" )
-          xz -9e -T1 "$pk/data.tar"
-          ( cd "$pk" && ar Drc out.deb debian-binary control.tar.xz data.tar.xz )
-          mv "$pk/out.deb" "$deb"
+          dpkg-deb -R "$deb" "$pk/x"
+          dpkg-deb --root-owner-group --build "$pk/x" "$pk/out.deb"
+          mv -f "$pk/out.deb" "$deb"
           cp target/debian/*.deb "${RUNNER_TEMP}/build1.deb"
 
       # PROVE reproducibility: a second clean build must be byte-identical. If not, the .deb
@@ -168,17 +165,14 @@ jobs:
           cargo build --release --locked
           cargo run --release --locked --example generate-docs
           cargo deb --no-build
-          # cargo-deb's data.tar.xz is not byte-reproducible (a tar-header-level difference; the
-          # payload files + control.tar.xz are identical across builds). Repackage the .deb
-          # deterministically: sorted entries, clamped mtime/owner, single-thread xz, deterministic
-          # ar -- so two clean builds yield a byte-identical .deb whose sha is safe to pin.
+          # cargo-deb's data.tar.xz is not byte-reproducible. Rebuild the .deb with dpkg-deb,
+          # the canonical Debian packer, which honours SOURCE_DATE_EPOCH (clamps the tar mtimes
+          # and the ar timestamps) and --root-owner-group (0:0) -- so two clean builds yield a
+          # byte-identical .deb whose sha is safe to pin.
           deb="$(realpath target/debian/*.deb)"; pk="$(mktemp -d)"
-          ( cd "$pk" && ar x "$deb" )
-          mkdir "$pk/x" && tar -C "$pk/x" -xf "$pk/data.tar.xz" && rm "$pk/data.tar.xz"
-          ( cd "$pk/x" && find . -mindepth 1 | LC_ALL=C sort | tar --no-recursion --files-from=- --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner --format=gnu -cf "$pk/data.tar" )
-          xz -9e -T1 "$pk/data.tar"
-          ( cd "$pk" && ar Drc out.deb debian-binary control.tar.xz data.tar.xz )
-          mv "$pk/out.deb" "$deb"
+          dpkg-deb -R "$deb" "$pk/x"
+          dpkg-deb --root-owner-group --build "$pk/x" "$pk/out.deb"
+          mv -f "$pk/out.deb" "$deb"
           if cmp -s target/debian/*.deb "${RUNNER_TEMP}/build1.deb"; then
             echo "REPRODUCIBLE: two clean builds are byte-identical on ${ARCH}"
           else
