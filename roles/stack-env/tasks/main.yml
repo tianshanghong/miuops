@@ -1,0 +1,68 @@
+---
+# Provision the host's /opt/stacks/.env from the fleet's sops-encrypted secret.
+#
+# Decryption happens on the CONTROLLER (community.sops wraps the `sops` binary the CLI
+# already uses -- no new crypto, the age key never leaves the controller). The plaintext is
+# written by `copy`: ATOMIC (temp+rename), IDEMPOTENT (writes only on change), 0600, no_log.
+#
+# The secret is keyed by inventory_hostname, which IS the fleet handle: inventory_upsert
+# writes `<handle> ansible_host=...`, so the inventory key == the handle == the host_vars
+# and secret filename. A host with no secret keeps the empty placeholder below; a
+# present-but-undecryptable secret fails the play (fail-closed).
+- name: Ensure /opt/stacks exists
+  ansible.builtin.file:
+    path: /opt/stacks
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+  become: true
+  tags: ['stack-env']
+
+# Every host gets a /opt/stacks/.env so a stack's `env_file:` never points at a missing
+# file. force: false -> the real secret below is never clobbered by this placeholder.
+- name: Ensure /opt/stacks/.env exists (empty placeholder)
+  ansible.builtin.copy:
+    content: ""
+    dest: /opt/stacks/.env
+    owner: root
+    group: root
+    mode: '0600'
+    force: false
+  become: true
+  tags: ['stack-env']
+
+# A named-but-wrong secrets dir, or a missing `sops`, must fail LOUD on the controller --
+# not skip the whole fleet silently and not surface as a redacted no_log error. Both checks
+# are controller-side and run once per play.
+- name: Verify the fleet secrets dir + sops are usable on the controller
+  delegate_to: localhost
+  run_once: true
+  become: false   # controller-side checks; become here would try to sudo on the control node
+  when: miuops_secrets_dir | length > 0
+  tags: ['stack-env']
+  block:
+    - name: Assert miuops_secrets_dir exists
+      ansible.builtin.assert:
+        that: miuops_secrets_dir is exists
+        fail_msg: "miuops_secrets_dir='{{ miuops_secrets_dir }}' does not exist on the controller"
+        quiet: true
+    - name: Assert the sops binary is available (community.sops shells out to it)
+      ansible.builtin.command: sops --version
+      changed_when: false
+
+- name: Provision /opt/stacks/.env from the fleet secret
+  ansible.builtin.copy:
+    content: "{{ lookup('community.sops.sops', _stack_env_secret) }}"
+    dest: /opt/stacks/.env
+    owner: root
+    group: root
+    mode: '0600'
+  vars:
+    _stack_env_secret: "{{ miuops_secrets_dir }}/{{ inventory_hostname }}.env"
+  when:
+    - miuops_secrets_dir | length > 0
+    - _stack_env_secret is exists
+  become: true
+  no_log: true
+  tags: ['stack-env']

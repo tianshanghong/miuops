@@ -42,8 +42,8 @@ FLEET_ROOT="$(dirname "$FLEET_DIR")"
 # disk), so every sops temp is registered here and one trap cleans them up.
 _SOPS_TMPS=()
 _sops_cleanup() { [ "${#_SOPS_TMPS[@]}" -gt 0 ] && rm -f "${_SOPS_TMPS[@]}"; return 0; }
-# The trap is armed INSIDE run_apply / sops_provision_env (the only functions that
-# create plaintext temps), NOT at top level — so sourcing the CLI (--source-only,
+# The trap is armed INSIDE run_apply (the only function that creates plaintext temps),
+# NOT at top level — so sourcing the CLI (--source-only,
 # e.g. from a test) does not clobber the sourcer's own EXIT trap.
 
 RED='\033[0;31m'
@@ -157,30 +157,6 @@ sops_encrypt_tunnel_cred() {  # $1 = tunnel_id
   - See docs/SOPS_SECRETS.md."
     fi
     info "Encrypted tunnel credential -> ${dst} (commit this)"
-}
-
-# The remote command that lands the decrypted .env at /opt/stacks/.env, mode
-# 0600, root-owned, atomically. Kept as a function so the test can assert the
-# mode/path without running ssh. install(1) sets the mode in one step.
-sops_env_install_cmd() {
-    echo "umask 077; install -m 0600 /dev/stdin /opt/stacks/.env"
-}
-
-# Decrypt fleet/secrets/<server>.env LOCALLY and push it to the host's
-# /opt/stacks/.env over SSH at 0600 (root). No plaintext is staged on disk
-# beyond the private temp file, which is shredded on return.
-sops_provision_env() {  # $1 = server (host alias)  $2 = ssh_user@host
-    local server="$1" sshtgt="$2"
-    local enc="${SECRETS_DIR}/${server}.env" tmp   # separate decl: enc needs server set first (set -u)
-    trap _sops_cleanup EXIT INT TERM   # shred the decrypted .env temp on exit/die/signal
-    [[ -f "$enc" ]] || { info "No ${server}.env in fleet/secrets — skipping .env provisioning"; return 0; }
-    if $DRY_RUN; then dry "Would provision /opt/stacks/.env on ${server} (0600, from fleet/secrets/${server}.env)"; return 0; fi
-    tmp="$(sops_decrypt_to_tmp "$enc")"
-    _SOPS_TMPS+=("$tmp")   # shredded by the global EXIT/INT/TERM trap, even on die/signal
-    if ! ssh -o BatchMode=yes "$sshtgt" "$(sops_env_install_cmd)" < "$tmp"; then
-        die "Failed to provision /opt/stacks/.env to ${server}"
-    fi
-    info "Provisioned /opt/stacks/.env on ${server} (0600)"
 }
 
 # ── Config helpers (host_vars + inventory) ──────────────────────────
@@ -379,6 +355,13 @@ run_apply() {
     # miuops apply` from outside the tool checkout still resolves cfg, inventory + host_vars.
     export ANSIBLE_CONFIG="${SCRIPT_DIR}/ansible.cfg"
     local cmd=(ansible-playbook -i "${FLEET_DIR}/inventory.ini" "${SCRIPT_DIR}/playbook.yml")
+    # Pass the secrets dir only when it exists, so a fresh fleet (no fleet/secrets/ yet) is a
+    # clean no-op — the stack-env role's "" default + length guard skip — not a hard failure.
+    if [[ -d "${SECRETS_DIR}" ]]; then
+        # Single-quote the value so a fleet path containing a space is not word-split by
+        # Ansible's key=value extra-vars parser (the role decrypts fleet/secrets/<host>.env).
+        cmd+=(--extra-vars "miuops_secrets_dir='${SECRETS_DIR}'")
+    fi
     [[ -n "$host" ]] && cmd+=(--limit "$host")
     [[ -n "${APPLY_TAGS:-}" ]] && cmd+=(--tags "${APPLY_TAGS}")
 
@@ -823,15 +806,8 @@ ${existing}
         info "Updating inventory.ini..."
         inventory_upsert "$handle" "$ssh_host" "$ssh_user"
 
-        run_apply "$handle"   # installs Galaxy requirements, then converges
-
-        # Provision the app .env (if present, encrypted under fleet/secrets/) to the
-        # host's /opt/stacks/.env at 0600. Decryption is LOCAL; only the plaintext .env
-        # crosses the wire (over SSH), never the age key. CI deploy rsync excludes .env,
-        # so this operator-set file is authoritative.
-        if [[ -f "${SECRETS_DIR}/${handle}.env" ]]; then
-            sops_provision_env "$handle" "${ssh_user}@${ssh_host}"
-        fi
+        run_apply "$handle"   # installs Galaxy requirements + converges; the stack-env role
+                              # provisions /opt/stacks/.env from fleet/secrets/<handle>.env.
 
         echo ""
         info "${BOLD}Done!${NC} Server bootstrapped."

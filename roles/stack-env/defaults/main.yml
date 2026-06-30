@@ -1,0 +1,6 @@
+---
+# Absolute path to the fleet's secrets dir on the controller; `miuops apply` passes it via
+# --extra-vars. Empty by default so a non-CLI playbook run (e.g. CI's bare ansible-playbook)
+# is a clean no-op rather than a template error -- and a wrong/relative value fails loud via
+# the controller-side assert in tasks/main.yml, never a silent fleet-wide skip.
+miuops_secrets_dir: ""
