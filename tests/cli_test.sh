@@ -37,6 +37,16 @@ inventory_upsert server-a 198.51.100.9 admin   # update in place
 [ "$(grep -c '^server-a ' "$TMP/fleet/inventory.ini")" = "1" ] || fail "server-a duplicated"
 grep -q 'ansible_host=198.51.100.9' "$TMP/fleet/inventory.ini" || fail "server-a not updated"
 
+# --- inventory_ssh_target / inventory_hosts read the SSH target back from inventory ---
+[ "$(inventory_ssh_target server-a)" = "admin@198.51.100.9" ] || fail "inventory_ssh_target wrong for server-a"
+[ "$(inventory_ssh_target server-b)" = "root@198.51.100.2" ]  || fail "inventory_ssh_target wrong for server-b"
+[ -z "$(inventory_ssh_target ghost)" ]                         || fail "inventory_ssh_target must be empty for an unknown host"
+[ "$(inventory_hosts | sort | tr '\n' ',')" = "server-a,server-b," ] || fail "inventory_hosts must list every host alias"
+
+# --- apply (re)provisions the app .env from sops, mirroring up (idempotent day-2) ---
+grep -qF '[[ "${NO_APPLY:-false}" == true ]] || provision_env_after_apply "$host"' "$ROOT/miuops" || fail "cmd_apply must provision /opt/stacks/.env after the converge, skipped under --no-apply"
+grep -qF 'sops_provision_env "$h" "$target"' "$ROOT/miuops"  || fail "provision_env_after_apply must provision via sops_provision_env"
+
 # --- domain_owner finds the owning host ---
 [ "$(domain_owner example.com)" = "server-a" ] || fail "domain_owner wrong"
 [ -z "$(domain_owner unowned.example)" ]        || fail "domain_owner false positive"

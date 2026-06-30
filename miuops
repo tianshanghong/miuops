@@ -183,6 +183,48 @@ sops_provision_env() {  # $1 = server (host alias)  $2 = ssh_user@host
     info "Provisioned /opt/stacks/.env on ${server} (0600)"
 }
 
+# Resolve a host's SSH target ("<ansible_user>@<ansible_host>") from inventory.ini;
+# echoes nothing if the host or either field is absent.
+inventory_ssh_target() {
+    local host="$1" inv="${FLEET_DIR}/inventory.ini"
+    [[ -f "$inv" ]] || return 0
+    awk -v h="$host" '
+        $1==h {
+            ah=""; au="";
+            for (i=2; i<=NF; i++) {
+                if ($i ~ /^ansible_host=/) { sub(/^ansible_host=/, "", $i); ah=$i }
+                if ($i ~ /^ansible_user=/) { sub(/^ansible_user=/, "", $i); au=$i }
+            }
+            if (ah!="" && au!="") print au"@"ah
+            exit
+        }' "$inv"
+}
+
+# Echo every host alias in inventory.ini (first field of non-group, non-comment lines).
+inventory_hosts() {
+    local inv="${FLEET_DIR}/inventory.ini"
+    [[ -f "$inv" ]] || return 0
+    awk '!/^[[:space:]]*#/ && !/^[[:space:]]*\[/ && NF>0 { print $1 }' "$inv"
+}
+
+# After a converge, (re)provision /opt/stacks/.env from fleet/secrets/<host>.env for the
+# applied host(s) -- mirrors `up`, so a secret change lands on `apply` too (idempotent
+# day-2), not only on first bootstrap. Hosts with no secret file are skipped by
+# sops_provision_env. $1 = host ("" = whole fleet).
+provision_env_after_apply() {
+    local only="$1" hosts h target
+    if [[ -n "$only" ]]; then hosts="$only"; else hosts="$(inventory_hosts)"; fi
+    for h in $hosts; do
+        [[ -f "${SECRETS_DIR}/${h}.env" ]] || continue
+        target="$(inventory_ssh_target "$h")"
+        if [[ -z "$target" ]]; then
+            warn "No inventory SSH target for '${h}'; cannot provision /opt/stacks/.env"
+            continue
+        fi
+        sops_provision_env "$h" "$target"
+    done
+}
+
 # ── Config helpers (host_vars + inventory) ──────────────────────────
 hv_path() { echo "${FLEET_DIR}/host_vars/$1.yml"; }
 
@@ -441,6 +483,10 @@ cmd_apply() {
     done
     [[ -z "$host" ]] || valid_host_alias "$host" || die "Invalid host '${host}'"
     run_apply "$host"
+    # Idempotently (re)push /opt/stacks/.env from sops (mirrors `up`). Skip under
+    # --no-apply, which means "no host changes" (sops_provision_env honours --dry-run
+    # itself, but not --no-apply).
+    [[ "${NO_APPLY:-false}" == true ]] || provision_env_after_apply "$host"
 }
 
 usage() {
