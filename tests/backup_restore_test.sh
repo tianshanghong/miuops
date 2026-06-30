@@ -8,8 +8,8 @@
 # original volume data.
 #
 # "A backup you cannot restore is not a backup": this is the verification net
-# that lets the home-grown host role replace offen. Every property is paired
-# with a control:
+# that lets the home-grown host role replace an in-stack volume-backup container.
+# Every property is paired with a control:
 #   * POSITIVE control — a clean round-trip restores byte-identical content.
 #   * NEGATIVE fixture  — a tampered .age object MUST fail (age's MAC), never a
 #                         silent partial/garbage restore.
