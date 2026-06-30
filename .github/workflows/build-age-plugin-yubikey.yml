@@ -94,6 +94,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config libpcsclite-dev build-essential
+          sudo apt-get install -y strip-nondeterminism
 
       # Install cargo-deb BEFORE the upstream checkout so it compiles under a recent stable
       # toolchain. Upstream's rust-toolchain.toml pins Rust 1.67 (governs anything run inside
@@ -141,6 +142,7 @@ jobs:
           cargo build --release --locked
           cargo run --release --locked --example generate-docs
           cargo deb --no-build
+          strip-nondeterminism --type deb --timestamp="${SOURCE_DATE_EPOCH}" target/debian/*.deb
           cp target/debian/*.deb "${RUNNER_TEMP}/build1.deb"
 
       # PROVE reproducibility: a second clean build must be byte-identical. If not, the .deb
@@ -157,6 +159,7 @@ jobs:
           cargo build --release --locked
           cargo run --release --locked --example generate-docs
           cargo deb --no-build
+          strip-nondeterminism --type deb --timestamp="${SOURCE_DATE_EPOCH}" target/debian/*.deb
           if cmp -s target/debian/*.deb "${RUNNER_TEMP}/build1.deb"; then
             echo "REPRODUCIBLE: two clean builds are byte-identical on ${ARCH}"
           else
