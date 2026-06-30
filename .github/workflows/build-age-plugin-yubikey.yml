@@ -30,9 +30,11 @@ on:
         required: true
         default: "0.5.0"
       expected_sha:
-        description: "Optional: full upstream commit SHA the tag must resolve to (re-tag protection)"
-        required: false
-        default: ""
+        # Required so a re-pushed (mutable) upstream tag fails closed instead of silently
+        # building a different commit. Look it up with:
+        #   gh api repos/str4d/age-plugin-yubikey/git/refs/tags/v<version> --jq .object.sha
+        description: "Required: the full upstream commit SHA the tag must resolve to (re-tag protection)"
+        required: true
 
 permissions:
   contents: read
@@ -131,6 +133,7 @@ jobs:
         run: |
           SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"; export SOURCE_DATE_EPOCH
           export RUSTFLAGS="--remap-path-prefix=${HOME}=. --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=."
+          # --locked needs upstream's committed Cargo.lock (present at the tags we build).
           cargo build --release --locked
           strip target/release/age-plugin-yubikey
 
@@ -166,7 +169,7 @@ jobs:
           for want in \
             "age-plugin-yubikey_${VER}_amd64" "age-plugin-yubikey_${VER}_amd64.sha256" \
             "age-plugin-yubikey_${VER}_arm64" "age-plugin-yubikey_${VER}_arm64.sha256"; do
-            if printf '%s\n' "$assets" | grep -qx "$want"; then
+            if printf '%s\n' "$assets" | grep -Fqx "$want"; then
               echo "ok: $want"
             else
               echo "::error::missing release asset: $want"; missing=1
