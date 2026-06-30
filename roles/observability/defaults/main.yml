@@ -15,7 +15,7 @@ observability_active: "{{ observability_enabled | bool and (grafana_cloud_promet
 # switched the default storage driver to overlayfs and dropped the image/<driver>/layerdb/
 # mounts layout the old cAdvisor relied on; older Alloy fails container registration
 # ("failed to identify the read-write layer ID") and silently ships zero per-container metrics.
-observability_alloy_version: "1.17.0-1"
+observability_alloy_version: "1.17.1-1"
 
 observability_scrape_interval: "60s"
 
