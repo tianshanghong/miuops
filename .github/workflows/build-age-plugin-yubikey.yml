@@ -1,0 +1,219 @@
+name: Build age-plugin-yubikey
+
+# Build age-plugin-yubikey from the upstream source tag for amd64 + arm64 Linux and publish
+# each .deb (with a sibling .sha256) to a release. Upstream ships no arm64-Linux build, so
+# the fleet builds BOTH arches itself -- in transparent CI (auditable logs, provenance from
+# a pinned source tag), never a hand-built local binary. The backup role installs the
+# arch-appropriate .deb pinned by its sha256.
+#
+# REPRODUCIBILITY: SOURCE_DATE_EPOCH alone only fixes the .deb archive metadata, not rustc's
+# output, so we also pin codegen-units=1 and remap build paths, then PROVE it with an in-CI
+# rebuild-and-diff (two clean builds must be byte-identical, else the job fails). Only then
+# is the published sha256 safe to pin.
+#
+# ASSET CONTRACT (for the backup role): assets are age-plugin-yubikey_<ver>_<arch>.deb where
+# <arch> is the DEBIAN arch -- amd64 / arm64 -- NOT `uname -m` (x86_64 / aarch64). The role
+# must map x86_64->amd64, aarch64->arm64 (i.e. `dpkg --print-architecture`).
+#
+# Triggered manually (or by the auto-sync workflow) with the upstream version. Optionally
+# pass the expected upstream commit SHA to fail closed if the (mutable) tag was re-pushed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "age-plugin-yubikey upstream version, no leading v (e.g. 0.5.0)"
+        required: true
+        default: "0.5.0"
+      expected_sha:
+        description: "Optional: full upstream commit SHA the tag must resolve to (re-tag protection)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      VER: ${{ inputs.version }}
+      TAG: age-plugin-yubikey-v${{ inputs.version }}
+    steps:
+      # Gate the whole workflow: this dispatch input flows into a checkout ref and several
+      # shell commands. Require a real X.Y(.Z) version -- digits/dots only, no leading,
+      # trailing, or empty (double-dot) components -- and reject everything else up front.
+      - name: Validate the version input
+        run: |
+          case "$VER" in
+            *[!0-9.]* ) echo "::error::version may contain only digits and dots (got '$VER')"; exit 1 ;;
+            .* | *. )   echo "::error::version has a leading/trailing dot (got '$VER')"; exit 1 ;;
+            *..* )      echo "::error::version has an empty component (got '$VER')"; exit 1 ;;
+            [0-9]*.[0-9]* ) : ;;
+            * )         echo "::error::version must be at least X.Y (got '$VER')"; exit 1 ;;
+          esac
+
+      - name: Create the release if it does not exist
+        run: |
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$REPO" --title "$TAG" \
+              --notes "age-plugin-yubikey ${VER}, built from the upstream source tag in CI for amd64 + arm64 Linux. Each .deb ships a sibling .sha256, is proven byte-reproducible by an in-CI rebuild-and-diff, and the resolved upstream commit SHA is recorded in the build logs. miuOps' backup role pins the .deb by sha256."
+          fi
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    env:
+      VER: ${{ inputs.version }}
+      ARCH: ${{ matrix.arch }}
+      TAG: age-plugin-yubikey-v${{ inputs.version }}
+      EXPECTED_SHA: ${{ inputs.expected_sha }}
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      # The arm64 runner is still in public preview; record the image version so a
+      # reproducibility drift can be traced to a runner-image change.
+      - name: Record runner image version
+        run: echo "runner=${ImageOS:-?} image=${ImageVersion:-?} arch=${ARCH}"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libpcsclite-dev build-essential
+
+      # Install cargo-deb BEFORE the upstream checkout so it compiles under a recent stable
+      # toolchain. Upstream's rust-toolchain.toml pins Rust 1.67 (governs anything run inside
+      # the repo dir), but cargo-deb 3.7.0 is edition-2024 and needs Rust >= 1.85 -- building
+      # it under 1.67 fails. The installed binary then runs fine regardless of the project's
+      # pinned compiler.
+      - name: Install cargo-deb (recent stable, outside the pinned repo)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup run stable cargo install cargo-deb --locked --version "=3.7.0"
+
+      # Build from upstream's own source at the pinned tag -- provenance is a public CI run
+      # from str4d/age-plugin-yubikey@v<version>. Checked out under upstream/ so the repo's
+      # rust-toolchain.toml only governs the build steps below.
+      - name: Check out upstream age-plugin-yubikey
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: str4d/age-plugin-yubikey
+          ref: v${{ inputs.version }}
+          persist-credentials: false
+          path: upstream
+
+      # The tag is a lightweight, mutable ref. Record the commit it resolved to (audit), and
+      # if the caller pinned an expected SHA, fail closed when the tag no longer matches it.
+      - name: Resolve + verify the upstream commit SHA
+        working-directory: upstream
+        run: |
+          sha="$(git rev-parse HEAD)"
+          echo "PROVENANCE: str4d/age-plugin-yubikey v${VER} -> ${sha}"
+          if [ -n "$EXPECTED_SHA" ] && [ "$sha" != "$EXPECTED_SHA" ]; then
+            echo "::error::tag v${VER} resolves to ${sha}, not the expected ${EXPECTED_SHA} (upstream re-tag?)"; exit 1
+          fi
+
+      # Mirror upstream's release.yml ordering: build the binary, generate the (MANDATORY,
+      # generated) manpage asset, then package without rebuilding. Reproducibility knobs:
+      # SOURCE_DATE_EPOCH (archive mtimes) + codegen-units=1 (no parallel-codegen nondeterminism)
+      # + remap-path-prefix ($HOME/cargo paths out of the binary).
+      - name: Build the .deb (reproducibly)
+        working-directory: upstream
+        env:
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"; export SOURCE_DATE_EPOCH
+          export RUSTFLAGS="-Cremap-path-prefix=${HOME}=. -Cremap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=."
+          cargo build --release --locked
+          cargo run --release --locked --example generate-docs
+          cargo deb --no-build
+          cp target/debian/*.deb "${RUNNER_TEMP}/build1.deb"
+
+      # PROVE reproducibility: a second clean build must be byte-identical. If not, the .deb
+      # sha is not pinnable -- fail loudly with per-member diagnostics rather than publish a
+      # checksum that drifts.
+      - name: Rebuild + assert byte-identical
+        working-directory: upstream
+        env:
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+        run: |
+          cargo clean
+          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"; export SOURCE_DATE_EPOCH
+          export RUSTFLAGS="-Cremap-path-prefix=${HOME}=. -Cremap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=."
+          cargo build --release --locked
+          cargo run --release --locked --example generate-docs
+          cargo deb --no-build
+          if cmp -s target/debian/*.deb "${RUNNER_TEMP}/build1.deb"; then
+            echo "REPRODUCIBLE: two clean builds are byte-identical on ${ARCH}"
+          else
+            echo "::error::rebuild is NOT byte-identical on ${ARCH} -- .deb is not reproducible"
+            cp target/debian/*.deb "${RUNNER_TEMP}/build2.deb"
+            sha256sum "${RUNNER_TEMP}/build1.deb" "${RUNNER_TEMP}/build2.deb" || true
+            mkdir -p /tmp/d1 /tmp/d2
+            ( cd /tmp/d1 && ar x "${RUNNER_TEMP}/build1.deb" ) || true
+            ( cd /tmp/d2 && ar x "${RUNNER_TEMP}/build2.deb" ) || true
+            echo "--- per-member sha (build1 vs build2) ---"; sha256sum /tmp/d1/* /tmp/d2/* || true
+            exit 1
+          fi
+
+      - name: Smoke test -- install + run the arch-native .deb
+        working-directory: upstream
+        run: |
+          shopt -s nullglob
+          debs=(target/debian/*.deb)
+          [ "${#debs[@]}" -eq 1 ] || { echo "::error::expected exactly one .deb, got ${#debs[@]}"; exit 1; }
+          sudo dpkg -i "${debs[0]}"
+          age-plugin-yubikey --version
+
+      - name: Rename, checksum, and upload to the release
+        working-directory: upstream
+        run: |
+          shopt -s nullglob
+          debs=(target/debian/*.deb)
+          [ "${#debs[@]}" -eq 1 ] || { echo "::error::expected exactly one .deb, got ${#debs[@]}"; exit 1; }
+          deb="age-plugin-yubikey_${VER}_${ARCH}.deb"
+          cp "${debs[0]}" "$deb"
+          sha256sum "$deb" | tee "${deb}.sha256"
+          gh release upload "$TAG" --repo "$REPO" --clobber "$deb" "${deb}.sha256"
+
+  # Completeness gate: a single-arch failure (fail-fast is off so the other arch still runs)
+  # leaves a release that LOOKS done but is missing an arch. Make that visibly red.
+  verify-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      VER: ${{ inputs.version }}
+      TAG: age-plugin-yubikey-v${{ inputs.version }}
+    steps:
+      - name: Assert both arches' assets are present
+        run: |
+          assets="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name')"
+          missing=0
+          for want in \
+            "age-plugin-yubikey_${VER}_amd64.deb" "age-plugin-yubikey_${VER}_amd64.deb.sha256" \
+            "age-plugin-yubikey_${VER}_arm64.deb" "age-plugin-yubikey_${VER}_arm64.deb.sha256"; do
+            if printf '%s\n' "$assets" | grep -qx "$want"; then
+              echo "ok: $want"
+            else
+              echo "::error::missing release asset: $want"; missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
