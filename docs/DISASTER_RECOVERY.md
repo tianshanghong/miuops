@@ -184,6 +184,17 @@ directory. The archive is **not gzip-compressed** (extract with `tar -xf`, not
 numbers — deterministic ownership even when the restore host has a different
 `/etc/passwd` than the source.
 
+> **Check a backup is intact without restoring it:**
+> `miuops backup-verify --server SERVER --volume VOLUME_NAME [--at <ts>]` streams the
+> object through an integrity check and exits non-zero on corruption. Run it
+> periodically — `aws s3 cp` already checks the upload, so this confirms a backup is
+> still good (and decryptable with the current key) months later. **Strength depends on
+> the format:** an **age** object is fully byte-level verified (its MAC authenticates
+> every byte); a **plaintext `.tar`** is only structurally verified (`tar -t` — the
+> per-header checksum, catching header damage but **not** a flipped data byte or
+> trailing-data truncation that leaves the headers parseable, as uncompressed tar has no
+> body checksum). For byte-level integrity, set `backup_encryption: age`. *Backups that haven't been verified aren't backups.*
+
 **1. Restore the volume's data to a staging directory.** `miuops backup-restore`
 resolves the bucket from your fleet config, finds the volume's object (the latest, or
 `--at <ts>`), downloads it, decrypts it (age) with your operator identity, and untars

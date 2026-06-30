@@ -41,6 +41,7 @@ jobs:
             tests/backup_setup_script_test.sh \
             tests/backup_rotate_test.sh \
             tests/backup_restore_test.sh \
+            tests/backup_verify_test.sh \
             tests/backup_docs_lint_test.sh \
             tests/backup_config_template_test.sh
           bash tests/cli_test.sh
@@ -79,6 +80,7 @@ jobs:
           bash tests/backup_env_sync_test.sh
           bash tests/backup_setup_write_test.sh
           bash tests/backup_restore_test.sh
+          bash tests/backup_verify_test.sh
 
       - name: Install Ansible
         run: pip install ansible

@@ -1201,6 +1201,100 @@ cmd_backup_restore() {
     info "Restored volume '${volume}' to ${target} (from ${object})."
 }
 
+# Verify a backup in S3 is INTACT without restoring it to disk. Resolves the bucket +
+# prefix, finds the object (latest or --at), and streams it through an integrity check
+# to /dev/null. The STRENGTH depends on the format: an age object is decrypted (the
+# ChaCha20-Poly1305 MAC authenticates EVERY byte -- a single flipped byte fails it),
+# giving full byte-level integrity; a plaintext .tar is listed with `tar -t`, which
+# validates the per-header checksum (catches header damage + header-region truncation)
+# but has NO body checksum, so a flipped DATA byte -- or trailing-data truncation that
+# leaves the headers parseable -- in a plaintext archive is NOT detected -- set
+# backup_encryption: age for byte-level integrity. `aws s3 cp` already integrity-checks
+# the PUT, so the value here is ongoing integrity -- confirming a backup is still good
+# (and decryptable with the current key) months later.
+cmd_backup_verify() {
+    local host="" volume="" at=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --server)    [[ $# -ge 2 ]] || die "backup-verify: --server requires a value"; host="$2"; shift 2 ;;
+            --server=*)  host="${1#*=}"; shift ;;
+            --volume)    [[ $# -ge 2 ]] || die "backup-verify: --volume requires a value"; volume="$2"; shift 2 ;;
+            --volume=*)  volume="${1#*=}"; shift ;;
+            --at)        [[ $# -ge 2 ]] || die "backup-verify: --at requires a value"; at="$2"; shift 2 ;;
+            --at=*)      at="${1#*=}"; shift ;;
+            *)           die "backup-verify: unknown argument '$1'" ;;
+        esac
+    done
+    [[ -n "$host"   ]] || die "backup-verify: --server <name> is required"
+    [[ -n "$volume" ]] || die "backup-verify: --volume <name> is required"
+    valid_host_alias "$host" || die "backup-verify: invalid server name '${host}'."
+    [[ "$volume" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "backup-verify: invalid volume name '${volume}' (expected [A-Za-z0-9._-])."
+    if [[ -n "$at" ]]; then
+        [[ "$at" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "backup-verify: --at must be a UTC timestamp YYYYMMDDTHHMMSSZ (e.g. 20260629T030000Z)."
+    fi
+    command -v aws >/dev/null 2>&1 || die "backup-verify: aws CLI not found."
+    command -v tar >/dev/null 2>&1 || die "backup-verify: tar not found."
+
+    local bucket; bucket="$(resolve_backup_bucket "$host")"
+    [[ -n "$bucket" ]] || die "backup-verify: no backup_s3_bucket configured for ${host}. Run 'miuops backup-setup --server ${host}' first."
+    local prefix; prefix="$(resolve_backup_prefix "$host")/${volume}"
+
+    local names object
+    names="$(aws s3 ls "s3://${bucket}/${prefix}/" 2>/dev/null | awk '{print $NF}' | grep -E '^backup-[0-9TZ]+\.tar(\.age)?$' || true)"
+    [[ -n "$names" ]] || die "backup-verify: no backup found for volume '${volume}' on '${host}' (s3://${bucket}/${prefix}/)."
+    if [[ -n "$at" ]]; then
+        object="$(printf '%s\n' "$names" | grep -Fx -e "backup-${at}.tar" -e "backup-${at}.tar.age" | head -1 || true)"
+        [[ -n "$object" ]] || die "backup-verify: no backup at '${at}' for volume '${volume}' on '${host}'."
+    else
+        object="$(printf '%s\n' "$names" | sort | tail -1)"
+    fi
+
+    local encrypted=false
+    [[ "$object" == *.age ]] && encrypted=true
+    if $encrypted; then
+        command -v age >/dev/null 2>&1 || die "backup-verify: ${object} is age-encrypted but 'age' is not installed."
+    fi
+
+    local age_id_args=()
+    if [[ -n "${SOPS_AGE_KEY_FILE:-}" ]]; then
+        age_id_args=(-i "$SOPS_AGE_KEY_FILE")
+    elif [[ -f "$(sops_age_default_keys)" ]]; then
+        age_id_args=(-i "$(sops_age_default_keys)")
+    fi
+
+    info "Verifying s3://${bucket}/${prefix}/${object}"
+
+    # Stream the object through the integrity check to /dev/null -- never to disk.
+    # Capture EVERY stage via PIPESTATUS (suspend errexit only around the pipe; save +
+    # restore it) so a download, age MAC, or tar failure can't hide behind the last
+    # stage. A single flipped byte fails the age MAC (encrypted) or the tar read.
+    local -a statuses
+    local _e=""; [[ $- == *e* ]] && _e=1
+    set +e
+    if $encrypted; then
+        aws s3 cp "s3://${bucket}/${prefix}/${object}" - \
+          | age -d ${age_id_args[@]+"${age_id_args[@]}"} \
+          | tar -tf - >/dev/null
+    else
+        aws s3 cp "s3://${bucket}/${prefix}/${object}" - \
+          | tar -tf - >/dev/null
+    fi
+    statuses=("${PIPESTATUS[@]}")
+    [[ -n "$_e" ]] && set -e
+
+    local idx st
+    for idx in "${!statuses[@]}"; do
+        st="${statuses[$idx]}"
+        [ "$st" -eq 0 ] && continue
+        die "backup-verify: ${object} FAILED its integrity check (pipeline stage ${idx} exit ${st}) -- the backup is corrupt, truncated, or not decryptable with the current key."
+    done
+    if $encrypted; then
+        info "OK: ${object} is intact -- age MAC authenticated every byte."
+    else
+        info "OK: ${object} passed structural checks (valid tar headers -- structure intact). NOTE: a plaintext .tar has no body checksum, so a flipped DATA byte (or trailing-data truncation) is NOT detected here -- set backup_encryption: age for byte-level integrity."
+    fi
+}
+
 # ── Main ───────────────────────────────────────────────────────────
 if [[ "${1:-}" != "--source-only" ]]; then
     case "${1:-}" in
@@ -1211,6 +1305,7 @@ if [[ "${1:-}" != "--source-only" ]]; then
         backup-setup)  shift; cmd_backup_setup "$@" ;;
         backup-rotate) shift; cmd_backup_rotate "$@" ;;
         backup-restore) shift; cmd_backup_restore "$@" ;;
+        backup-verify) shift; cmd_backup_verify "$@" ;;
         version|--version|-v) cmd_version ;;
         *)             usage ;;
     esac
