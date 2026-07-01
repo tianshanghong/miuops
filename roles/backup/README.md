@@ -117,8 +117,10 @@ way they are rendered on the host into `/etc/miuops-backup/backup.env` (mode `06
 root) and sourced by the script, so they never appear in `ps` / the process table.
 
 When `backup_age_recipients` includes a YubiKey identity (`age1yubikey1...`), the
-role installs **age-plugin-yubikey** on the host automatically (pinned `.deb` +
-checksum; amd64 only — `age` cannot encrypt to a plugin recipient without it).
+role installs **age-plugin-yubikey** on the host automatically (a CI-built binary
+from the `age-plugin-yubikey-v<ver>` miuOps release, per-arch for **amd64 + arm64**,
+installed to `/usr/local/bin` and pinned by sha256 — `age` cannot encrypt to a
+plugin recipient without it).
 Encryption uses only the public key, so the host needs no YubiKey and the daily
 backup runs unattended — the YubiKey is required only to *decrypt* at restore
 time, on the operator's machine.

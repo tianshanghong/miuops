@@ -44,6 +44,10 @@ grep -qE 'checksum:[[:space:]]*"sha256:' "$T" \
     || fail "plugin binary must be sha256-verified"
 grep -qF "dest: /usr/local/bin/age-plugin-yubikey" "$T" \
     || fail "plugin binary must install to /usr/local/bin/age-plugin-yubikey (on PATH)"
+# root-owned (context-scoped to the get_url task: a bare `grep owner: root` would match any
+# of the other tasks and pass even if this one dropped root ownership).
+awk '/dest: \/usr\/local\/bin\/age-plugin-yubikey/{f=1} f&&/owner:/{print;exit}' "$T" | grep -qF "owner: root" \
+    || fail "plugin binary (get_url) must be owner: root"
 grep -qF "mode: '0755'" "$T" \
     || fail "plugin binary must be installed executable (0755)"
 grep -qF "name: libpcsclite1" "$T" \
