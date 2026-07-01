@@ -180,6 +180,43 @@ printf '%s' "$u6tags" | grep -q -- '--tags observability,backup' \
     || fail "apply must parse --tags through to the converge (got: $u6tags)"
 echo "ok: apply --tags passthrough reaches the converge cmd"
 
+# ── 4c. stack-env: run_apply decrypts fleet/secrets/<host>.env on the CONTROL NODE (where a
+# TTY exists, so an age YubiKey can prompt for PIN+touch) and wires the plaintext temp into
+# the stack-env role via -e stack_env_content_src=<tmp>. This is the exact path an in-play
+# community.sops lookup could NOT serve on a YubiKey-only fleet (no TTY in the subprocess).
+# Behavioral, not a string tripwire: it SOPS-encrypts a real .env and drives run_apply. ─────
+printf 'APP_SECRET=s3cr3t-u6\nDB_URL=postgres://u:p@h/db\n' > "$TMP/fleet/secrets/u6host.env"
+( cd "$TMP" && sops --encrypt --input-type dotenv --output-type dotenv --in-place "fleet/secrets/u6host.env" ) \
+    || fail "could not SOPS-encrypt the stack-env .env"
+# (b)+(c): the CLI primitive decrypts <host>.env to a 0600 temp with the exact values.
+# shellcheck disable=SC1090
+envplain="$( source "$ROOT/miuops" --source-only; sops_decrypt_to_tmp "${MIUOPS_FLEET_DIR}/secrets/u6host.env" )" \
+    || fail "sops_decrypt_to_tmp failed on a valid encrypted .env"
+grep -q '^APP_SECRET=s3cr3t-u6$'          "$envplain" || fail "decrypted .env lost APP_SECRET"
+grep -q '^DB_URL=postgres://u:p@h/db$'    "$envplain" || fail "decrypted .env lost DB_URL"
+envperm="$(stat -c '%a' "$envplain" 2>/dev/null || stat -f '%Lp' "$envplain")"
+[ "$envperm" = "600" ] || fail ".env decrypt temp not 0600 (got $envperm)"
+rm -f "$envplain"
+# (a) WIRING: a targeted apply with a present <host>.env passes -e stack_env_content_src=<tmp>
+# (the value is single-quoted, so match an optional quote before the leading /).
+# shellcheck disable=SC1090
+envout="$( source "$ROOT/miuops" --source-only; DRY_RUN=true APPLY_TAGS="" run_apply u6host 2>&1 )" \
+    || fail "run_apply dry-run failed with a stack-env .env present"
+printf '%s' "$envout" | grep -qE "stack_env_content_src='?/" \
+    || fail "run_apply must pass -e stack_env_content_src=<tmp> when fleet/secrets/<host>.env exists: $envout"
+echo "ok: run_apply wires <host>.env into stack_env_content_src (control-node decrypt)"
+# (d) NEGATIVE: a whole-fleet apply (no host) provisions no per-host .env and WARNS rather
+# than silently skipping — the operational gap the security review flagged.
+# shellcheck disable=SC1090
+fleetout="$( source "$ROOT/miuops" --source-only; DRY_RUN=true APPLY_TAGS="" run_apply 2>&1 )" \
+    || fail "run_apply dry-run (whole fleet) failed"
+if printf '%s' "$fleetout" | grep -q 'stack_env_content_src='; then
+    fail "a whole-fleet apply must NOT wire any per-host stack_env_content_src: $fleetout"
+fi
+printf '%s' "$fleetout" | grep -qi 'not provisioned' \
+    || fail "a whole-fleet apply with .env secrets present must WARN, not silently skip: $fleetout"
+echo "ok: whole-fleet apply skips per-host .env and warns (no silent omission)"
+
 # ── 5. cloudflared role consumes a local decrypted source, legacy fallback ───
 ROLE="$ROOT/roles/cloudflared/tasks/main.yml"
 DEFAULTS="$ROOT/roles/cloudflared/defaults/main.yml"

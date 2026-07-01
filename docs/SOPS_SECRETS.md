@@ -125,9 +125,14 @@ matches.
   `0600` (`no_log`). When that variable is empty the role falls back to the legacy
   plaintext `files/<tunnel_id>.json` for backward compatibility.
 
-- **The app `.env`** — if `fleet/secrets/<server>.env` exists, miuops decrypts it
-  locally and provisions it to the host's `/opt/stacks/.env` at mode `0600`
-  (root). Encrypt one yourself with:
+- **The app `.env`** — if `fleet/secrets/<server>.env` exists, a targeted
+  `apply <server>` decrypts it on the control node (where a TTY exists, so an age
+  YubiKey can prompt for its PIN + touch) to a private `0600` temp and provisions it
+  to the host's `/opt/stacks/.env` at mode `0600` (root, `no_log`). Like
+  `<host>.vars.json`, it is provisioned only for a targeted host — a whole-fleet
+  `apply` (no server) cannot (each YubiKey decrypt needs an interactive PIN + touch),
+  so it skips `.env` and prints a warning telling you to target the host. Encrypt one
+  yourself with:
 
   ```bash
   cp my.env fleet/secrets/<server>.env
