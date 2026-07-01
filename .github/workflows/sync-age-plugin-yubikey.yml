@@ -58,9 +58,18 @@ jobs:
             exit 0
           fi
 
-          # Resolve the upstream commit the new tag points at, so the issue can pre-fill the
-          # build's required expected_sha (re-tag fail-closed).
-          sha="$(gh api "repos/${UPSTREAM}/git/refs/tags/${latest_tag}" --jq '.object.sha' 2>/dev/null || true)"
+          # Resolve the upstream COMMIT the new tag points at, so the issue can pre-fill the
+          # build's required expected_sha (which the build verifies against `git rev-parse HEAD`,
+          # a commit sha). For a lightweight tag .object.sha IS the commit; for an annotated tag
+          # it's the tag object, so peel it to the commit -- else the pre-filled sha would be
+          # wrong and the maintainer would have to re-derive it.
+          obj_sha="$(gh api "repos/${UPSTREAM}/git/refs/tags/${latest_tag}" --jq '.object.sha' 2>/dev/null || true)"
+          obj_type="$(gh api "repos/${UPSTREAM}/git/refs/tags/${latest_tag}" --jq '.object.type' 2>/dev/null || true)"
+          if [ "$obj_type" = "tag" ] && [ -n "$obj_sha" ]; then
+            sha="$(gh api "repos/${UPSTREAM}/git/tags/${obj_sha}" --jq '.object.sha' 2>/dev/null || true)"
+          else
+            sha="$obj_sha"
+          fi
 
           title="age-plugin-yubikey ${latest} is available upstream (pinned: ${pinned})"
 
