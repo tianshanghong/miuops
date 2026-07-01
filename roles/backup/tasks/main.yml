@@ -90,28 +90,45 @@
     - backup_encryption == 'age'
     - backup_age_recipients | select('match', '^age1yubikey') | list | length > 0
   tags: ['backup']
+  vars:
+    # miuOps builds the plugin in transparent CI for both arches; the release names binaries by
+    # Debian arch (amd64/arm64), so map the kernel arch (x86_64/aarch64) to it.
+    _apy_arch: "{{ {'x86_64': 'amd64', 'amd64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(ansible_facts['architecture'], '') }}"
+    _apy_sha: "{{ backup_age_plugin_yubikey_sha256.get(_apy_arch, '') }}"
   block:
-    - name: Assert a prebuilt age-plugin-yubikey exists for this architecture
+    - name: Assert a CI-built age-plugin-yubikey is pinned for this architecture
       ansible.builtin.assert:
-        that: ansible_facts['architecture'] in ['x86_64', 'amd64']
+        that:
+          - _apy_arch in ['amd64', 'arm64']
+          - _apy_sha | length == 64
         fail_msg: >-
-          A YubiKey backup recipient (age1yubikey1...) needs age-plugin-yubikey,
-          which upstream ships for amd64 Linux only (this host is
-          {{ ansible_facts['architecture'] }}). Use a native age recipient, or
-          install age-plugin-yubikey for this architecture yourself.
+          A YubiKey backup recipient (age1yubikey1...) needs age-plugin-yubikey. miuOps builds it
+          in transparent CI for amd64 + arm64; this host is {{ ansible_facts['architecture'] }}
+          (arch '{{ _apy_arch }}'). Pin its sha256 in
+          backup_age_plugin_yubikey_sha256['{{ _apy_arch | default('<arch>') }}'].
         quiet: true
 
-    - name: Download age-plugin-yubikey .deb (pinned + checksum)
-      ansible.builtin.get_url:
-        url: "https://github.com/str4d/age-plugin-yubikey/releases/download/v{{ backup_age_plugin_yubikey_version }}/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}-{{ backup_age_plugin_yubikey_deb_revision }}_amd64.deb"
-        dest: "/tmp/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}-{{ backup_age_plugin_yubikey_deb_revision }}_amd64.deb"
-        checksum: "sha256:{{ backup_age_plugin_yubikey_deb_sha256 }}"
-        mode: '0644'
-      register: _apy_deb
-
-    - name: Install age-plugin-yubikey (apt resolves the libpcsclite dependency)
+    # The CI binary is dynamically linked against libpcsclite.so.1 (the .deb used to pull this
+    # in). Without it `age` fails when it invokes the plugin -- i.e. at restore time, the worst
+    # moment -- so install it now and verify the plugin runs at deploy time.
+    - name: Ensure libpcsclite1 (age-plugin-yubikey's runtime dependency)
       ansible.builtin.apt:
-        deb: "{{ _apy_deb.dest }}"
+        name: libpcsclite1
+        state: present
+        update_cache: true
+
+    - name: Install age-plugin-yubikey binary (pinned by sha256) on PATH
+      ansible.builtin.get_url:
+        url: "https://github.com/{{ backup_age_plugin_yubikey_repo }}/releases/download/age-plugin-yubikey-v{{ backup_age_plugin_yubikey_version }}/age-plugin-yubikey_{{ backup_age_plugin_yubikey_version }}_{{ _apy_arch }}"
+        dest: /usr/local/bin/age-plugin-yubikey
+        checksum: "sha256:{{ _apy_sha }}"
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Verify the plugin runs (fails loudly here at deploy, not at restore time)
+      ansible.builtin.command: age-plugin-yubikey --version
+      changed_when: false
 
 # ---- Config + secrets --------------------------------------------------------
 - name: Create backup config directory

@@ -61,14 +61,17 @@ backup_age_recipients: []
 # without it. The role installs it automatically in that case. Encryption uses
 # only the public key, so NO YubiKey is needed on the server (the daily backup
 # runs unattended); the YubiKey is required only to DECRYPT at restore time, on
-# the operator's machine. Pinned to the last release that ships a Linux .deb:
-# v0.5.1 DROPPED the Linux build, and the binary is amd64-only (no arm64 Linux
-# build) -- this release is effectively frozen upstream. For a newer build use a
-# distro package or `cargo install age-plugin-yubikey`. A version bump must change
-# version + deb_revision + sha256 TOGETHER (the .deb filename embeds the revision).
+# the operator's machine. The binary is built in transparent CI for amd64 + arm64
+# (.github/workflows/build-age-plugin-yubikey.yml) and installed on PATH, pinned by sha256
+# below. A version bump must update the version + BOTH per-arch shas together.
 backup_age_plugin_yubikey_version: "0.5.0"
-backup_age_plugin_yubikey_deb_revision: "1"
-backup_age_plugin_yubikey_deb_sha256: "bf7a02418de04b3d3df9791e185d493eb344829bca4009247a41bc4d7630b47f"
+backup_age_plugin_yubikey_repo: "tianshanghong/miuops"
+# Per-arch sha256 of the CI-built binary, from the `age-plugin-yubikey-v<version>` release.
+# Pin after dispatching the build workflow; read each from the published `.sha256` sidecar
+# (e.g. `gh release download age-plugin-yubikey-v0.5.0 -R tianshanghong/miuops -p '*.sha256' -D -`).
+backup_age_plugin_yubikey_sha256:
+  amd64: "66eeb1f692b7b5ea5ae4f095a2c77454a167f24ef16170cc7bc5434330d114e5"
+  arm64: "05db8aef927502fbef18f0f542d67b938e44b1d4792ebc24f61d6ba526b20ba9"
 
 # --- AWS credentials --------------------------------------------------------
 # config/secret split. The ACCESS KEY + SECRET are SECRETS: `miuops backup-setup`
