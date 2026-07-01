@@ -51,4 +51,19 @@ grep -qF 'def norm' "$S"                || fail "teardown must normalize dir nam
 grep -qE 'SSH_PORT.*=~.*0-9' "$S"       || fail "SSH_PORT must be validated numeric"
 grep -qF 'Skipped teardown' "$S"        || fail "teardown enumeration must be best-effort (non-fatal on missing python3)"
 
+# Manual-dispatch targeting/force-recreate: the inputs must reach the scripts via
+# env (never a run: string), and the operator-controlled stack target must be
+# validated with the same allowlist as SERVER before it can reach the remote.
+grep -qF 'ONLY_SERVER: ${{ inputs.only_server }}' "$Y"       || fail "discover must pass ONLY_SERVER from inputs.only_server via env"
+grep -qF 'ONLY_STACK: ${{ inputs.only_stack }}' "$Y"         || fail "deploy must pass ONLY_STACK from inputs.only_stack via env"
+grep -qF 'FORCE_RECREATE: ${{ inputs.force_recreate }}' "$Y" || fail "deploy must pass FORCE_RECREATE from inputs.force_recreate via env"
+grep -qF 'invalid stack name' "$S"                           || fail "deploy-server.sh must reject an invalid ONLY_STACK (name allowlist)"
+grep -qF -- '--force-recreate' "$S"                          || fail "deploy-server.sh must support --force-recreate when FORCE_RECREATE=true"
+# The safety guard must require only_server for BOTH targeted knobs (force_recreate
+# and only_stack), else a stack-targeted dispatch fans out across the whole fleet.
+grep -qF "inputs.only_stack != ''" "$Y"                      || fail "guard must also require only_server when only_stack is set (documented precondition)"
+# A single-stack dispatch that matches no valid stack must fail loudly, not
+# silently succeed (covers both a missing dir and a present-but-invalid compose).
+grep -qF 'not a valid compose project' "$S"                  || fail "deploy-server.sh must fail a single-stack dispatch that matches no valid stack"
+
 echo "ALL DEPLOY WORKFLOW LINT CHECKS PASSED"

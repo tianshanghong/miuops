@@ -13,6 +13,11 @@
 #                      is strict — no MITM window. When absent: accept-new TOFU).
 #   STACKS_DIR         repo path prefix for stacks (default fleet/stacks).
 #   REMOTE_STACKS_DIR  destination on the server (default /opt/stacks).
+#   ONLY_STACK         (manual dispatch) bring up only this stack dir within the
+#                      server; blank = every stack. Validated like SERVER.
+#   FORCE_RECREATE     (manual dispatch) "true" adds `--force-recreate` to
+#                      `docker compose up` so a container is recreated even when
+#                      its image + config are unchanged (re-runs its entrypoint).
 #
 # By design the rsync excludes .env and any *.env: every *.env is treated as a
 # host-provisioned secret (the shared app env is decrypted + placed at setup,
@@ -36,14 +41,35 @@ NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 SERVER="${SERVER:?SERVER is required}"
 [[ "$SERVER" =~ $NAME_RE ]] || err "Refusing to deploy: invalid server name '${SERVER}'"
 
+# Optional manual-dispatch targeting (both empty on a normal push deploy).
+# ONLY_STACK is operator-controlled, so it is validated with the same allowlist
+# as SERVER and only ever compared as data (never concatenated into a command).
+# FORCE_RECREATE is constrained to the two literals it is later tested against.
+ONLY_STACK="${ONLY_STACK:-}"
+if [ -n "$ONLY_STACK" ]; then
+  case "$ONLY_STACK" in .|..) err "Refusing to deploy: invalid stack name '${ONLY_STACK}'";; esac
+  [[ "$ONLY_STACK" =~ $NAME_RE ]] || err "Refusing to deploy: invalid stack name '${ONLY_STACK}'"
+fi
+case "${FORCE_RECREATE:=false}" in true|false) ;; *) err "FORCE_RECREATE must be 'true' or 'false', got '${FORCE_RECREATE}'";; esac
+
 # A server with no stack directory is a clean skip (exit 0) -- check this BEFORE
 # the SSH secrets, so a server removed from the fleet (or one whose Environment
 # has no secrets) is a no-op, not a "No SSH_HOST" failure. discover lists every
 # changed server including deletions, so a removed stack dir would otherwise red
-# the run with a misleading secrets error.
+# the run with a misleading secrets error. EXCEPTION: a targeted single-stack
+# dispatch (ONLY_STACK set) to a serverless server is an operator error, not a
+# removed-server skip -- fail loudly.
 STACKS_DIR="${STACKS_DIR:-fleet/stacks}"; STACKS_DIR="${STACKS_DIR%/}"
 src="${GITHUB_WORKSPACE:-.}/${STACKS_DIR}/${SERVER}"
-[ -d "$src" ] || { note "No stacks for '${SERVER}' (${STACKS_DIR}/${SERVER} absent) — nothing to deploy."; exit 0; }
+if [ ! -d "$src" ]; then
+  [ -z "$ONLY_STACK" ] || err "Cannot target stack '${ONLY_STACK}': server '${SERVER}' has no stacks (${STACKS_DIR}/${SERVER} absent)."
+  note "No stacks for '${SERVER}' (${STACKS_DIR}/${SERVER} absent) — nothing to deploy."; exit 0
+fi
+# A targeted single-stack dispatch must name a stack that exists in the repo; fail
+# fast (before SSH / any host action) rather than syncing nothing and exiting green.
+if [ -n "$ONLY_STACK" ] && [ ! -d "${src}/${ONLY_STACK}" ]; then
+  err "Requested stack '${ONLY_STACK}' does not exist under ${STACKS_DIR}/${SERVER} in the repo."
+fi
 
 # Fail fast on missing secrets BEFORE any network action, naming the server. A
 # typo'd Environment resolves to empty secrets (no cross-server fallback exists),
@@ -81,17 +107,28 @@ note "Deploying '${SERVER}' -> ${dest}:${REMOTE_STACKS_DIR}"
 # Sync this server's stacks to /opt/stacks. --delete prunes removed stacks; the
 # shared, host-provisioned app env (.env or any *.env) is excluded so it is
 # neither shipped from the repo nor deleted on the host (the exclude is
-# unanchored, so it protects matching files at every depth).
+# unanchored, so it protects matching files at every depth). A targeted
+# single-stack dispatch syncs ONLY that stack's subdir (into its own dest subdir),
+# so top-level --delete can never prune a repo-removed sibling's files while its
+# teardown is skipped -- a targeted redeploy touches nothing but the named stack.
+if [ -n "$ONLY_STACK" ]; then
+  rsync_src="${src}/${ONLY_STACK}/"; rsync_dest="${dest}:${REMOTE_STACKS_DIR}/${ONLY_STACK}/"
+else
+  rsync_src="${src}/"; rsync_dest="${dest}:${REMOTE_STACKS_DIR}/"
+fi
 rsync -rlptz --delete --exclude='.env' --exclude='*.env' \
   -e "ssh ${ssh_opts[*]}" \
-  "${src}/" "${dest}:${REMOTE_STACKS_DIR}/"
+  "$rsync_src" "$rsync_dest"
 
 # Bring up each stack on the host using the shared host-provisioned .env, then
-# tear down stacks whose directory was removed. REMOTE_STACKS_DIR is an
-# operator-trusted input; it is passed as a positional arg to the remote shell.
-ssh "${ssh_opts[@]}" "$dest" bash -s -- "$REMOTE_STACKS_DIR" <<'REMOTE'
+# tear down stacks whose directory was removed. The remote heredoc is quoted (no
+# local expansion), so operator-trusted values are passed as positional args:
+# $1 remote dir, $2 force-recreate flag, $3 target stack (blank = all).
+ssh "${ssh_opts[@]}" "$dest" bash -s -- "$REMOTE_STACKS_DIR" "$FORCE_RECREATE" "$ONLY_STACK" <<'REMOTE'
 set -euo pipefail
 REMOTE_DIR="${1:?remote stacks dir}"
+FORCE_RECREATE="${2:-false}"
+ONLY_STACK="${3:-}"
 cd "$REMOTE_DIR"
 
 # --env-file only if a shared .env exists (provisioned at setup, not by deploy).
@@ -120,19 +157,42 @@ fi
 # (compose.yaml / compose.yml / docker-compose.yaml / docker-compose.yml), and
 # the project name defaults to the (normalized) directory basename -- the same
 # name the teardown below compares against.
+stack_matched=0
 for stack in */; do
   stack="${stack%/}"
+  # Targeted manual dispatch: skip every stack except the requested one.
+  [ -z "$ONLY_STACK" ] || [ "$stack" = "$ONLY_STACK" ] || continue
   ( cd "$stack" && docker compose "${compose_env[@]}" config -q ) 2>/dev/null || continue
+  stack_matched=1   # count only a present AND valid compose project as "matched"
   echo "==> up ${stack}"
-  ( cd "$stack" && docker compose "${compose_env[@]}" up -d --pull always --remove-orphans )
+  up_args=(-d --pull always --remove-orphans)
+  # --force-recreate replaces the container even when image + config are
+  # unchanged, so the entrypoint re-runs (needed to restart a service whose fix
+  # lives in a repo it clones/installs at startup, not in its image).
+  [ "$FORCE_RECREATE" = true ] && up_args+=(--force-recreate)
+  ( cd "$stack" && docker compose "${compose_env[@]}" up "${up_args[@]}" )
 done
+
+# A single-stack dispatch that matched NO directory on this server is an operator
+# error (typo / wrong server), not a success -- fail loudly rather than exit green
+# having done nothing. (Empty ONLY_STACK -> stack_matched is set for every dir.)
+if [ -n "$ONLY_STACK" ] && [ "$stack_matched" -eq 0 ]; then
+  echo "::error::requested stack '${ONLY_STACK}' not found or not a valid compose project under ${REMOTE_DIR} on this server"
+  exit 1
+fi
 
 # Tear down stacks whose directory was removed: compare running compose projects
 # (rooted under this dir) against the present directories, normalizing each dir
 # name the way Compose derives a project name (lowercase; drop chars outside
 # [a-z0-9_-]; trim leading separators) so a still-present stack is never flagged.
 # Enumeration is best-effort: a missing python3 (or any error) skips pruning --
-# the deploy already applied -- rather than failing it.
+# the deploy already applied -- rather than failing it. A single-stack manual
+# dispatch (ONLY_STACK set) skips teardown entirely: it must never prune the
+# sibling stacks it was told not to touch. (The `else` body keeps column-0
+# indentation so the <<EOF terminator below stays valid.)
+if [ -n "$ONLY_STACK" ]; then
+  echo "==> single-stack dispatch (${ONLY_STACK}); skipping removed-stack teardown"
+else
 teardown_rc=0
 if removed="$(docker compose ls --format json 2>/dev/null | python3 -c '
 import json, os, re, sys
@@ -158,4 +218,5 @@ else
   echo "::warning::Skipped teardown of removed stacks (could not enumerate running projects; is python3 present?)"
 fi
 [ "$teardown_rc" -eq 0 ] || { echo "::error::one or more removed stacks failed to tear down"; exit 1; }
+fi
 REMOTE

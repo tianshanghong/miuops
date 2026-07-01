@@ -45,6 +45,32 @@ ZERO_SHA="0000000000000000000000000000000000000000"
 # (path traversal). This mirrors the CLI's valid_host_alias allowlist.
 NAME_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
+# --- Manual dispatch override: deploy exactly one named server -------------
+# When ONLY_SERVER is set (a workflow_dispatch input), bypass the git-diff
+# discovery and emit just that one server. It is operator-controlled, so it is
+# held to the same allowlist as a diff-derived name; an invalid value yields []
+# (a fail-safe skip, exactly like the diff path) so a crafted string can never
+# widen the matrix or reach ssh/rsync as anything but an inert JSON string.
+if [ -n "${ONLY_SERVER:-}" ]; then
+  case "$ONLY_SERVER" in
+    .|..) printf '[]\n'; exit 0 ;;
+  esac
+  if [[ "$ONLY_SERVER" =~ $NAME_RE ]]; then
+    # A targeted dispatch to a server with no stack dir is an operator typo, not a
+    # silent whole-run no-op: fail loudly when the checkout is visible. STACKS_DIR
+    # already carries a trailing slash here. Unit tests run without a workspace, so
+    # the check is skipped there and the override/whole-fleet semantics are intact.
+    if [ -n "${GITHUB_WORKSPACE:-}" ] && [ ! -d "${GITHUB_WORKSPACE}/${STACKS_DIR}${ONLY_SERVER}" ]; then
+      printf '::error::only_server %s has no stacks under %s -- check the name.\n' "$ONLY_SERVER" "${STACKS_DIR%/}" >&2
+      exit 1
+    fi
+    jq -cn '$ARGS.positional' --args "$ONLY_SERVER"
+  else
+    printf '[]\n'
+  fi
+  exit 0
+fi
+
 # --- Layer 1: resolve the list of changed paths for this push --------------
 changed_paths() {
   if [ -n "${MIUOPS_CHANGED_PATHS_FILE:-}" ]; then
