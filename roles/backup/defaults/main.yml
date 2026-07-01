@@ -70,8 +70,8 @@ backup_age_plugin_yubikey_repo: "tianshanghong/miuops"
 # Pin after dispatching the build workflow; read each from the published `.sha256` sidecar
 # (e.g. `gh release download age-plugin-yubikey-v0.5.0 -R tianshanghong/miuops -p '*.sha256' -D -`).
 backup_age_plugin_yubikey_sha256:
-  amd64: ""   # TODO: pin from the CI release (see above)
-  arm64: ""   # TODO: pin from the CI release (see above)
+  amd64: "66eeb1f692b7b5ea5ae4f095a2c77454a167f24ef16170cc7bc5434330d114e5"
+  arm64: "05db8aef927502fbef18f0f542d67b938e44b1d4792ebc24f61d6ba526b20ba9"
 
 # --- AWS credentials --------------------------------------------------------
 # config/secret split. The ACCESS KEY + SECRET are SECRETS: `miuops backup-setup`
