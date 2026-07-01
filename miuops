@@ -355,13 +355,6 @@ run_apply() {
     # miuops apply` from outside the tool checkout still resolves cfg, inventory + host_vars.
     export ANSIBLE_CONFIG="${SCRIPT_DIR}/ansible.cfg"
     local cmd=(ansible-playbook -i "${FLEET_DIR}/inventory.ini" "${SCRIPT_DIR}/playbook.yml")
-    # Pass the secrets dir only when it exists, so a fresh fleet (no fleet/secrets/ yet) is a
-    # clean no-op — the stack-env role's "" default + length guard skip — not a hard failure.
-    if [[ -d "${SECRETS_DIR}" ]]; then
-        # Single-quote the value so a fleet path containing a space is not word-split by
-        # Ansible's key=value extra-vars parser (the role decrypts fleet/secrets/<host>.env).
-        cmd+=(--extra-vars "miuops_secrets_dir='${SECRETS_DIR}'")
-    fi
     [[ -n "$host" ]] && cmd+=(--limit "$host")
     [[ -n "${APPLY_TAGS:-}" ]] && cmd+=(--tags "${APPLY_TAGS}")
 
@@ -379,6 +372,32 @@ run_apply() {
             _SOPS_TMPS+=("$_cred_tmp")   # shredded by the global EXIT/INT/TERM trap, even on die/signal
             cmd+=(-e "cloudflared_credentials_src=${_cred_tmp}")
         fi
+    fi
+
+    # The targeted host's /opt/stacks/.env is provisioned from fleet/secrets/<host>.env.
+    # Decrypt it HERE, on the control node (which has a TTY -- so an age YubiKey can prompt for
+    # PIN + touch, unlike an in-play lookup's TTY-less subprocess), to a private 0600 temp, and
+    # hand the stack-env role the path via stack_env_content_src. The plaintext lives only on
+    # this control node, is shredded on return, and the server just receives the file over SSH.
+    # Per-host, like the tunnel cred: a whole-fleet apply provisions no .env (each YubiKey
+    # decrypt needs an interactive PIN+touch -- target a host). A present-but-undecryptable
+    # secret fails here (fail-closed) before Ansible runs.
+    local _env_tmp=""
+    if [[ -n "$host" && -f "${SECRETS_DIR}/${host}.env" ]]; then
+        require_sops
+        _env_tmp="$(sops_decrypt_to_tmp "${SECRETS_DIR}/${host}.env")"
+        _SOPS_TMPS+=("$_env_tmp")   # shredded by the global EXIT/INT/TERM trap
+        # Single-quote the value: Ansible's key=value extra-vars parser splits on whitespace,
+        # so a TMPDIR-derived temp path containing a space would otherwise mis-parse.
+        cmd+=(-e "stack_env_content_src='${_env_tmp}'")
+    elif [[ -z "$host" ]]; then
+        # A whole-fleet apply cannot provision per-host .env secrets — each YubiKey decrypt
+        # needs an interactive PIN + touch, so N hosts would mean N prompts. Warn rather than
+        # silently skip, so an operator rolling out a rotated secret is told to target the
+        # host (the fail-loud stance the removed controller-side assert used to enforce).
+        local _n_env=0 _envf
+        for _envf in "${SECRETS_DIR}"/*.env; do [[ -e "$_envf" ]] && _n_env=$((_n_env + 1)); done
+        [[ "$_n_env" -gt 0 ]] && warn "${_n_env} host .env secret(s) under ${SECRETS_DIR} not provisioned by a whole-fleet apply — run 'miuops apply <host>' to provision each host's /opt/stacks/.env."
     fi
 
     # Deployed secrets (SOPS-in-fleet): decrypt the fleet-wide secrets (all.vars.json --

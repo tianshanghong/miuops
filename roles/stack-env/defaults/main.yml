@@ -1,6 +1,8 @@
 ---
-# Absolute path to the fleet's secrets dir on the controller; `miuops apply` passes it via
-# --extra-vars. Empty by default so a non-CLI playbook run (e.g. CI's bare ansible-playbook)
-# is a clean no-op rather than a template error -- and a wrong/relative value fails loud via
-# the controller-side assert in tasks/main.yml, never a silent fleet-wide skip.
-miuops_secrets_dir: ""
+# Absolute path, on the controller, to the ALREADY-DECRYPTED /opt/stacks/.env plaintext.
+# `miuops apply` decrypts fleet/secrets/<host>.env on the control node (where a TTY exists, so
+# an age YubiKey can prompt for PIN + touch) to a private 0600 temp and passes that path here
+# via --extra-vars. Empty by default so a non-CLI playbook run (e.g. CI's bare
+# ansible-playbook) or a host with no secret is a clean no-op -- the provision task's length
+# guard skips and the empty placeholder .env is left in place, never an empty/rogue write.
+stack_env_content_src: ""
