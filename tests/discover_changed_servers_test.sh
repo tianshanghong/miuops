@@ -6,6 +6,11 @@
 #       base / force-push), via throwaway real git repos.
 # Every assertion is paired with the bad input it must reject, so it can FAIL.
 set -euo pipefail
+# Hermetic env: the GitHub runner sets GITHUB_WORKSPACE to the miuops checkout,
+# which has no fleet/stacks -- that would misfire the ONLY_SERVER dir-existence
+# check for the no-workspace cases below. Unset it here; the cases that exercise
+# that check set GITHUB_WORKSPACE explicitly per-command.
+unset GITHUB_WORKSPACE
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/.github/scripts/discover-changed-servers.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -75,5 +80,34 @@ got="$(cd "$GR" && BEFORE="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" AFTER="$C3"
 ( cd "$GR" && git checkout -q -b div "$C1" && mkdir -p fleet/stacks/divsrv && echo x > fleet/stacks/divsrv/c.yml && git add -A && git commit -qm div ); CDIV="$(gsha)"
 got="$(cd "$GR" && BEFORE="$CDIV" AFTER="$C3" bash "$SCRIPT")"
 [ "$got" = '["gamma"]' ] || fail "non-ancestor(merge-base C1..C3): expected [gamma], got $got"
+
+# --- Layer C: ONLY_SERVER manual-dispatch override ------------------------
+# A valid name emits just that server, needing NO git range (short-circuits
+# before AFTER is required).
+got="$(ONLY_SERVER=web bash "$SCRIPT")"
+[ "$got" = '["web"]' ] || fail "only_server valid: expected [web], got $got"
+# The override wins over a real diff that would otherwise yield [gamma].
+got="$(cd "$GR" && ONLY_SERVER=web BEFORE="$C1" AFTER="$C2" bash "$SCRIPT")"
+[ "$got" = '["web"]' ] || fail "only_server overrides diff: expected [web], got $got"
+# Valid dotted/underscore/upper name accepted verbatim.
+got="$(ONLY_SERVER='db.1_node' bash "$SCRIPT")"
+[ "$got" = '["db.1_node"]' ] || fail "only_server dotted: expected [db.1_node], got $got"
+# Invalid / injection / traversal names fail SAFE to [] (never widen the matrix,
+# never reach ssh/rsync as anything but an inert string). Each paired with [].
+for bad in 'a;rm -rf ~' '-evil' '.' '..' '.hidden' '$(id)' 'a b' 'a/b'; do
+  got="$(ONLY_SERVER="$bad" bash "$SCRIPT")"
+  [ "$got" = '[]' ] || fail "only_server invalid '$bad': expected [], got $got"
+done
+
+# With a visible checkout (GITHUB_WORKSPACE), a well-formed but NONEXISTENT
+# only_server is an operator typo -> loud error, not a silent whole-run no-op.
+# (Without a workspace, above, the name is emitted as-is; both paths matter.)
+WS="$TMP/ws"; mkdir -p "$WS/fleet/stacks/web"
+got="$(ONLY_SERVER=web GITHUB_WORKSPACE="$WS" STACKS_DIR=fleet/stacks bash "$SCRIPT")"
+[ "$got" = '["web"]' ] || fail "only_server existing dir: expected [web], got $got"
+rc=0
+got="$(ONLY_SERVER=webb GITHUB_WORKSPACE="$WS" STACKS_DIR=fleet/stacks bash "$SCRIPT" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "only_server typo with a visible checkout must FAIL, got rc=0: $got"
+printf '%s' "$got" | grep -q 'has no stacks' || fail "only_server typo must err 'has no stacks', got: $got"
 
 echo "ALL DISCOVER TESTS PASSED"

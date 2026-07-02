@@ -8,6 +8,11 @@ name: Deploy fleet stacks
 #   on:
 #     push:
 #       branches: [main]
+#     workflow_dispatch:          # manual "redeploy / restart" button (optional)
+#       inputs:
+#         server:         { type: string,  default: "" }   # blank = whole fleet on dispatch
+#         stack:          { type: string,  default: "" }   # blank = all its stacks
+#         force_recreate: { type: boolean, default: false }
 #   jobs:
 #     deploy:
 #       # Pin to an immutable ref. This workflow handles per-server SSH keys, so a
@@ -20,6 +25,12 @@ name: Deploy fleet stacks
 #         # workflow. (A reusable workflow can't read its own @ref at run time --
 #         # github.job_workflow_ref is empty on current runners -- so it's passed.)
 #         miuops_ref: v1
+#         # Passthrough is inert on push (github.event.inputs.* are null there,
+#         # so strings resolve to "" and the boolean to false) and only takes
+#         # effect on a manual dispatch:
+#         only_server:    ${{ github.event.inputs.server }}
+#         only_stack:     ${{ github.event.inputs.stack }}
+#         force_recreate: ${{ github.event.inputs.force_recreate == 'true' }}
 #       secrets: inherit
 #
 # Per-server secret isolation: each changed server gets its own matrix job with a
@@ -57,6 +68,28 @@ on:
         type: string
         required: false
         default: /opt/stacks
+      only_server:
+        description: >-
+          Manual dispatch: deploy ONLY this server, bypassing git-diff discovery.
+          Blank (the default, and every push) = normal diff-based discovery.
+        type: string
+        required: false
+        default: ""
+      only_stack:
+        description: >-
+          Manual dispatch: within the targeted server, bring up ONLY this stack
+          directory (requires only_server). Blank = every stack on the server.
+        type: string
+        required: false
+        default: ""
+      force_recreate:
+        description: >-
+          Manual dispatch: pass --force-recreate to `docker compose up`, so a
+          container is recreated even when its image + config are unchanged
+          (re-runs its entrypoint). Blank/false on every push.
+        type: boolean
+        required: false
+        default: false
 
 # Least privilege: read the fleet repo and SSH out. Never write back to the repo.
 permissions:
@@ -76,6 +109,19 @@ jobs:
     outputs:
       servers: ${{ steps.scan.outputs.servers }}
     steps:
+      # Safety rail for the manual dispatch: force_recreate AND only_stack are
+      # both targeted ops. Without only_server, discovery falls back to "all
+      # present stacks" (a dispatch has no diff base), so either one unguarded
+      # would fan across every server at once -- a force_recreate mass-recreate,
+      # or an only_stack redeploy + fleet-wide teardown suppression. Require a
+      # target server for both. Inert on push (both are empty/false there), so
+      # the normal diff-based deploy is unaffected.
+      - name: Guard — force_recreate / only_stack require a target server
+        if: ${{ (inputs.force_recreate || inputs.only_stack != '') && inputs.only_server == '' }}
+        run: |
+          echo "::error::force_recreate or only_stack requires 'only_server' (refusing to fan a targeted redeploy across every server)."
+          exit 1
+
       # fetch-depth: 0 -> full history so a before..after diff is correct for any
       # pushed range (the default depth-1 checkout lacks the base commit).
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -103,6 +149,10 @@ jobs:
           BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
           STACKS_DIR: ${{ inputs.stacks_dir }}
+          # Manual dispatch: when set, the script emits only this server and
+          # ignores the diff. Passed via env (never a run: string) and validated
+          # against the server-name allowlist inside the script.
+          ONLY_SERVER: ${{ inputs.only_server }}
         run: |
           set -euo pipefail
           servers="$(bash "${GITHUB_WORKSPACE}/.miuops-machinery/.github/scripts/discover-changed-servers.sh")"
@@ -155,4 +205,9 @@ jobs:
           SERVER: ${{ matrix.server }}
           STACKS_DIR: ${{ inputs.stacks_dir }}
           REMOTE_STACKS_DIR: ${{ inputs.remote_stacks_dir }}
+          # Manual-dispatch targeting: both empty/false on a normal push. ONLY_STACK
+          # is re-validated against the name allowlist in the script; FORCE_RECREATE
+          # is constrained to true|false. Passed via env, never a run: string.
+          ONLY_STACK: ${{ inputs.only_stack }}
+          FORCE_RECREATE: ${{ inputs.force_recreate }}
         run: bash "${GITHUB_WORKSPACE}/.miuops-machinery/.github/scripts/deploy-server.sh"
