@@ -118,7 +118,7 @@ run_restore() {
       bash -c '
         . "'"$ROOT"'/miuops" --source-only 2>/dev/null
         require_sops() { :; }   # sops binary not needed to unit-test restore
-        cmd_backup_restore --server '"$SERVER"' --volume '"$VOLUME"' --target "'"$target"'" '"$*"'
+        cmd_backup_restore ${RESTORE_PLAIN_FLAG---allow-plaintext} --server '"$SERVER"' --volume '"$VOLUME"' --target "'"$target"'" '"$*"'
       ' >/dev/null 2>&1 ) || rc=$?
   printf '%s' "$rc"
 }
@@ -273,6 +273,23 @@ run_restore "$DST10" --at 20260629T070000Z >/dev/null 2>&1
 { [ ! -e "${ABS}/${absnonce}" ] && [ -n "$(ls -A "$DST10" 2>/dev/null)" ]; } \
   && ok "absolute-path archive member: stripped to inside --target, not the real path" \
   || bad "ABSOLUTE-PATH ESCAPE or unprocessed: a /<abs> member did not land safely inside"
+
+# Plaintext must be explicitly permitted; an encrypted fleet cannot silently downgrade.
+rc="$(RESTORE_PLAIN_FLAG='' run_restore "$DST5" --at 20260629T050000Z)"
+is_real_failure "$rc" && ok "plaintext refused without opt-in" || bad "plaintext downgrade accepted"
+
+# Privileged metadata must be rejected by the real CLI and partial data wiped.
+python3 - "${S3ROOT}/${BUCKET}/${SERVER}/vol/${VOLUME}/backup-20260629T080000Z.tar" <<'PYFIX'
+import io, sys, tarfile
+with tarfile.open(sys.argv[1], 'w') as archive:
+    normal = tarfile.TarInfo('normal'); normal.size = 4
+    archive.addfile(normal, io.BytesIO(b'data'))
+    bad = tarfile.TarInfo('setuid'); bad.mode = 0o4755; bad.uid = 0; bad.size = 4
+    archive.addfile(bad, io.BytesIO(b'data'))
+PYFIX
+rc="$(run_restore "$DST5" --at 20260629T080000Z)"
+{ is_real_failure "$rc" && [ -z "$(ls -A "$DST5")" ]; } \
+  && ok "privileged archive rejected and partial output wiped" || bad "privileged archive did not fail closed"
 
 # ----------------------------------------------------------------------------
 rm -rf "$KEYDIR" "$S3ROOT" "$BIN" "$FLEET" "$SRC" "$SRC2" "$SRC4" "$SRC6" "$ABS" \

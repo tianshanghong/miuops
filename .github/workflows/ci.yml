@@ -56,6 +56,7 @@ jobs:
           bash tests/script_dir_resolution_test.sh
           bash tests/discover_changed_servers_test.sh
           bash tests/deploy_workflow_lint_test.sh
+          python3 tests/ssh_host_verification_test.py
           bash tests/deploy_server_skip_test.sh
           bash tests/deploy_remote_loop_test.sh
           bash tests/backup_role_lint_test.sh
@@ -82,6 +83,7 @@ jobs:
           bash tests/backup_lifecycle_net.sh
           bash tests/backup_secret_write_test.sh
           bash tests/backup_setup_write_test.sh
+          python3 tests/restore_archive_test.py
           bash tests/backup_restore_test.sh
           bash tests/backup_verify_test.sh
 
@@ -105,8 +107,12 @@ jobs:
       - name: Write SSH key
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
+          test -n "$SSH_KNOWN_HOSTS" || { echo "Missing verified SSH_KNOWN_HOSTS" >&2; exit 1; }
           mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
@@ -162,13 +168,13 @@ jobs:
         # Reuse one multiplexed SSH connection (shared ControlPath with the firewall checks
         # below) so the whole job stays well under ufw's SSH rate-limit (6 new conns / 30s).
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           $SSH 'systemctl is-active docker'
           $SSH 'systemctl is-active cloudflared'
 
       - name: Verify host firewall (ufw default-deny inbound)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           $SSH '
             set -e
             ufw status verbose | grep -q "Status: active"            || { echo "FAIL: ufw not active"; exit 1; }
@@ -180,7 +186,7 @@ jobs:
 
       - name: Verify a host inbound port is blocked by ufw (IPv4)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           HOST="${{ secrets.DEV_SERVER_HOST }}"; PORT=54321
           cleanup() { $SSH "pkill -f '[h]ttp.server ${PORT}'" >/dev/null 2>&1 || true; }  # [h] so pkill matches the listener, not its own SSH command line
           trap cleanup EXIT
@@ -203,7 +209,7 @@ jobs:
       # is reachable locally but not from outside.
       - name: Verify a loopback-bound Docker port is not externally reachable (IPv4)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           HOST="${{ secrets.DEV_SERVER_HOST }}"; PORT=54322
           cleanup() { $SSH "docker rm -f fw-loopback-test" >/dev/null 2>&1 || true; }  # best-effort; never fail the step on a cleanup SSH hiccup
           trap cleanup EXIT
@@ -225,7 +231,7 @@ jobs:
       # GitHub runners have no IPv6 egress, so assert from the host (v6 egress needs NDP).
       - name: Verify IPv6 egress works under ufw (NDP)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=no -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
           if [ -z "$($SSH 'ip -6 -o addr show scope global 2>/dev/null | head -1')" ]; then
             echo "::notice::dev server has no global IPv6 address — skipping v6 egress test"
           elif $SSH "curl -6 -sS -o /dev/null --max-time 12 https://www.google.com"; then

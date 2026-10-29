@@ -27,7 +27,10 @@ cat > "$bin/docker" <<STUB
 shift
 for a in "\$@"; do
   case "\$a" in
-    config) [ "\$(basename "\$PWD")" = broken ] && exit 2; exit 0 ;;  # 'broken' = invalid compose
+    config) [ "\$(basename "\$PWD")" = broken ] && exit 2
+      [ -f "\$PWD/docker-compose.yml" ] || exit 2
+      if [[ "\$*" == *'--format json'* ]]; then cat "\$PWD/resolved.json"; fi
+      exit 0 ;;  # 'broken' = invalid compose
     up)     printf 'UP %s %s\n' "\$(basename "\$PWD")" "\$*" >> "\$STUB_LOG"; exit 0 ;;  # stack = cwd basename
     ls)     printf '[]\n'; exit 0 ;;                   # no running projects -> no teardown
     down)   printf 'DOWN %s\n' "\$*" >> "\$STUB_LOG"; exit 0 ;;
@@ -40,10 +43,25 @@ chmod +x "$bin/docker"
 # A remote dir with two stacks (no .env, so no --env-file / registry-login path).
 mkremote() {
   local d; d="$(mktemp -d)"
-  mkdir -p "$d/app" "$d/web" "$d/broken"
+  mkdir -p "$d/app" "$d/web" "$d/docs"
+  if [ "${BROKEN:-false}" = true ]; then
+    mkdir -p "$d/broken"
+    printf 'not: [valid\n' > "$d/broken/docker-compose.yml"
+  fi
+  if [ "${LINK:-false}" = true ]; then ln -s app "$d/alias"; fi
   printf 'services:\n  x:\n    image: busybox\n' > "$d/app/docker-compose.yml"
   printf 'services:\n  x:\n    image: busybox\n' > "$d/web/docker-compose.yml"
-  printf 'not: [valid\n' > "$d/broken/docker-compose.yml"    # present dir, invalid compose (stub fails config -q)
+  for stack in app web; do
+    printf '%s\n' '{"name":"test","services":{"web":{"image":"nginx:1","cap_drop":["ALL"],"ports":[{"target":80,"published":"8080","host_ip":"127.0.0.1"}]}}}' > "$d/$stack/resolved.json"
+  done
+  if [ "${UNSAFE:-false}" = true ]; then sed 's/127.0.0.1/0.0.0.0/' "$d/web/resolved.json" > "$d/web/new"; mv "$d/web/new" "$d/web/resolved.json"; fi
+  if [ "${BINDLINK:-false}" = true ]; then
+    ln -s /etc "$d/web/data"
+    printf '{"services":{"web":{"image":"nginx:1","cap_drop":["ALL"],"volumes":[{"type":"bind","source":"%s","target":"/mnt"}]}}}' "$d/web/data" > "$d/web/resolved.json"
+  fi
+  if [ "${NAMED_BIND:-false}" = true ]; then
+    printf '{"services":{"web":{"image":"nginx:1","cap_drop":["ALL"],"volumes":[{"type":"volume","source":"hostetc","target":"/mnt"}]}},"volumes":{"hostetc":{"driver":"local","driver_opts":{"type":"none","o":"bind","device":"%s"}}}}' "${BIND_DEVICE:-/etc}" > "$d/web/resolved.json"
+  fi
   printf '%s' "$d"
 }
 
@@ -51,7 +69,7 @@ mkremote() {
 run_body() {
   local force="$1" only="$2" d log rc=0
   d="$(mkremote)"; log="$TMP/log.$RANDOM"; : > "$log"
-  STUB_LOG="$log" PATH="$bin:$PATH" bash "$BODY" "$d" "$force" "$only" >"$TMP/out" 2>&1 || rc=$?
+  STUB_LOG="$log" PATH="$bin:$PATH" bash "$BODY" "$d" "$force" "$only" "$(base64 < "$ROOT/tests/stack_policy_check.py" | tr -d '\n')" >"$TMP/out" 2>&1 || rc=$?
   RC=$rc; LOG="$log"; OUT="$(cat "$TMP/out")"; rm -rf "$d"
 }
 
@@ -84,9 +102,32 @@ grep -q '^UP ' "$LOG" && fail "stack-not-found: nothing should have come up, log
 # 5) Target a PRESENT but INVALID compose dir -> loud failure too (stack_matched
 #    counts only stacks that pass `config -q`, so a broken target is not a green
 #    no-op). Regression for the Round-3 finding.
-run_body true broken
+BROKEN=true run_body true broken
 [ "$RC" -ne 0 ] || fail "invalid-target: must FAIL (rc!=0), got rc0 no-op: $OUT"
 printf '%s' "$OUT" | grep -q "not a valid compose project" || fail "invalid-target: must emit the not-valid error, got: $OUT"
 grep -q '^UP ' "$LOG" && fail "invalid-target: nothing should have come up, log: $(cat "$LOG")"
 
+UNSAFE=true run_body false ''
+[ "$RC" -ne 0 ] || fail "unsafe resolved config must fail"
+grep -q '^UP ' "$LOG" && fail "no stack may start before every selected stack passes"
+printf '%s' "$OUT" | grep -q 'must bind' || fail "expected actual policy rejection"
+BROKEN=true run_body false ''
+[ "$RC" -ne 0 ] || fail "invalid compose in full deploy must fail"
+grep -q '^UP ' "$LOG" && fail "invalid sibling must block all starts"
+
+LINK=true run_body false ''
+[ "$RC" -ne 0 ] || fail "symlink stack must be refused"
+grep -q '^UP ' "$LOG" && fail "symlink sibling must block all starts"
+printf '%s' "$OUT" | grep -q 'symbolic link' || fail "expected explicit symlink rejection"
+BINDLINK=true run_body false ''
+[ "$RC" -ne 0 ] || fail "bind source symlink to /etc must be refused"
+grep -q '^UP ' "$LOG" && fail "unsafe bind source must block all starts"
+printf '%s' "$OUT" | grep -q 'sensitive host path' || fail "expected sensitive mount policy rejection"
+NAMED_BIND=true run_body false ''
+[ "$RC" -ne 0 ] || fail "named local volume bind to /etc must be refused"
+grep -q '^UP ' "$LOG" && fail "unsafe named volume must block all starts"
+printf '%s' "$OUT" | grep -q 'sensitive host path' || fail "expected named volume policy rejection"
+NAMED_BIND=true BIND_DEVICE=/srv/app-data run_body false ''
+[ "$RC" -eq 0 ] || fail "non-sensitive local bind must remain deployable: $OUT"
+grep -q '^UP web ' "$LOG" || fail "safe named volume never deployed"
 echo "ALL REMOTE-LOOP CHECKS PASSED"
