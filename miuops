@@ -134,30 +134,54 @@ sops_decrypt_to_tmp() {  # $1 = absolute path under SECRETS_DIR
     printf '%s' "$tmp"
 }
 
-# Encrypt the freshly-created tunnel credential into fleet/secrets/<id>.json,
-# in place, using the recipients from the repo's .sops.yaml. Plaintext stays
-# only in ~/.cloudflared/; the repo only ever receives ciphertext.
-sops_encrypt_tunnel_cred() {  # $1 = tunnel_id
+# Structural ciphertext check only: no private key or YubiKey touch is needed.
+# SOPS metadata alone is insufficient: a partially encrypted file can retain it.
+# Authenticity is checked by SOPS when the credential is decrypted at converge.
+sops_tunnel_is_encrypted() {
+    jq -e '
+      type == "object" and has("TunnelSecret") and
+      (.TunnelSecret | type == "string" and startswith("ENC[AES256_GCM,")) and
+      (.sops.mac | type == "string" and startswith("ENC[AES256_GCM,")) and
+      (del(.sops) | [.. | scalars] |
+        all(. == null or . == "" or (type == "string" and startswith("ENC[AES256_GCM,"))))
+    ' "$1" >/dev/null 2>&1
+}
+
+# Encrypt directly from the private source to temporary ciphertext, then publish
+# atomically. The subshell keeps cleanup traps and umask local to this operation.
+sops_encrypt_tunnel_cred() (  # $1 = tunnel_id
     # Split the local decls: bash expands ALL `local` initializers before assigning,
     # so a later var referencing an earlier one in the SAME statement reads the OUTER
     # (here unset) value -> set -u abort. tid must be its own statement first.
     local tid="$1"
     local src="$HOME/.cloudflared/${tid}.json" dst="${SECRETS_DIR}/${tid}.json"
     [[ -f "$src" ]] || die "Tunnel credential not found at ${src}"
+    umask 077
     mkdir -p "$SECRETS_DIR"; chmod 700 "$SECRETS_DIR"
-    if [[ -f "$dst" ]]; then info "Encrypted tunnel credential already present: ${dst}"; return 0; fi
-    # cloudflared writes the tunnel credential read-only (0400); `cp` preserves that, so
-    # `sops --in-place` cannot rewrite it. Make our copy writable before encrypting.
-    if ! ( cd "$FLEET_ROOT" && cp "$src" "fleet/secrets/${tid}.json" \
-            && chmod 600 "fleet/secrets/${tid}.json" \
-            && sops --encrypt --input-type json --output-type json --in-place "fleet/secrets/${tid}.json" ); then
-        rm -f "$dst"
+    if [[ -e "$dst" || -L "$dst" ]]; then
+        [[ -f "$dst" && ! -L "$dst" ]] && sops_tunnel_is_encrypted "$dst" \
+            || die "Tunnel credential at ${dst} is not a complete encrypted JSON file.
+  Do not commit it. Move it to a private location outside the repo, then retry."
+        info "Encrypted tunnel credential already present: ${dst}"
+        return 0
+    fi
+    local tmp
+    tmp="$(mktemp "${SECRETS_DIR}/.tunnel.XXXXXX")" || die "mktemp failed"
+    trap 'rm -f "$tmp"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    # The logical filename selects the fleet creation rule; all credential values
+    # must be encrypted even if that rule selects only some keys for other files.
+    if ! ( cd "$FLEET_ROOT" && sops --encrypt --input-type json --output-type json \
+            --encrypted-regex '.' --filename-override "fleet/secrets/${tid}.json" "$src" ) > "$tmp"; then
         die "sops encrypt failed for ${tid}.json
   - Is .sops.yaml present at the fleet repo root with an age recipient?
   - See docs/SOPS_SECRETS.md."
     fi
+    sops_tunnel_is_encrypted "$tmp" || die "sops did not produce a complete encrypted tunnel credential"
+    mv "$tmp" "$dst" || die "Could not publish encrypted tunnel credential: ${dst}"
     info "Encrypted tunnel credential -> ${dst} (commit this)"
-}
+)
 
 # ── Config helpers (host_vars + inventory) ──────────────────────────
 hv_path() { echo "${FLEET_DIR}/host_vars/$1.yml"; }
