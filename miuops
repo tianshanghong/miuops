@@ -652,7 +652,7 @@ cmd_up() {
     # YubiKey-only setup resolves at touch time, not at preflight.
     warn_no_age_identity
 
-    if ! ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=no \
+    if ! ssh -o ConnectTimeout=5 -o BatchMode=yes -o StrictHostKeyChecking=yes \
          "${ssh_user}@${ssh_host}" true 2>/dev/null; then
         if $DRY_RUN; then
             warn "Cannot SSH to ${ssh_user}@${ssh_host} — would need to be reachable"
@@ -661,6 +661,7 @@ cmd_up() {
             die "Cannot SSH to ${ssh_user}@${ssh_host}
   - Is the IP/hostname correct?
   - Is your SSH key added? (ssh-add -l)
+  - Is the independently verified host key in ~/.ssh/known_hosts?
   - Is the server accepting connections on port 22?"
         fi
     fi
@@ -1071,16 +1072,17 @@ cmd_backup_rotate() {
 # `tar | age | s3 cp` pipeline. Resolves the bucket + prefix from versioned config,
 # finds the volume's object (<prefix>/<volume>/backup-<ts>.tar[.age]; prefix defaults
 # to <server>/vol), downloads it, decrypts it (age) when it is .tar.age, and untars it
-# into --target byte-identical to the original volume data. Decryption uses the
+# into --target as data with safe permissions (archive ownership is ignored). Decryption uses the
 # operator's age identity: SOPS_AGE_KEY_FILE, else sops's default keys.txt, else a
 # bare `age -d` (a plugged-in YubiKey plugin reads its own recipient stanza) -- the
 # host only ever held the public recipient. Fails closed: any stage error wipes the
 # partial target, so a failed restore never leaves garbage. "A backup you cannot
 # restore is not a backup."
 cmd_backup_restore() {
-    local host="" volume="" at="" target=""
+    local host="" volume="" at="" target="" allow_plaintext=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --allow-plaintext) allow_plaintext=true; shift ;;
             --server)    [[ $# -ge 2 ]] || die "backup-restore: --server requires a value"; host="$2"; shift 2 ;;
             --server=*)  host="${1#*=}"; shift ;;
             --volume)    [[ $# -ge 2 ]] || die "backup-restore: --volume requires a value"; volume="$2"; shift 2 ;;
@@ -1104,7 +1106,7 @@ cmd_backup_restore() {
         [[ "$at" =~ ^[0-9]{8}T[0-9]{6}Z$ ]] || die "backup-restore: --at must be a UTC timestamp YYYYMMDDTHHMMSSZ (e.g. 20260629T030000Z)."
     fi
     command -v aws >/dev/null 2>&1 || die "backup-restore: aws CLI not found."
-    command -v tar >/dev/null 2>&1 || die "backup-restore: tar not found."
+    command -v python3 >/dev/null 2>&1 || die "backup-restore: Python 3.9+ is required."
 
     local bucket; bucket="$(resolve_backup_bucket "$host")"
     [[ -n "$bucket" ]] || die "backup-restore: no backup_s3_bucket configured for ${host}. Run 'miuops backup-setup --server ${host}' first."
@@ -1115,7 +1117,10 @@ cmd_backup_restore() {
     # Find the volume's backup objects, then pick one (--at exact, else latest).
     local names object
     names="$(aws s3 ls "s3://${bucket}/${prefix}/" 2>/dev/null | awk '{print $NF}' | grep -E '^backup-[0-9TZ]+\.tar(\.age)?$' || true)"
-    [[ -n "$names" ]] || die "backup-restore: no backup found for volume '${volume}' on '${host}' (s3://${bucket}/${prefix}/)."
+    if ! $allow_plaintext; then
+        names="$(printf '%s\n' "$names" | grep -E '\.tar\.age$' || true)"
+    fi
+    [[ -n "$names" ]] || die "backup-restore: no eligible backup found (plaintext requires --allow-plaintext) for volume '${volume}' on '${host}' (s3://${bucket}/${prefix}/)."
     if [[ -n "$at" ]]; then
         # Literal (not regex) match: $at is a validated timestamp, and matching the two
         # exact candidate names means a stray metachar could never select a wrong object.
@@ -1131,6 +1136,7 @@ cmd_backup_restore() {
         command -v age >/dev/null 2>&1 || die "backup-restore: ${object} is age-encrypted but 'age' is not installed."
     fi
 
+    [[ ! -L "$target" ]] || die "backup-restore: target must not be a symbolic link."
     mkdir -p "$target" || die "backup-restore: cannot create target '${target}'."
     [[ -z "$(ls -A "$target" 2>/dev/null)" ]] || die "backup-restore: target '${target}' is not empty -- refusing to overwrite."
 
@@ -1146,25 +1152,18 @@ cmd_backup_restore() {
         age_id_args=(-i "$(sops_age_default_keys)")
     fi
 
-    # download | (decrypt) | untar. Capture EVERY stage via PIPESTATUS so a download,
-    # decrypt (age MAC), or tar failure can't hide behind the last command's status.
-    # The object is attacker-influenceable (anyone holding the scoped write key), so the
-    # untar must contain a malicious archive: we rely on modern tar's secure-by-default
-    # extraction -- both GNU and bsdtar strip a leading '/' and refuse '..' members --
-    # rather than a GNU-only flag (the operator may restore on macOS/bsdtar); the
-    # traversal test verifies containment on the host's actual tar. Suspend `set -e`
-    # ONLY around the pipe (a bare failing pipe would abort before the wipe); save +
-    # restore errexit so this stays correct even if ever called from a conditional.
+    # Extract only ordinary data and contained links; ignore archive ownership.
+    # Check every stage, including age authentication and late download failures.
     local -a statuses
     local _restore_errexit=""; [[ $- == *e* ]] && _restore_errexit=1
     set +e
     if $encrypted; then
         aws s3 cp "s3://${bucket}/${prefix}/${object}" - \
           | age -d ${age_id_args[@]+"${age_id_args[@]}"} \
-          | tar -C "$target" --numeric-owner -xf -
+          | python3 "${SCRIPT_DIR}/scripts/restore-archive.py" "$target"
     else
         aws s3 cp "s3://${bucket}/${prefix}/${object}" - \
-          | tar -C "$target" --numeric-owner -xf -
+          | python3 "${SCRIPT_DIR}/scripts/restore-archive.py" "$target"
     fi
     statuses=("${PIPESTATUS[@]}")
     [[ -n "$_restore_errexit" ]] && set -e

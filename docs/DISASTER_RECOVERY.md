@@ -65,7 +65,7 @@ In your fleet repo, open the per-server GitHub Environment (Settings > Environme
 | `SSH_HOST` | New server IP or hostname |
 | `SSH_USER` | New SSH user (if changed) |
 | `SSH_PRIVATE_KEY` | New SSH private key (if changed) |
-| `SSH_KNOWN_HOSTS` | Re-pin the new host keys (`ssh-keyscan -p <port> <host>`) — a rebuilt server has new host keys |
+| `SSH_KNOWN_HOSTS` | Re-pin new host keys after comparing fingerprints with the server console; ssh-keyscan alone is not verification |
 
 The app `.env` lives on the **server** at `/opt/stacks/.env` (provisioned locally from the
 SOPS-encrypted `fleet/secrets/<server>.env`, never a GitHub secret) — restore it on the
@@ -102,9 +102,8 @@ tarball keyed by UTC timestamp. The tar is rooted at the volume's contents (it i
 `/var/lib/docker/<subuid>.<subgid>/volumes/`), so it extracts directly into the target
 volume's root — there is no wrapper
 directory. The archive is **not gzip-compressed** (extract with `tar -xf`, not
-`-xzf`). Extract with `--numeric-owner` too (below) so UIDs/GIDs are restored as
-numbers — deterministic ownership even when the restore host has a different
-`/etc/passwd` than the source.
+`-xzf`). The safe restore command ignores archive ownership. Apply trusted application
+UIDs/GIDs explicitly rather than trusting backup headers or the host user database.
 
 > **Check a backup is intact without restoring it:**
 > `miuops backup-verify --server SERVER --volume VOLUME_NAME [--at <ts>]` streams the
@@ -120,16 +119,23 @@ numbers — deterministic ownership even when the restore host has a different
 **1. Restore the volume's data to a staging directory.** `miuops backup-restore`
 resolves the bucket from your fleet config, finds the volume's object (the latest, or
 `--at <ts>`), downloads it, decrypts it (age) with your operator identity, and untars
-it **byte-identical** into `--target` (which must be empty). Run it **on the server as
-root** so the tar's `--numeric-owner` UIDs/GIDs are restored faithfully:
+it into an empty `--target`. Use an unprivileged account with Python 3.9+.
+File contents and contained links are restored. Archive UID/GID and extended
+metadata are not applied. Safe directory read/search permissions are retained,
+with owner access ensured for recovery and cleanup. setuid/setgid entries, devices, FIFOs,
+links outside the target, dangling links and link chains are rejected. The staging
+directory is private (0700); ordinary files lose group/world write permissions.
 
 ```bash
 miuops backup-restore --server SERVER --volume VOLUME_NAME --target ./restored
-#   --at 20260629T030000Z    # an exact backup; omit for the latest
+#   --at 20260629T030000Z    # an exact backup; omit for the latest encrypted one
+#   --allow-plaintext        # explicit opt-in for legacy unencrypted backups
 ```
 
-It **fails closed**: a tampered or truncated object aborts the restore and wipes the
-partial target — you never get a silently-corrupt restore. Decryption uses your age
+Download, decryption and extraction errors abort recovery and wipe the partial
+target. Plaintext tar has no authenticated content checksum. Neither successful age
+decryption nor S3 Object Lock proves who produced a backup: verify the selected
+object/version against a trusted recovery record, especially after a key compromise. Decryption uses your age
 identity (`SOPS_AGE_KEY_FILE` / default `keys.txt` / a plugged-in YubiKey); the host
 only ever held the public recipient. List what is available first with
 `aws s3 ls s3://PROJECT-backup/SERVER/vol/VOLUME_NAME/ --region REGION` if needed.
@@ -140,12 +146,17 @@ only ever held the public recipient. List what is available first with
 docker stop CONTAINER [CONTAINER...]
 ```
 
-**3. Replace the volume's contents with the restored data** (`cp -a` preserves the
-numeric ownership `backup-restore` set):
+**3. Replace the volume's contents with the restored data.** Set the intended
+UID/GID from trusted application configuration (inside the container namespace,
+so Docker userns-remap applies). Replace APP_UID and APP_GID below with those
+numeric IDs. For a volume with multiple owners, apply a trusted ownership mapping
+instead of the single-owner example. Do not infer ownership from archive headers:
 
 ```bash
-docker run --rm -v VOLUME_NAME:/v -v "$(pwd)/restored:/restored:ro" alpine \
-  sh -c 'rm -rf /v/* /v/..?* 2>/dev/null; cp -a /restored/. /v/'
+# Stream from private staging; remapped container root cannot read a 0700 host bind.
+set -o pipefail
+tar -C restored -cf - . | docker run --rm -i -v VOLUME_NAME:/v alpine \
+  sh -ec 'find /v -mindepth 1 -maxdepth 1 -exec rm -rf {} +; tar -xof - -C /v; chown -R "$1:$2" /v' sh APP_UID APP_GID
 ```
 
 **4. Restart the consumers:**

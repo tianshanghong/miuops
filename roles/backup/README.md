@@ -196,22 +196,13 @@ round-trip).
 # 1. Pick a backup
 aws s3 ls s3://<bucket>/<server>/vol/<volume>/ --region <region>
 
-# 2. Download it
-aws s3 cp s3://<bucket>/<server>/vol/<volume>/backup-<ts>.tar.age . --region <region>
+# 2. Restore safely into private staging using an unprivileged account.
+miuops backup-restore --server SERVER --volume VOLUME --at TIMESTAMP --target ./restored
+# Legacy plaintext backups require the explicit --allow-plaintext flag.
 
-# 3. Decrypt (skip if unencrypted)
-#    age (identity file, SSH private key, or YubiKey-backed identity):
-age --decrypt -i key.txt -o backup-<ts>.tar backup-<ts>.tar.age
+# 3. Follow the controlled volume-copy procedure in docs/DISASTER_RECOVERY.md.
+# Set application UID/GID from trusted configuration; never from archive headers.
 
-# 4. Stop the consumers, extract into the target volume, restart.
-#    --numeric-owner preserves UIDs/GIDs as numbers, so ownership is
-#    deterministic even when restoring onto a host with different /etc/passwd.
-docker stop <containers>
-docker run --rm \
-  -v <volume>:/restore \
-  -v "$(pwd)/backup-<ts>.tar:/backup.tar:ro" \
-  alpine sh -c "cd /restore && tar --numeric-owner -xf /backup.tar"
-docker start <containers>
 ```
 
 The tar is rooted at the volume's contents (created with

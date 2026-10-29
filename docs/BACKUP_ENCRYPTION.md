@@ -164,9 +164,10 @@ aws s3 cp s3://PROJECT-backup/<server>/vol/VOLUME/backup-YYYYMMDDTHHMMSSZ.tar.ag
 # Decrypt (age — identity file, SSH private key, or YubiKey)
 age --decrypt -i key.txt -o backup-YYYYMMDDTHHMMSSZ.tar backup-YYYYMMDDTHHMMSSZ.tar.age
 
-# Extract (the tar is rooted at the volume's contents; --numeric-owner keeps
-# ownership deterministic across hosts)
-tar --numeric-owner -xf backup-YYYYMMDDTHHMMSSZ.tar
+# Extract as data using the safe helper (archive ownership is ignored; apply
+# the intended application ownership separately)
+mkdir -m 700 restored
+python3 /path/to/miuops/scripts/restore-archive.py restored < backup-YYYYMMDDTHHMMSSZ.tar
 ```
 
 For full restore procedures (extracting straight into a Docker volume), see [Disaster Recovery](DISASTER_RECOVERY.md).

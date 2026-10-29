@@ -201,7 +201,7 @@ so a compromised or buggy deploy holds only that one server's key — no lateral
    | `SSH_USER` | Yes | SSH username (the deploy user) |
    | `SSH_PRIVATE_KEY` | Yes | The deploy **private** key (full PEM) |
    | `SSH_PORT` | No | SSH port (default: 22) |
-   | `SSH_KNOWN_HOSTS` | No | Pinned host keys (`ssh-keyscan -p <port> <host>`); set it for production |
+   | `SSH_KNOWN_HOSTS` | Yes | Host keys independently verified against the server console or a trusted SSH host CA |
 
    The deploy workflow targets `environment: <server>`, so each server reads only its own
    environment's secrets.
@@ -280,3 +280,18 @@ ansible-playbook playbook.yml --tags docker
 ansible-playbook playbook.yml --tags traefik
 ansible-playbook playbook.yml --tags cloudflared
 ```
+
+### Verify SSH host identity before provisioning
+
+Bootstrap and apply require strict SSH host-key checking. Collect the host key,
+compare its fingerprint with the server console or another trusted channel, and
+install it in your local `~/.ssh/known_hosts`. `ssh-keyscan` alone does not authenticate
+a host. Supply the verified known_hosts entry as `SSH_KNOWN_HOSTS` in each deploy
+Environment and in the infrastructure CI secrets. Re-verify keys after rebuilding
+a server; do not disable checking to bypass a changed-key error.
+
+Deployment requires Python 3 on the server. The pinned deploy machinery sends its
+policy checker over authenticated SSH, validates every selected stack's resolved
+Compose JSON, then starts services using those same checked files. Unsafe configurations
+abort deployment before any selected stack is started. Temporary resolved files may
+contain secrets; they are created with mode 0600 and removed on exit.

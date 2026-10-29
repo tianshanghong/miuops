@@ -25,16 +25,17 @@ digest-pinned — `:latest`, no tag, or a tag without an `@sha256:` digest. Pin 
 reproducible, immutable deploys.
 
 Usage: stack_policy_check.py <compose.yml> [more.yml ...]
-Requires PyYAML (`pip install pyyaml`).
+YAML input requires PyYAML (`pip install pyyaml`); resolved JSON uses the standard library.
 """
+import json
+import os
 import posixpath
 import sys
 
 try:
     import yaml
 except ImportError:
-    sys.stderr.write("stack_policy_check: PyYAML is required (pip install pyyaml)\n")
-    sys.exit(2)
+    yaml = None  # Remote deployment supplies resolved JSON; no third-party parser needed.
 
 LOOPBACK_HOST_IPS = {"127.0.0.1", "::1"}
 
@@ -104,6 +105,14 @@ def _is_sensitive_mount(source):
     return any(path == pre or path.startswith(pre + "/") for pre in SENSITIVE_MOUNT_PREFIXES)
 
 
+def _is_sensitive_resolved_mount(source):
+    # Deployment runs this on the destination host, after Compose has expanded
+    # relative bind sources. Docker follows symlinks that Compose leaves intact.
+    return _is_sensitive_mount(source) or (
+        os.path.isabs(str(source)) and _is_sensitive_mount(os.path.realpath(source))
+    )
+
+
 def _published_host_ip(port):
     """Host IP a port mapping binds to, or None if none is set explicitly.
 
@@ -147,8 +156,17 @@ def check_file(path):
     """
     try:
         with open(path) as handle:
-            doc = yaml.safe_load(handle)
-    except (OSError, yaml.YAMLError) as exc:
+            content = handle.read()
+        try:
+            doc = json.loads(content)
+        except ValueError:
+            if yaml is None:
+                raise ValueError("Expected resolved Compose JSON (PyYAML needed for YAML input)")
+            try:
+                doc = yaml.safe_load(content)
+            except yaml.YAMLError as exc:
+                raise ValueError(str(exc)) from exc
+    except (OSError, ValueError) as exc:
         return [f"{path}: cannot read/parse compose file: {exc}"], []
     if not isinstance(doc, dict):
         return [f"{path}: not a valid compose mapping"], []
@@ -208,7 +226,7 @@ def check_file(path):
 
         for vol in _as_list(svc.get("volumes")):
             source = vol.get("source") if isinstance(vol, dict) else str(vol).split(":", 1)[0]
-            if source and _is_sensitive_mount(source):
+            if source and _is_sensitive_resolved_mount(source):
                 violations.append(f"{prefix} bind-mounts a sensitive host path: {source!r}")
 
         if _as_list(svc.get("devices")):
@@ -221,6 +239,22 @@ def check_file(path):
                                   "(use `127.0.0.1:<host>:<container>`)")
             elif host_ip not in LOOPBACK_HOST_IPS:
                 violations.append(f"{prefix} publishes {port!r} to {host_ip} (must bind 127.0.0.1)")
+
+    # Local named volumes can hide a host bind behind driver_opts instead of a
+    # service-level source. Apply the same destination-host path checks there.
+    volumes = doc.get("volumes")
+    if isinstance(volumes, dict):
+        for volume_name, volume in volumes.items():
+            if not isinstance(volume, dict) or volume.get("driver", "local") != "local":
+                continue
+            options = volume.get("driver_opts") or {}
+            flags = {flag.strip() for flag in str(options.get("o", "")).split(",")}
+            if options.get("type") == "none" or flags & {"bind", "rbind"}:
+                device = options.get("device")
+                if not isinstance(device, str) or not os.path.isabs(device):
+                    violations.append(f"{path}: volume '{volume_name}' bind device must be an absolute host path")
+                elif _is_sensitive_resolved_mount(device):
+                    violations.append(f"{path}: volume '{volume_name}' bind-mounts a sensitive host path: {device!r}")
 
     # File-level: reject attaching to the shared default bridge (docker0) through an external
     # network — the back door that evades the per-service `network_mode: bridge` check above.

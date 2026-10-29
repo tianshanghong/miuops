@@ -9,8 +9,7 @@
 #   SSH_USER           SSH user (required).
 #   SSH_PRIVATE_KEY    deploy private key, PEM (required).
 #   SSH_PORT           SSH port (default 22).
-#   SSH_KNOWN_HOSTS    pinned known_hosts (optional; when set, host-key checking
-#                      is strict — no MITM window. When absent: accept-new TOFU).
+#   SSH_KNOWN_HOSTS    independently verified known_hosts (required).
 #   STACKS_DIR         repo path prefix for stacks (default fleet/stacks).
 #   REMOTE_STACKS_DIR  destination on the server (default /opt/stacks).
 #   ONLY_STACK         (manual dispatch) bring up only this stack dir within the
@@ -87,19 +86,14 @@ trap 'rm -rf "$sshdir"' EXIT
 key="${sshdir}/id"; printf '%s\n' "$SSH_PRIVATE_KEY" > "$key"; chmod 600 "$key"
 kh="${sshdir}/known_hosts"
 
-# Host-key policy: pin when SSH_KNOWN_HOSTS is provided (no MITM window), else
-# accept-new -- trusts the key seen on the first connect of THIS run and rejects
-# a key that changes mid-run, but does NOT protect a first-ever connect against a
-# MITM. Set the per-server SSH_KNOWN_HOSTS Environment secret to pin (recommended
-# for production). Never =no.
-ssh_opts=(-i "$key" -p "$SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile="$kh")
-if [ -n "${SSH_KNOWN_HOSTS:-}" ]; then
-  printf '%s\n' "$SSH_KNOWN_HOSTS" > "$kh"
-  ssh_opts+=(-o StrictHostKeyChecking=yes)
-else
-  : > "$kh"
-  ssh_opts+=(-o StrictHostKeyChecking=accept-new)
-fi
+# Each ephemeral runner must receive independently verified host keys.
+[ -n "${SSH_KNOWN_HOSTS:-}" ] || err "No SSH_KNOWN_HOSTS for '${SERVER}'; provision verified host keys before deploying."
+printf '%s\n' "$SSH_KNOWN_HOSTS" > "$kh"
+ssh_opts=(-i "$key" -p "$SSH_PORT" -o IdentitiesOnly=yes -o BatchMode=yes -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking=yes)
+
+# Transport the trusted checker from the pinned machinery checkout, not fleet data.
+policy_path="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tests/stack_policy_check.py"
+policy_b64="$(base64 < "$policy_path" | tr -d '\n')"
 
 dest="${SSH_USER}@${SSH_HOST}"
 note "Deploying '${SERVER}' -> ${dest}:${REMOTE_STACKS_DIR}"
@@ -124,12 +118,25 @@ rsync -rlptz --delete --exclude='.env' --exclude='*.env' \
 # tear down stacks whose directory was removed. The remote heredoc is quoted (no
 # local expansion), so operator-trusted values are passed as positional args:
 # $1 remote dir, $2 force-recreate flag, $3 target stack (blank = all).
-ssh "${ssh_opts[@]}" "$dest" bash -s -- "$REMOTE_STACKS_DIR" "$FORCE_RECREATE" "$ONLY_STACK" <<'REMOTE'
+# SSH joins argv into a remote shell string; quote explicitly, including empty args.
+printf -v remote_command '%q ' bash -s -- "$REMOTE_STACKS_DIR" "$FORCE_RECREATE" "$ONLY_STACK" "$policy_b64"
+ssh "${ssh_opts[@]}" "$dest" "$remote_command" <<'REMOTE'
 set -euo pipefail
 REMOTE_DIR="${1:?remote stacks dir}"
 FORCE_RECREATE="${2:-false}"
 ONLY_STACK="${3:-}"
 cd "$REMOTE_DIR"
+REMOTE_DIR="$PWD"
+umask 077
+policy_dir="$(mktemp -d)"
+configs=()
+cleanup_policy() {
+  rm -rf "$policy_dir"
+  if [ "${#configs[@]}" -gt 0 ]; then rm -f "${configs[@]}"; fi
+}
+trap cleanup_policy EXIT
+python3 -c 'import base64,sys; open(sys.argv[1], "wb").write(base64.b64decode(sys.argv[2], validate=True))' "$policy_dir/check.py" "${4:?trusted policy required}"
+
 
 # --env-file only if a shared .env exists (provisioned at setup, not by deploy).
 # Absolute path: the up-loop runs from inside each stack dir, so a relative
@@ -158,19 +165,36 @@ fi
 # the project name defaults to the (normalized) directory basename -- the same
 # name the teardown below compares against.
 stack_matched=0
+stacks=()
 for stack in */; do
   stack="${stack%/}"
-  # Targeted manual dispatch: skip every stack except the requested one.
   [ -z "$ONLY_STACK" ] || [ "$stack" = "$ONLY_STACK" ] || continue
-  ( cd "$stack" && docker compose "${compose_env[@]}" config -q ) 2>/dev/null || continue
-  stack_matched=1   # count only a present AND valid compose project as "matched"
+  [ ! -L "$stack" ] || { echo "::error::stack '${stack}' is a symbolic link"; exit 1; }
+  # Documentation/support directories are inert. A present Compose project that
+  # fails to resolve must stop the entire deployment, not silently retain old code.
+  if [ ! -f "$stack/compose.yaml" ] && [ ! -f "$stack/compose.yml" ] &&
+     [ ! -f "$stack/docker-compose.yaml" ] && [ ! -f "$stack/docker-compose.yml" ]; then
+    continue
+  fi
+  if ! ( cd "$stack" && docker compose "${compose_env[@]}" config -q ); then
+    echo "::error::stack '${stack}' is not a valid compose project"
+    exit 1
+  fi
+  config="$(mktemp "$REMOTE_DIR/$stack/.miuops-config.XXXXXX")"
+  configs+=("$config")
+  ( cd "$stack" && docker compose "${compose_env[@]}" config --format json ) > "$config"
+  python3 "$policy_dir/check.py" "$config"
+  stacks+=("$stack")
+  stack_matched=1
+done
+
+# Validate every selected stack before starting any; deploy the exact checked model.
+for idx in "${!stacks[@]}"; do
+  stack="${stacks[$idx]}"
   echo "==> up ${stack}"
   up_args=(-d --pull always --remove-orphans)
-  # --force-recreate replaces the container even when image + config are
-  # unchanged, so the entrypoint re-runs (needed to restart a service whose fix
-  # lives in a repo it clones/installs at startup, not in its image).
   [ "$FORCE_RECREATE" = true ] && up_args+=(--force-recreate)
-  ( cd "$stack" && docker compose "${compose_env[@]}" up "${up_args[@]}" )
+  ( cd "$stack" && docker compose --project-directory "$PWD" -f "${configs[$idx]}" up "${up_args[@]}" )
 done
 
 # A single-stack dispatch that matched NO directory on this server is an operator

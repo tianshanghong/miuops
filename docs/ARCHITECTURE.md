@@ -48,7 +48,8 @@ miuOps/
 │   └── unattended-upgrades/  #   Automatic security upgrades
 ├── playbook.yml
 ├── scripts/
-│   └── setup-s3-backup.sh
+│   ├── setup-s3-backup.sh
+│   └── restore-archive.py     # Data-only restore; ignores archive ownership
 └── docs/
 ```
 

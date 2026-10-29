@@ -67,5 +67,14 @@ else
   ok "DISASTER_RECOVERY dropped the manual aws-iam rotation steps"
 fi
 
+# Recovery docs must route untrusted archives through the safe extractor.
+for d in roles/backup/README.md docs/DISASTER_RECOVERY.md docs/BACKUP_ENCRYPTION.md; do
+  if grep -qE 'tar --numeric-owner -x' "$ROOT/$d"; then
+    bad "$d bypasses safe restore with numeric-owner extraction"
+  else
+    ok "$d does not teach privileged raw archive extraction"
+  fi
+done
+
 echo "== ${pass} passed, ${fail} failed =="
 [ "$fail" -eq 0 ]

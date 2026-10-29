@@ -60,7 +60,8 @@ You need these installed on your local machine (the CLI checks and tells you how
 You also need:
 - A **Cloudflare account** with your domain added
 - A **Cloudflare API token** — go to [API Tokens](https://dash.cloudflare.com/profile/api-tokens), click "Create Token", and use the **Edit zone DNS** template
-- A **bare metal server** with SSH access (Debian/Ubuntu)
+- A **bare metal server** with SSH access (Debian/Ubuntu), with its independently verified host key already in `~/.ssh/known_hosts`
+- For CI deployment, verified `SSH_KNOWN_HOSTS` in each server Environment (required)
 
 ### Options
 
