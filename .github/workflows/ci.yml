@@ -80,6 +80,7 @@ jobs:
           }
           command -v age-keygen >/dev/null 2>&1 || sudo apt-get install -y age >/dev/null
           bash tests/sops_test.sh
+          python3 tests/tunnel_encryption_test.py
           bash tests/backup_lifecycle_net.sh
           bash tests/backup_secret_write_test.sh
           bash tests/backup_setup_write_test.sh
