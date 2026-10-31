@@ -52,7 +52,7 @@ You need these installed on your local machine (the CLI checks and tells you how
 
 | Tool | macOS | Linux |
 |---|---|---|
-| `ansible` | `brew install ansible` | `sudo apt install ansible` |
+| `ansible-core` | Python 3.12–3.14 virtualenv; `pip install -r requirements-control.txt` | Python 3.12–3.14 virtualenv; `pip install -r requirements-control.txt` |
 | `cloudflared` | `brew install cloudflare/cloudflare/cloudflared` | [pkg.cloudflare.com](https://pkg.cloudflare.com/) |
 | `jq` | `brew install jq` | `sudo apt install jq` |
 | `curl`, `ssh` | pre-installed | pre-installed |

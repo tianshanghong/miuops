@@ -124,7 +124,7 @@ jobs:
 
       # fetch-depth: 0 -> full history so a before..after diff is correct for any
       # pushed range (the default depth-1 checkout lacks the base commit).
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -133,7 +133,7 @@ jobs:
       # the caller-supplied ref (== the @pin) so the machinery is that exact version.
       # The scripts still operate on the caller's checkout (GITHUB_WORKSPACE).
       - name: Check out miuops machinery (deploy scripts)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.miuops_repo }}
           ref: ${{ inputs.miuops_ref }}
@@ -180,12 +180,12 @@ jobs:
       matrix:
         server: ${{ fromJSON(needs.discover.outputs.servers) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Same as the discover job: pull the deploy scripts from miuops at the pinned
       # ref (the caller's checkout above has only the fleet's stacks, no scripts).
       - name: Check out miuops machinery (deploy scripts)
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.miuops_repo }}
           ref: ${{ inputs.miuops_ref }}

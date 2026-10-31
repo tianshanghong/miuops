@@ -64,14 +64,14 @@ backup_age_recipients: []
 # the operator's machine. The binary is built in transparent CI for amd64 + arm64
 # (.github/workflows/build-age-plugin-yubikey.yml) and installed on PATH, pinned by sha256
 # below. A version bump must update the version + BOTH per-arch shas together.
-backup_age_plugin_yubikey_version: "0.5.0"
+backup_age_plugin_yubikey_version: "0.5.1"
 backup_age_plugin_yubikey_repo: "tianshanghong/miuops"
 # Per-arch sha256 of the CI-built binary, from the `age-plugin-yubikey-v<version>` release.
 # Pin after dispatching the build workflow; read each from the published `.sha256` sidecar
-# (e.g. `gh release download age-plugin-yubikey-v0.5.0 -R tianshanghong/miuops -p '*.sha256' -D -`).
+# (e.g. `gh release download age-plugin-yubikey-v0.5.1 -R tianshanghong/miuops -p '*.sha256' -D -`).
 backup_age_plugin_yubikey_sha256:
-  amd64: "66eeb1f692b7b5ea5ae4f095a2c77454a167f24ef16170cc7bc5434330d114e5"
-  arm64: "05db8aef927502fbef18f0f542d67b938e44b1d4792ebc24f61d6ba526b20ba9"
+  amd64: "bdb2ea79011a72f07d213752fd33ccd029d3a2096682f05d859871df948a7bde"
+  arm64: "c9257d6c61f2a6e8b07062be81ccd71dae2ee4e3ad3bd164c59c8ed9adcb384a"
 
 # --- AWS credentials --------------------------------------------------------
 # config/secret split. The ACCESS KEY + SECRET are SECRETS: `miuops backup-setup`

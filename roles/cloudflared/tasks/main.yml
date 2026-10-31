@@ -60,6 +60,10 @@
   notify: Restart cloudflared
   tags: ['cloudflared']
 
+- name: Verify cloudflared meets the CA incident security baseline
+  ansible.builtin.include_tasks: verify.yml
+  tags: ['cloudflared']
+
 - name: Check if credentials file exists
   stat:
     path: "{{ credentials_file }}"
@@ -131,6 +135,11 @@
     name: cloudflared
     enabled: yes
     state: started
+  tags: ['cloudflared']
+
+- name: Detect an interrupted cloudflared upgrade
+  ansible.builtin.include_tasks: running.yml
+  when: not ansible_check_mode
   tags: ['cloudflared']
 
 - name: Flush handlers

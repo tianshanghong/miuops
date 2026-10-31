@@ -9,7 +9,7 @@
       - curl
       - gnupg
       - python3-debian  # required by the deb822_repository module
-    state: present
+    state: latest
     update_cache: yes
   tags: ['docker']
 
@@ -63,7 +63,7 @@
       - docker-ce-cli
       - containerd.io
       - docker-compose-plugin
-    state: present
+    state: latest
     update_cache: yes
   tags: ['docker']
 

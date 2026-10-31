@@ -43,6 +43,7 @@ logs/
 
 # Ignore ansible-generated files
 .ansible/
+.venv/
 ansible.cfg.bak
 
 # Python bytecode cache

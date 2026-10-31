@@ -9,6 +9,12 @@ updates:
     commit-message:
       prefix: "ci(deps)"
 
-# Not covered by Dependabot (no manager): the Alloy image pin in
-# roles/observability/defaults/main.yml and the Ansible Galaxy collections in
-# requirements.yml. These are low-churn — bump them manually.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+
+# Binary/package pins, the socket-proxy digest, and Ansible Galaxy collections
+# are updated manually. The YubiKey plugin also has its upstream sync workflow.

@@ -1,6 +1,8 @@
 ---
 # cloudflared default variables
 cloudflared_dir: "/opt/cloudflared"
+# The official deb installs here; never execute an older manual /usr/local copy.
+cloudflared_bin: "/usr/bin/cloudflared"
 # Local path to a tunnel credential the CONTROL node decrypted from
 # fleet/secrets/<tunnel_id>.json (SOPS+age). The miuops CLI sets this via
 # `-e cloudflared_credentials_src=<temp>` so the server receives the plaintext
@@ -15,7 +17,7 @@ cloudflared_gpg_key_url: "https://pkg.cloudflare.com/cloudflare-main.gpg"
 # older-codename package runs fine on newer releases. Override with
 # -e cloudflared_apt_release=<codename>.
 cloudflared_supported_releases:
-  - focal      # Ubuntu 20.04
+  - focal      # Ubuntu 20.04; target Python 3.9+ must be installed separately
   - jammy      # Ubuntu 22.04
   - noble      # Ubuntu 24.04
   - bullseye   # Debian 11

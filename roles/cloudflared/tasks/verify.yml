@@ -1,0 +1,24 @@
+---
+# eMudhra intermediate CA distrust shipped in 2026.10.2. Check the exact binary
+# used by systemd, even if the apt repository has not published the fixed package.
+- name: Read the installed cloudflared version
+  ansible.builtin.command:
+    argv: ["{{ cloudflared_bin }}", "--version"]
+  register: cloudflared_version
+  changed_when: false
+  check_mode: false
+  tags: ['cloudflared']
+
+- name: Require cloudflared 2026.10.2 or newer
+  ansible.builtin.assert:
+    that:
+      - cloudflared_versions | length == 1
+      - (cloudflared_versions | first | default('0')) is version('2026.10.2', '>=')
+    fail_msg: >-
+      cloudflared 2026.10.2 or newer is required to distrust the compromised
+      eMudhra intermediate CAs. Update the Cloudflare apt repository and retry.
+      {{ cloudflared_bin }} reported: {{ cloudflared_version.stdout }}
+    quiet: true
+  vars:
+    cloudflared_versions: "{{ cloudflared_version.stdout | regex_findall('^cloudflared version ([0-9]{4}\\.[0-9]+\\.[0-9]+)(?:\\s|$)') }}"
+  tags: ['cloudflared']
