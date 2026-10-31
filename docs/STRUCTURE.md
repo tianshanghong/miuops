@@ -7,6 +7,7 @@ and stacks) lives in your **separate fleet repo**, created from `miuops-fleet-te
 ```
 .
 ├── ansible.cfg                # Ansible configuration
+├── requirements-control.txt   # Pinned ansible-core for the control node
 ├── playbook.yml               # Main Ansible playbook
 ├── requirements.yml           # Ansible Galaxy requirements
 ├── roles/

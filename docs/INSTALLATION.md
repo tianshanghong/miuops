@@ -8,8 +8,8 @@ End-to-end walkthrough: from bare server to running services. For a condensed ve
 |---|---|
 | Cloudflare account with your domain(s) | DNS, CDN, WAF |
 | Cloudflare API token | DNS records — zone lookup + CNAME management (DNS-only: the **Edit zone DNS** template, scoped to your zone(s); see [Secret Model](SECRETS.md)) |
-| Server with SSH access (Debian/Ubuntu) | Target machine |
-| Local tools: `ansible`, `cloudflared`, `jq`, `curl`, `ssh` | The CLI checks these and guides you |
+| Server with SSH access (Debian/Ubuntu), Python 3.9+ | Target machine; Ubuntu 20.04 needs a newer Python interpreter |
+| Local tools: pinned `ansible-core`, `cloudflared`, `jq`, `curl`, `ssh` | The CLI checks these and guides you |
 | aws CLI (configured with admin credentials) | Backup bucket setup (Step 2) |
 
 ### Create a Cloudflare API token
@@ -24,12 +24,35 @@ End-to-end walkthrough: from bare server to running services. For a condensed ve
 
 ```bash
 # macOS
-brew install ansible cloudflare/cloudflare/cloudflared jq
+brew install python@3.14 cloudflare/cloudflare/cloudflared jq
+python3.14 -m venv .venv
 
 # Ubuntu/Debian
-sudo apt update && sudo apt install ansible jq
+sudo apt update && sudo apt install python3-venv jq
 # cloudflared: see https://pkg.cloudflare.com/
+python3 -m venv .venv  # python3 must be 3.12, 3.13 or 3.14
+
+# From the miuops checkout, after the platform-specific steps above:
+source .venv/bin/activate
+pip install -r requirements-control.txt
+ansible-galaxy collection install --upgrade -r requirements.yml
 ```
+
+The tested control environment is ansible-core 2.21.5 with the collections pinned
+in `requirements.yml`. It requires control-node Python 3.12–3.14 and target-node
+Python 3.9–3.14. Activate the virtualenv before running `miuops` or Ansible.
+
+A full `miuops apply` already upgrades system packages. Tagged Docker/backup
+applies also update their managed packages to the candidate versions from the
+configured apt repositories. Schedule applies for a maintenance window: package
+upgrades may restart services. Traefik, Alloy, the socket proxy and the YubiKey plugin use the
+repository's fixed versions and checksums; update those pins together.
+
+cloudflared is updated from Cloudflare's apt repository. Its systemd service uses
+`/usr/bin/cloudflared`, and the role rejects versions older than 2026.10.2, the
+eMudhra CA incident fix. The latest stable release checked on 2026-10-29 is
+2026.10.6. After applying, verify the running service has restarted on the new
+binary (`systemctl status cloudflared` and `/usr/bin/cloudflared --version`).
 
 ### Install aws CLI (for backups, Step 2)
 
@@ -107,7 +130,7 @@ If you prefer to configure things manually instead of using the CLI, edit the fl
 
 ```bash
 # Install Ansible requirements
-ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection install --upgrade -r requirements.yml
 
 # Configure (in your fleet repo)
 # Add the server's line to fleet/inventory.ini (the host alias)

@@ -1,0 +1,31 @@
+---
+# Package notifications can be lost if an apply fails before flushing handlers.
+# Compare executable inodes on every apply so a retry repairs a stale process.
+- name: Read cloudflared's running process ID
+  ansible.builtin.command:
+    argv: [systemctl, show, cloudflared, --property=MainPID, --value]
+  register: cloudflared_pid
+  changed_when: false
+  tags: ['cloudflared']
+
+- name: Inspect the installed cloudflared executable
+  ansible.builtin.stat:
+    path: "{{ cloudflared_bin }}"
+    follow: true
+    get_checksum: false
+    get_mime: false
+  register: cloudflared_installed
+  tags: ['cloudflared']
+
+- name: Schedule a restart if cloudflared is still running an old executable
+  ansible.builtin.stat:
+    path: "/proc/{{ cloudflared_pid.stdout | int }}/exe"
+    follow: true
+    get_checksum: false
+    get_mime: false
+  register: cloudflared_running
+  changed_when: >-
+    cloudflared_running.stat.get('inode', 0) != cloudflared_installed.stat.inode or
+    cloudflared_running.stat.get('dev', 0) != cloudflared_installed.stat.dev
+  notify: Restart cloudflared
+  tags: ['cloudflared']
