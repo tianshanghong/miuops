@@ -1,0 +1,2 @@
+# Control node: Python 3.12–3.14; collections are pinned separately in requirements.yml.
+ansible-core==2.21.5

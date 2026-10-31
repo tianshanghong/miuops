@@ -64,7 +64,7 @@
       - awscli
       - jq
       - tar
-    state: present
+    state: latest
     update_cache: true
   when: backup_enabled | bool
   tags: ['backup']
@@ -72,7 +72,7 @@
 - name: Install age (only when encryption=age)
   ansible.builtin.apt:
     name: age
-    state: present
+    state: latest
     update_cache: true
   when:
     - backup_enabled | bool
@@ -114,7 +114,7 @@
     - name: Ensure libpcsclite1 (age-plugin-yubikey's runtime dependency)
       ansible.builtin.apt:
         name: libpcsclite1
-        state: present
+        state: latest
         update_cache: true
 
     - name: Install age-plugin-yubikey binary (pinned by sha256) on PATH

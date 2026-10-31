@@ -423,7 +423,7 @@ run_apply() {
         return 0
     fi
     info "Installing Ansible Galaxy requirements..."
-    ansible-galaxy collection install -r "${SCRIPT_DIR}/requirements.yml" >/dev/null \
+    ansible-galaxy collection install --upgrade -r "${SCRIPT_DIR}/requirements.yml" >/dev/null \
         || die "Failed to install Ansible Galaxy requirements"
     info "Converging${host:+ ${host}}..."
     "${cmd[@]}"
@@ -634,9 +634,10 @@ cmd_up() {
   macOS:  ssh is pre-installed
   Linux:  sudo apt install openssh-client"
     command -v ansible-playbook >/dev/null 2>&1 \
-        || die "ansible not found
-  macOS:  brew install ansible
-  Linux:  sudo apt install ansible"
+        || die "ansible-playbook not found
+  Activate a Python 3.12–3.14 virtualenv, then in the miuops checkout run:
+  pip install -r requirements-control.txt
+  See docs/INSTALLATION.md for setup instructions."
     command -v cloudflared >/dev/null 2>&1 \
         || die "cloudflared not found
   macOS:  brew install cloudflare/cloudflare/cloudflared
