@@ -109,15 +109,19 @@ matches.
 
 ## What miuops encrypts, and when
 
-- **`miuops up`** creates the tunnel, then encrypts its credential **in place**
-  into `fleet/secrets/<tunnel_id>.json`:
+- **`miuops up`** creates the tunnel, then encrypts directly from the private
+  `~/.cloudflared/<tunnel_id>.json` source into a temporary ciphertext file.
+  It publishes `fleet/secrets/<tunnel_id>.json` atomically only after encryption
+  succeeds. All credential values are encrypted, even if the fleet creation rule
+  selects only certain keys for other secrets. Commit the resulting ciphertext.
 
-  ```bash
-  sops --encrypt --input-type json --output-type json --in-place \
-      fleet/secrets/<tunnel_id>.json
-  ```
-
-  Commit the resulting ciphertext.
+  A retry checks the existing file's ciphertext structure without requiring a
+  private key or YubiKey touch; SOPS authenticates the contents when decrypting at
+  converge. Existing plaintext, partial encryption, or invalid JSON is refused.
+  If a previous interrupted version left such a file, move it to a private location
+  outside the repo and retry. Do not commit it. A forced termination can leave a
+  private `.tunnel.*` temporary file, but the helper never copies plaintext into
+  the fleet directory.
 
 - **At converge** (`up` / `apply`), miuops decrypts `fleet/secrets/<tunnel_id>.json`
   to a private `0600` temp file and passes its path to Ansible via
