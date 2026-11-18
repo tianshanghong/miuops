@@ -30,6 +30,7 @@ YAML input requires PyYAML (`pip install pyyaml`); resolved JSON uses the standa
 import json
 import os
 import posixpath
+import re
 import sys
 
 try:
@@ -194,6 +195,9 @@ def check_file(path):
     if not isinstance(doc, dict):
         return [f"{path}: not a valid compose mapping"], []
 
+    if doc.get("include") is not None:
+        return [f"{path}: uses top-level 'include' (declare all services directly in the stack compose file)"], []
+
     services = doc.get("services")
     if services is None:
         return [], []  # no services → nothing to publish or privilege
@@ -208,6 +212,9 @@ def check_file(path):
         if not isinstance(svc, dict):
             violations.append(f"{prefix} is not a mapping")
             continue
+
+        if svc.get("extends") is not None:
+            violations.append(f"{prefix} uses 'extends' (declare service configuration directly)")
 
         image = svc.get("image")
         if image is not None:
@@ -259,7 +266,11 @@ def check_file(path):
         for field in ("env_file", "label_file"):
             for entry in _file_entries(svc.get(field)):
                 entry_path = entry.get("path") if isinstance(entry, dict) else entry
-                if entry_path and _is_sensitive_resolved_mount(entry_path, base_dir=base_dir):
+                if entry_path is not None and not isinstance(entry_path, str):
+                    violations.append(f"{prefix} has non-string path in {field}")
+                elif entry_path and "$" in str(entry_path):
+                    violations.append(f"{prefix} uses variable interpolation in {field}: {entry_path!r}")
+                elif entry_path and _is_sensitive_resolved_mount(entry_path, base_dir=base_dir):
                     violations.append(f"{prefix} references a sensitive host path in {field}: {entry_path!r}")
 
         if _as_list(svc.get("devices")):
@@ -296,7 +307,13 @@ def check_file(path):
             for item_name, item in items.items():
                 if isinstance(item, dict):
                     file_path = item.get("file")
-                    if file_path and _is_sensitive_resolved_mount(file_path, base_dir=base_dir):
+                    if file_path is not None and not isinstance(file_path, str):
+                        violations.append(f"{path}: {section[:-1]} '{item_name}' has non-string file path")
+                    elif file_path and "$" in str(file_path):
+                        violations.append(
+                            f"{path}: {section[:-1]} '{item_name}' uses variable interpolation in file: {file_path!r}"
+                        )
+                    elif file_path and _is_sensitive_resolved_mount(file_path, base_dir=base_dir):
                         violations.append(
                             f"{path}: {section[:-1]} '{item_name}' reads a sensitive host path: {file_path!r}"
                         )
@@ -337,52 +354,83 @@ def _strip_yaml_quotes(value):
     return text
 
 
+_KEY_RE = re.compile(r"""^['"]?(env_file|label_file|file|include|extends)['"]?\s*:(.*)$""")
+
+
 def _scan_pre_config_text(content, path, base_dir):
-    """Best-effort stdlib scanner when PyYAML is absent on the destination host."""
+    """Fail-closed stdlib scanner when PyYAML is absent on the destination host."""
     violations = []
     block_field = None
     block_indent = -1
     for raw_line in content.splitlines():
+        if re.match(r"^\s*%", raw_line):
+            violations.append(f"{path}: YAML directives are not allowed in pre-config policy check")
+            continue
         stripped = raw_line.split("#", 1)[0].rstrip()
         if not stripped.strip():
             continue
         indent = len(raw_line) - len(raw_line.lstrip(" "))
         text = stripped.strip()
-        if block_field is not None and indent <= block_indent and not text.startswith("- "):
+        if any(k in text for k in ("include:", "extends:", '"include"', "'include'", '"extends"', "'extends'")):
+            m_inline = re.search(r"""['"]?(include|extends)['"]?\s*:""", text)
+            if m_inline:
+                violations.append(f"{path}: uses '{m_inline.group(1)}' (not permitted by stack policy)")
+                continue
+        if block_field is not None and indent <= block_indent and not text.startswith("-"):
             block_field = None
         if block_field is not None:
-            candidate = text[2:].strip() if text.startswith("- ") else ""
-            if candidate.startswith("path:"):
-                candidate = candidate[5:].strip()
-            elif text.startswith("path:"):
-                candidate = text[5:].strip()
-            candidate = _strip_yaml_quotes(candidate)
-            if candidate and _is_sensitive_resolved_mount(candidate, base_dir=base_dir):
-                violations.append(f"{path}: references a sensitive host path in {block_field}: {candidate!r}")
+            if "$" in text:
+                violations.append(f"{path}: uses variable interpolation in {block_field}: {text!r}")
                 continue
-        for key in ("env_file", "label_file", "file"):
-            prefix = key + ":"
-            if text == prefix or text.startswith(prefix + " "):
-                val = text[len(prefix):].strip()
-                if not val:
-                    block_field = key
-                    block_indent = indent
-                elif val.startswith("[") and val.endswith("]"):
+            if any(ch in text for ch in ("{", "}", "[", "]", "|", ">")):
+                violations.append(f"{path}: complex YAML syntax in {block_field} requires PyYAML")
+                continue
+            candidate = text[1:].strip() if text.startswith("-") else ""
+            m_path = re.match(r"""^['"]?path['"]?\s*:\s*(.*)$""", candidate or text)
+            if m_path:
+                candidate = m_path.group(1).strip()
+            candidate = _strip_yaml_quotes(candidate)
+            if "$" in candidate:
+                violations.append(f"{path}: uses variable interpolation in {block_field}: {candidate!r}")
+            elif candidate and _is_sensitive_resolved_mount(candidate, base_dir=base_dir):
+                violations.append(f"{path}: references a sensitive host path in {block_field}: {candidate!r}")
+            continue
+        m = _KEY_RE.match(text)
+        if m:
+            key, val = m.group(1), m.group(2).strip()
+            if key in ("include", "extends"):
+                violations.append(f"{path}: uses '{key}' (not permitted by stack policy)")
+                continue
+            if not val:
+                block_field = key
+                block_indent = indent
+            elif "$" in val:
+                violations.append(f"{path}: uses variable interpolation in {key}: {val!r}")
+            elif val in ("|", ">", "|-", ">-", "|+", ">+") or "{" in val or "}" in val:
+                violations.append(f"{path}: complex YAML syntax in {key} requires PyYAML")
+            elif val.startswith("["):
+                if not val.endswith("]"):
+                    violations.append(f"{path}: multi-line flow sequence in {key} is not permitted")
+                else:
                     for elem in val[1:-1].split(","):
                         c = _strip_yaml_quotes(elem)
-                        if c and _is_sensitive_resolved_mount(c, base_dir=base_dir):
+                        if "$" in c:
+                            violations.append(f"{path}: uses variable interpolation in {key}: {c!r}")
+                        elif c and _is_sensitive_resolved_mount(c, base_dir=base_dir):
                             violations.append(f"{path}: references a sensitive host path in {key}: {c!r}")
-                else:
-                    c = _strip_yaml_quotes(val)
-                    if c and _is_sensitive_resolved_mount(c, base_dir=base_dir):
-                        violations.append(f"{path}: references a sensitive host path in {key}: {c!r}")
-                break
+            else:
+                c = _strip_yaml_quotes(val)
+                if "$" in c:
+                    violations.append(f"{path}: uses variable interpolation in {key}: {c!r}")
+                elif c and _is_sensitive_resolved_mount(c, base_dir=base_dir):
+                    violations.append(f"{path}: references a sensitive host path in {key}: {c!r}")
     return violations
 
 
 def check_pre_config_dir(stack_dir):
     """Check raw compose files in stack_dir for sensitive env_file/label_file/secrets/configs
-    before `docker compose config` reads and inlines env_file contents from the host disk.
+    before `docker compose config --format json` reads and inlines env_file contents from the host disk.
+    Fails closed on unreadable or unparseable compose files.
     """
     violations = []
     base_dir = os.path.abspath(stack_dir)
@@ -396,7 +444,8 @@ def check_pre_config_dir(stack_dir):
         try:
             with open(path) as handle:
                 content = handle.read()
-        except OSError:
+        except OSError as exc:
+            violations.append(f"{path}: cannot read compose file: {exc}")
             continue
         try:
             doc = json.loads(content)
@@ -406,20 +455,31 @@ def check_pre_config_dir(stack_dir):
                 continue
             try:
                 doc = yaml.safe_load(content)
-            except Exception:
+            except Exception as exc:
+                violations.append(f"{path}: cannot parse compose YAML in pre-config policy check: {exc}")
                 continue
         if not isinstance(doc, dict):
+            violations.append(f"{path}: not a valid compose mapping")
             continue
+        if doc.get("include") is not None:
+            violations.append(f"{path}: uses top-level 'include' (declare all services directly)")
         services = doc.get("services")
         if isinstance(services, dict):
             for name, svc in services.items():
                 if not isinstance(svc, dict):
+                    violations.append(f"{path} [service '{name}'] is not a mapping")
                     continue
                 prefix = f"{path} [service '{name}']"
+                if svc.get("extends") is not None:
+                    violations.append(f"{prefix} uses 'extends' (declare service configuration directly)")
                 for field in ("env_file", "label_file"):
                     for entry in _file_entries(svc.get(field)):
                         entry_path = entry.get("path") if isinstance(entry, dict) else entry
-                        if entry_path and _is_sensitive_resolved_mount(entry_path, base_dir=base_dir):
+                        if entry_path is not None and not isinstance(entry_path, str):
+                            violations.append(f"{prefix} has non-string path in {field}")
+                        elif entry_path and "$" in str(entry_path):
+                            violations.append(f"{prefix} uses variable interpolation in {field}: {entry_path!r}")
+                        elif entry_path and _is_sensitive_resolved_mount(entry_path, base_dir=base_dir):
                             violations.append(
                                 f"{prefix} references a sensitive host path in {field}: {entry_path!r}"
                             )
@@ -429,7 +489,13 @@ def check_pre_config_dir(stack_dir):
                 for item_name, item in items.items():
                     if isinstance(item, dict):
                         file_path = item.get("file")
-                        if file_path and _is_sensitive_resolved_mount(file_path, base_dir=base_dir):
+                        if file_path is not None and not isinstance(file_path, str):
+                            violations.append(f"{path}: {section[:-1]} '{item_name}' has non-string file path")
+                        elif file_path and "$" in str(file_path):
+                            violations.append(
+                                f"{path}: {section[:-1]} '{item_name}' uses variable interpolation in file: {file_path!r}"
+                            )
+                        elif file_path and _is_sensitive_resolved_mount(file_path, base_dir=base_dir):
                             violations.append(
                                 f"{path}: {section[:-1]} '{item_name}' reads a sensitive host path: {file_path!r}"
                             )
