@@ -22,6 +22,7 @@
 # (not silently skipped) so a green run is meaningful — CI installs age.
 
 set -uo pipefail
+export COPYFILE_DISABLE=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pass=0; fail=0
 ok()  { printf 'ok   - %s\n' "$1"; pass=$((pass + 1)); }

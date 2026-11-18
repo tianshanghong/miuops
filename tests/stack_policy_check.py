@@ -51,6 +51,11 @@ DANGEROUS_CAPS = {
 # Prefix matches — the directory and everything under it (no legitimate container use):
 SENSITIVE_MOUNT_PREFIXES = (
     "/proc", "/sys", "/dev", "/boot", "/root", "/var/run", "/run", "/var/lib/docker",
+    "/var/lib/containerd", "/var/lib/systemd", "/var/spool/cron",
+    "/etc/ssh", "/etc/systemd", "/etc/sudoers.d", "/etc/pam.d",
+    "/etc/cron.d", "/etc/cron.daily", "/etc/cron.hourly", "/etc/cron.weekly", "/etc/cron.monthly",
+    "/etc/apt", "/etc/traefik", "/etc/alloy", "/etc/miuops-backup",
+    "/opt/cloudflared", "/opt/stacks", "/home",
 )
 # Exact matches — mounting the WHOLE directory is dangerous, but a specific file under it
 # (e.g. /etc/localtime, /usr/share/...) is fine:
@@ -58,7 +63,7 @@ SENSITIVE_MOUNT_EXACT = frozenset({
     "/", "/etc", "/var", "/var/lib", "/home", "/usr", "/bin", "/sbin", "/lib", "/opt",
 })
 # Specific sensitive files, wherever they would be mounted:
-SENSITIVE_MOUNT_FILES = frozenset({"/etc/shadow", "/etc/gshadow", "/etc/passwd", "/etc/sudoers"})
+SENSITIVE_MOUNT_FILES = frozenset({"/etc/shadow", "/etc/gshadow", "/etc/passwd", "/etc/sudoers", "/etc/crontab"})
 
 
 def _is_truthy(value):
@@ -91,6 +96,15 @@ def _as_list(value):
     return [value]
 
 
+def _file_entries(value):
+    """Normalise a compose field that may be a string, a mapping, or a list of either."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
 def _is_sensitive_mount(source):
     text = str(source)
     if "docker.sock" in text:
@@ -108,9 +122,15 @@ def _is_sensitive_mount(source):
 def _is_sensitive_resolved_mount(source):
     # Deployment runs this on the destination host, after Compose has expanded
     # relative bind sources. Docker follows symlinks that Compose leaves intact.
-    return _is_sensitive_mount(source) or (
-        os.path.isabs(str(source)) and _is_sensitive_mount(os.path.realpath(source))
-    )
+    if _is_sensitive_mount(source):
+        return True
+    if os.path.isabs(str(source)):
+        resolved = os.path.realpath(source)
+        if _is_sensitive_mount(resolved):
+            return True
+        if sys.platform == "darwin" and resolved.startswith(("/private/etc", "/private/var")):
+            return _is_sensitive_mount(resolved[len("/private"):])
+    return False
 
 
 def _published_host_ip(port):
@@ -194,22 +214,22 @@ def check_file(path):
         if _is_truthy(svc.get("privileged")):
             violations.append(f"{prefix} sets privileged")
 
-        network_mode = str(svc.get("network_mode", ""))
+        network_mode = str(svc.get("network_mode", "")).strip()
         if network_mode == "host" and svc.get("x-miuops-allow-host-net") is not True:
             violations.append(f"{prefix} uses network_mode: host "
                               "(add `x-miuops-allow-host-net: true` to opt in if intentional)")
-        elif network_mode.startswith("container:"):
-            violations.append(f"{prefix} uses network_mode: container (joins another container's net ns)")
+        elif network_mode.startswith(("container:", "service:")):
+            violations.append(f"{prefix} uses network_mode: {network_mode} (joins another container's net ns)")
         elif network_mode == "bridge":
             violations.append(f"{prefix} uses network_mode: bridge (the shared default bridge / docker0); "
                               "put the service on a per-stack user-defined network instead")
         for field in ("pid", "ipc", "uts", "cgroup"):
-            value = str(svc.get(field, ""))
-            if value == "host" or value.startswith("container:"):
+            value = str(svc.get(field, "")).strip()
+            if value == "host" or value.startswith(("container:", "service:")):
                 violations.append(f"{prefix} uses {field}: {value}")
-        if str(svc.get("cgroupns")) == "host":
+        if str(svc.get("cgroupns")).strip() == "host":
             violations.append(f"{prefix} uses cgroupns: host")
-        if str(svc.get("userns_mode")) == "host":
+        if str(svc.get("userns_mode")).strip() == "host":
             violations.append(f"{prefix} uses userns_mode: host (defeats userns-remap)")
 
         cap_drop = {_norm_cap(c) for c in _as_list(svc.get("cap_drop"))}
@@ -224,10 +244,19 @@ def check_file(path):
             if "unconfined" in normalised or normalised in {"label:disable", "no-new-privileges:false"}:
                 violations.append(f"{prefix} weakens the sandbox via security_opt: {opt!r}")
 
+        if _as_list(svc.get("volumes_from")):
+            violations.append(f"{prefix} uses volumes_from (mounts another container's volumes)")
+
         for vol in _as_list(svc.get("volumes")):
             source = vol.get("source") if isinstance(vol, dict) else str(vol).split(":", 1)[0]
             if source and _is_sensitive_resolved_mount(source):
                 violations.append(f"{prefix} bind-mounts a sensitive host path: {source!r}")
+
+        for field in ("env_file", "label_file"):
+            for entry in _file_entries(svc.get(field)):
+                entry_path = entry.get("path") if isinstance(entry, dict) else entry
+                if entry_path and _is_sensitive_resolved_mount(entry_path):
+                    violations.append(f"{prefix} references a sensitive host path in {field}: {entry_path!r}")
 
         if _as_list(svc.get("devices")):
             violations.append(f"{prefix} passes through host devices (raw device access)")
@@ -255,6 +284,18 @@ def check_file(path):
                     violations.append(f"{path}: volume '{volume_name}' bind device must be an absolute host path")
                 elif _is_sensitive_resolved_mount(device):
                     violations.append(f"{path}: volume '{volume_name}' bind-mounts a sensitive host path: {device!r}")
+
+    # Top-level secrets/configs with `file:` bind-mount host files into containers.
+    for section in ("secrets", "configs"):
+        items = doc.get(section)
+        if isinstance(items, dict):
+            for item_name, item in items.items():
+                if isinstance(item, dict):
+                    file_path = item.get("file")
+                    if file_path and _is_sensitive_resolved_mount(file_path):
+                        violations.append(
+                            f"{path}: {section[:-1]} '{item_name}' reads a sensitive host path: {file_path!r}"
+                        )
 
     # File-level: reject attaching to the shared default bridge (docker0) through an external
     # network — the back door that evades the per-service `network_mode: bridge` check above.

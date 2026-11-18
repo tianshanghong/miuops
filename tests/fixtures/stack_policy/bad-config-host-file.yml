@@ -1,0 +1,7 @@
+services:
+  app:
+    image: example/app:1.0
+    cap_drop: [ALL]
+configs:
+  fleet_env:
+    file: /opt/stacks/.env
