@@ -1,0 +1,22 @@
+---
+# Verify the installed Traefik binary meets the patched security baseline
+# (>= 3.7.19: fixes GHSA-xv5x-242w-7hf7, GHSA-ccgh-9g52-6vwg, GHSA-cp28-5662-543f,
+# GHSA-p956-6gvv-mxqp, GHSA-x5pf-cqh3-2gv8, GHSA-rr42-h8r2-f28g).
+- name: Read the installed Traefik version
+  ansible.builtin.command:
+    argv: ["{{ traefik_bin }}", "version"]
+  register: traefik_version_out
+  changed_when: false
+  check_mode: false
+
+- name: Require Traefik 3.7.19 or newer
+  ansible.builtin.assert:
+    that:
+      - traefik_versions | length == 1
+      - (traefik_versions | first | default('0')) is version('3.7.19', '>=')
+    fail_msg: >-
+      Traefik 3.7.19 or newer is required to mitigate known security advisories.
+      {{ traefik_bin }} reported: {{ traefik_version_out.stdout }}
+    quiet: true
+  vars:
+    traefik_versions: "{{ traefik_version_out.stdout | regex_findall('(?m)^Version:[ \\t]+v?([0-9]+\\.[0-9]+\\.[0-9]+)(?:\\s|$)') }}"

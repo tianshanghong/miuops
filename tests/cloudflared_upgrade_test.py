@@ -30,6 +30,8 @@ class CloudflaredUpgradeTest(unittest.TestCase):
             "ExecStart=/usr/bin/cloudflared tunnel --config /opt/test-tunnel/config.yml run",
             unit,
         )
+        self.assertIn("NoNewPrivileges=true", unit)
+        self.assertIn("ProtectSystem=strict", unit)
 
     def check_version(self, output, expected_success, exit_code=0):
         with tempfile.TemporaryDirectory(prefix="miuops-cloudflared-") as tmp:
@@ -50,16 +52,17 @@ class CloudflaredUpgradeTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode == 0, expected_success, result.stdout + result.stderr)
             if not expected_success and not exit_code:
-                self.assertIn("2026.10.2", result.stdout)
+                self.assertIn("2026.11.1", result.stdout)
 
     def test_fixed_version_is_accepted(self):
-        self.check_version("cloudflared version 2026.10.2 (built test)", True)
+        self.check_version("cloudflared version 2026.11.1 (built test)", True)
 
     def test_latest_version_is_accepted(self):
-        self.check_version("cloudflared version 2026.10.6 (built test)", True)
+        self.check_version("cloudflared version 2026.11.2 (built test)", True)
 
     def test_vulnerable_version_is_rejected(self):
-        self.check_version("cloudflared version 2026.10.1 (built test)", False)
+        self.check_version("cloudflared version 2026.11.0 (built test)", False)
+        self.check_version("cloudflared version 2026.10.6 (built test)", False)
 
     def test_unknown_version_is_rejected(self):
         self.check_version("unknown development build", False)
@@ -111,9 +114,11 @@ class CloudflaredUpgradeTest(unittest.TestCase):
                 process.terminate()
                 process.wait(timeout=5)
 
+    @unittest.skipUnless(Path("/proc/self/exe").exists(), "requires Linux /proc/<pid>/exe")
     def test_retry_after_interrupted_upgrade_restarts_old_process(self):
         self.check_running_binary(replaced=True)
 
+    @unittest.skipUnless(Path("/proc/self/exe").exists(), "requires Linux /proc/<pid>/exe")
     def test_current_process_does_not_restart(self):
         self.check_running_binary(replaced=False)
 

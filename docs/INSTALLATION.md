@@ -30,7 +30,7 @@ python3.14 -m venv .venv
 # Ubuntu/Debian
 sudo apt update && sudo apt install python3-venv jq
 # cloudflared: see https://pkg.cloudflare.com/
-python3 -m venv .venv  # python3 must be 3.12, 3.13 or 3.14
+python3 -m venv .venv  # python3 must be 3.13, 3.14 or 3.15
 
 # From the miuops checkout, after the platform-specific steps above:
 source .venv/bin/activate
@@ -38,9 +38,9 @@ pip install -r requirements-control.txt
 ansible-galaxy collection install --upgrade -r requirements.yml
 ```
 
-The tested control environment is ansible-core 2.21.5 with the collections pinned
-in `requirements.yml`. It requires control-node Python 3.12–3.14 and target-node
-Python 3.9–3.14. Activate the virtualenv before running `miuops` or Ansible.
+The tested control environment is ansible-core 2.22.0 with the collections pinned
+in `requirements.yml`. It requires control-node Python 3.13–3.15 and target-node
+Python 3.9–3.15. Activate the virtualenv before running `miuops` or Ansible.
 
 A full `miuops apply` already upgrades system packages. Tagged Docker/backup
 applies also update their managed packages to the candidate versions from the
@@ -49,9 +49,11 @@ upgrades may restart services. Traefik, Alloy, the socket proxy and the YubiKey 
 repository's fixed versions and checksums; update those pins together.
 
 cloudflared is updated from Cloudflare's apt repository. Its systemd service uses
-`/usr/bin/cloudflared`, and the role rejects versions older than 2026.10.2, the
-eMudhra CA incident fix. The latest stable release checked on 2026-10-29 is
-2026.10.6. After applying, verify the running service has restarted on the new
+`/usr/bin/cloudflared`, and the role rejects versions older than 2026.11.1 (which
+includes the 2026.10.2 eMudhra CA distrust, the 2026.11.0 `VULN-170057` Access
+matrix-parameter bypass fix, and the 2026.11.1 `VULN-187395` / `CVE-2026-128085`
+OpenTelemetry fix). The latest stable release checked on 2026-11-17 is
+2026.11.1. After applying, verify the running service has restarted on the new
 binary (`systemctl status cloudflared` and `/usr/bin/cloudflared --version`).
 
 ### Install aws CLI (for backups, Step 2)

@@ -59,6 +59,9 @@
   become: true
   notify: Restart traefik
 
+- name: Verify Traefik meets the security baseline
+  ansible.builtin.include_tasks: verify.yml
+
 - name: Deploy Traefik static config
   ansible.builtin.template:
     src: traefik.yml.j2
@@ -104,6 +107,13 @@
     state: started
     daemon_reload: true
   become: true
+
+- name: Detect an interrupted Traefik upgrade
+  ansible.builtin.include_tasks: running.yml
+  when: not ansible_check_mode
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers
 
 # User-stack scaffolding (unchanged): the GitOps repo deploys app stacks under /opt/stacks.
 - name: Create stacks directory
