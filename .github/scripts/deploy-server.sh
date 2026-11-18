@@ -170,7 +170,8 @@ for stack in */; do
   stack="${stack%/}"
   [ -z "$ONLY_STACK" ] || [ "$stack" = "$ONLY_STACK" ] || continue
   [ ! -L "$stack" ] || { echo "::error::stack '${stack}' is a symbolic link"; exit 1; }
-  for cf in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+  for cf in compose.yaml compose.yml docker-compose.yaml docker-compose.yml \
+            compose.override.yaml compose.override.yml docker-compose.override.yaml docker-compose.override.yml; do
     [ ! -L "$stack/$cf" ] || { echo "::error::compose file '${stack}/${cf}' is a symbolic link"; exit 1; }
   done
   # Documentation/support directories are inert. A present Compose project that
@@ -179,6 +180,7 @@ for stack in */; do
      [ ! -f "$stack/docker-compose.yaml" ] && [ ! -f "$stack/docker-compose.yml" ]; then
     continue
   fi
+  python3 "$policy_dir/check.py" --pre-config "$stack"
   if ! ( cd "$stack" && docker compose ${compose_env[@]+"${compose_env[@]}"} config -q ); then
     echo "::error::stack '${stack}' is not a valid compose project"
     exit 1
@@ -228,7 +230,12 @@ def norm(n):
     n = n.lower()
     n = re.sub(r"[^a-z0-9_-]", "", n)
     return re.sub(r"^[_-]+", "", n)
-present = {norm(d) for d in os.listdir(root) if os.path.isdir(os.path.join(root, d))}
+cfs = ("compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml")
+present = {
+    norm(d) for d in os.listdir(root)
+    if os.path.isdir(os.path.join(root, d))
+    and any(os.path.isfile(os.path.join(root, d, cf)) for cf in cfs)
+}
 for p in json.load(sys.stdin):
     cfg = p.get("ConfigFiles", "") or ""
     if cfg.startswith(root + "/") and p["Name"] not in present:

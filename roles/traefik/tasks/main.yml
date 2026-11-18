@@ -109,7 +109,10 @@
   become: true
 
 - name: Detect an interrupted Traefik upgrade
-  ansible.builtin.include_tasks: running.yml
+  ansible.builtin.include_tasks:
+    file: running.yml
+    apply:
+      become: true
   when: not ansible_check_mode
 
 - name: Flush handlers

@@ -14,7 +14,7 @@ Requires=docker.service
 # may NOT do this — the policy-check rejects `userns_mode: host`.
 TimeoutStartSec=180
 ExecStartPre=-/usr/bin/docker rm -f docker-socket-proxy
-ExecStartPre=/usr/bin/docker pull -q {{ traefik_proxy_image }}
+ExecStartPre=/bin/sh -c '/usr/bin/docker image inspect {{ traefik_proxy_image }} >/dev/null 2>&1 || /usr/bin/docker pull -q {{ traefik_proxy_image }}'
 ExecStart=/usr/bin/docker run --rm --name docker-socket-proxy \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -p {{ traefik_proxy_bind }}:2375 \

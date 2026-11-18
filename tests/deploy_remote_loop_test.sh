@@ -32,7 +32,7 @@ for a in "\$@"; do
       if [[ "\$*" == *'--format json'* ]]; then cat "\$PWD/resolved.json"; fi
       exit 0 ;;  # 'broken' = invalid compose
     up)     printf 'UP %s %s\n' "\$(basename "\$PWD")" "\$*" >> "\$STUB_LOG"; exit 0 ;;  # stack = cwd basename
-    ls)     printf '[]\n'; exit 0 ;;                   # no running projects -> no teardown
+    ls)     printf '%s\n' "\${STUB_LS:-[]}"; exit 0 ;;  # no running projects by default
     down)   printf 'DOWN %s\n' "\$*" >> "\$STUB_LOG"; exit 0 ;;
   esac
 done
@@ -59,6 +59,18 @@ mkremote() {
     ln -s /etc "$d/web/data"
     printf '{"services":{"web":{"image":"nginx:1","cap_drop":["ALL"],"volumes":[{"type":"bind","source":"%s","target":"/mnt"}]}}}' "$d/web/data" > "$d/web/resolved.json"
   fi
+  if [ "${OVERRIDE_LINK:-false}" = true ]; then ln -s /etc/hosts "$d/web/compose.override.yml"; fi
+  if [ "${RAW_ENVFILE:-false}" = true ]; then
+    printf 'services:\n  x:\n    image: busybox\n    env_file:\n      - /etc/miuops-backup/backup.env\n' > "$d/web/docker-compose.yml"
+  fi
+  if [ "${SYMLINK_ENVFILE:-false}" = true ]; then
+    ln -s /etc/miuops-backup/backup.env "$d/web/app.env"
+    printf 'services:\n  x:\n    image: busybox\n    env_file:\n      - ./app.env\n' > "$d/web/docker-compose.yml"
+  fi
+  if [ "${LEFTOVER_ENV_DIR:-false}" = true ]; then
+    mkdir -p "$d/oldstack"
+    printf 'FOO=bar\n' > "$d/oldstack/.env"
+  fi
   if [ "${NAMED_BIND:-false}" = true ]; then
     printf '{"services":{"web":{"image":"nginx:1","cap_drop":["ALL"],"volumes":[{"type":"volume","source":"hostetc","target":"/mnt"}]}},"volumes":{"hostetc":{"driver":"local","driver_opts":{"type":"none","o":"bind","device":"%s"}}}}' "${BIND_DEVICE:-/etc}" > "$d/web/resolved.json"
   fi
@@ -67,9 +79,13 @@ mkremote() {
 
 # run_body <FORCE_RECREATE> <ONLY_STACK> -> sets: RC, LOG (path to recorded ups)
 run_body() {
-  local force="$1" only="$2" d log rc=0
+  local force="$1" only="$2" d log rc=0 stub_ls="[]"
   d="$(mkremote)"; log="$TMP/log.$RANDOM"; : > "$log"
-  STUB_LOG="$log" PATH="$bin:$PATH" bash "$BODY" "$d" "$force" "$only" "$(base64 < "$ROOT/tests/stack_policy_check.py" | tr -d '\n')" >"$TMP/out" 2>&1 || rc=$?
+  if [ "${LEFTOVER_ENV_DIR:-false}" = true ]; then
+    local real_d; real_d="$(cd "$d" && pwd -P)"
+    stub_ls="[{\"Name\":\"oldstack\",\"ConfigFiles\":\"${real_d}/oldstack/docker-compose.yml\"}]"
+  fi
+  STUB_LOG="$log" STUB_LS="$stub_ls" PATH="$bin:$PATH" bash "$BODY" "$d" "$force" "$only" "$(base64 < "$ROOT/tests/stack_policy_check.py" | tr -d '\n')" >"$TMP/out" 2>&1 || rc=$?
   RC=$rc; LOG="$log"; OUT="$(cat "$TMP/out")"; rm -rf "$d"
 }
 
@@ -130,4 +146,19 @@ printf '%s' "$OUT" | grep -q 'sensitive host path' || fail "expected named volum
 NAMED_BIND=true BIND_DEVICE=/srv/app-data run_body false ''
 [ "$RC" -eq 0 ] || fail "non-sensitive local bind must remain deployable: $OUT"
 grep -q '^UP web ' "$LOG" || fail "safe named volume never deployed"
+OVERRIDE_LINK=true run_body false ''
+[ "$RC" -ne 0 ] || fail "symlinked compose.override.yml must be refused"
+grep -q '^UP ' "$LOG" && fail "symlinked override must block all starts"
+printf '%s' "$OUT" | grep -q 'symbolic link' || fail "expected symlink rejection for compose.override.yml: $OUT"
+RAW_ENVFILE=true run_body false ''
+[ "$RC" -ne 0 ] || fail "raw env_file pointing to sensitive host path must be refused pre-config"
+grep -q '^UP ' "$LOG" && fail "unsafe raw env_file must block all starts"
+printf '%s' "$OUT" | grep -q 'sensitive host path' || fail "expected pre-config env_file rejection: $OUT"
+SYMLINK_ENVFILE=true run_body false ''
+[ "$RC" -ne 0 ] || fail "relative env_file symlink to sensitive host path must be refused pre-config"
+grep -q '^UP ' "$LOG" && fail "symlinked env_file must block all starts"
+printf '%s' "$OUT" | grep -q 'sensitive host path' || fail "expected pre-config symlinked env_file rejection: $OUT"
+LEFTOVER_ENV_DIR=true run_body false ''
+[ "$RC" -eq 0 ] || fail "teardown with leftover .env dir must succeed: $OUT"
+grep -q '^DOWN -p oldstack down --remove-orphans$' "$LOG" || fail "removed stack with leftover .env dir must be torn down, log: $(cat "$LOG")"
 echo "ALL REMOTE-LOOP CHECKS PASSED"
