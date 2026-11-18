@@ -76,6 +76,14 @@ expect_pass good-localtime.yml
 
 expect_fail bad-mount-dotdot.yml
 expect_fail bad-mount-dotslash.yml
+expect_fail bad-mount-cloudflared.yml
+expect_fail bad-mount-backup-env.yml
+expect_fail bad-secret-host-file.yml
+expect_fail bad-config-host-file.yml
+expect_fail bad-volumes-from.yml
+expect_fail bad-pid-service.yml
+expect_fail bad-netmode-service.yml
+expect_fail bad-envfile-sensitive.yml
 
 # Image pin: an un-pinned image warns (but still passes); a digest-pinned image is silent.
 expect_warn warn-unpinned-image.yml "digest"

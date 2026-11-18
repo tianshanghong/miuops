@@ -170,19 +170,22 @@ for stack in */; do
   stack="${stack%/}"
   [ -z "$ONLY_STACK" ] || [ "$stack" = "$ONLY_STACK" ] || continue
   [ ! -L "$stack" ] || { echo "::error::stack '${stack}' is a symbolic link"; exit 1; }
+  for cf in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+    [ ! -L "$stack/$cf" ] || { echo "::error::compose file '${stack}/${cf}' is a symbolic link"; exit 1; }
+  done
   # Documentation/support directories are inert. A present Compose project that
   # fails to resolve must stop the entire deployment, not silently retain old code.
   if [ ! -f "$stack/compose.yaml" ] && [ ! -f "$stack/compose.yml" ] &&
      [ ! -f "$stack/docker-compose.yaml" ] && [ ! -f "$stack/docker-compose.yml" ]; then
     continue
   fi
-  if ! ( cd "$stack" && docker compose "${compose_env[@]}" config -q ); then
+  if ! ( cd "$stack" && docker compose ${compose_env[@]+"${compose_env[@]}"} config -q ); then
     echo "::error::stack '${stack}' is not a valid compose project"
     exit 1
   fi
   config="$(mktemp "$REMOTE_DIR/$stack/.miuops-config.XXXXXX")"
   configs+=("$config")
-  ( cd "$stack" && docker compose "${compose_env[@]}" config --format json ) > "$config"
+  ( cd "$stack" && docker compose ${compose_env[@]+"${compose_env[@]}"} config --format json ) > "$config"
   python3 "$policy_dir/check.py" "$config"
   stacks+=("$stack")
   stack_matched=1

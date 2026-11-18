@@ -106,6 +106,16 @@
   notify: Restart Docker
   tags: ['docker']
 
+- name: Ensure Docker is enabled and started
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+  tags: ['docker']
+
+- name: Flush handlers
+  meta: flush_handlers
+
 - name: Assert the Docker API is not exposed over TCP (unix socket only)
   # The Docker API over TCP = unauthenticated root on the host. Check every path it can be
   # enabled on, not just daemon.json: the systemd unit/socket (-H/--host tcp, or a TCP
@@ -131,13 +141,6 @@
       echo "FAIL: a process exposes a Docker API TCP port on a non-loopback address: $exposed"; exit 1
     fi
   changed_when: false
-  tags: ['docker']
-
-- name: Ensure Docker is enabled and started
-  systemd:
-    name: docker
-    state: started
-    enabled: yes
   tags: ['docker']
 
 - name: Install QEMU user-mode emulation for cross-architecture containers

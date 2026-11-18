@@ -165,7 +165,6 @@ sops_encrypt_tunnel_cred() (  # $1 = tunnel_id
         info "Encrypted tunnel credential already present: ${dst}"
         return 0
     fi
-    local tmp
     tmp="$(mktemp "${SECRETS_DIR}/.tunnel.XXXXXX")" || die "mktemp failed"
     trap 'rm -f "$tmp"' EXIT
     trap 'exit 130' INT
@@ -659,7 +658,7 @@ cmd_up() {
   Linux:  sudo apt install openssh-client"
     command -v ansible-playbook >/dev/null 2>&1 \
         || die "ansible-playbook not found
-  Activate a Python 3.12–3.14 virtualenv, then in the miuops checkout run:
+  Activate a Python 3.13–3.15 virtualenv, then in the miuops checkout run:
   pip install -r requirements-control.txt
   See docs/INSTALLATION.md for setup instructions."
     command -v cloudflared >/dev/null 2>&1 \
