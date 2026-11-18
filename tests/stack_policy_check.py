@@ -119,13 +119,16 @@ def _is_sensitive_mount(source):
     return any(path == pre or path.startswith(pre + "/") for pre in SENSITIVE_MOUNT_PREFIXES)
 
 
-def _is_sensitive_resolved_mount(source):
+def _is_sensitive_resolved_mount(source, base_dir=None):
     # Deployment runs this on the destination host, after Compose has expanded
     # relative bind sources. Docker follows symlinks that Compose leaves intact.
     if _is_sensitive_mount(source):
         return True
-    if os.path.isabs(str(source)):
-        resolved = os.path.realpath(source)
+    candidate = str(source)
+    if base_dir and not os.path.isabs(candidate):
+        candidate = os.path.join(base_dir, candidate)
+    if os.path.isabs(candidate):
+        resolved = os.path.realpath(candidate)
         if _is_sensitive_mount(resolved):
             return True
         if sys.platform == "darwin" and resolved.startswith(("/private/etc", "/private/var")):
@@ -197,6 +200,7 @@ def check_file(path):
     if not isinstance(services, dict):
         return [f"{path}: `services` is not a mapping"], []
 
+    base_dir = os.path.dirname(os.path.abspath(path))
     violations = []
     warnings = []
     for name, svc in services.items():
@@ -249,13 +253,13 @@ def check_file(path):
 
         for vol in _as_list(svc.get("volumes")):
             source = vol.get("source") if isinstance(vol, dict) else str(vol).split(":", 1)[0]
-            if source and _is_sensitive_resolved_mount(source):
+            if source and _is_sensitive_resolved_mount(source, base_dir=base_dir):
                 violations.append(f"{prefix} bind-mounts a sensitive host path: {source!r}")
 
         for field in ("env_file", "label_file"):
             for entry in _file_entries(svc.get(field)):
                 entry_path = entry.get("path") if isinstance(entry, dict) else entry
-                if entry_path and _is_sensitive_resolved_mount(entry_path):
+                if entry_path and _is_sensitive_resolved_mount(entry_path, base_dir=base_dir):
                     violations.append(f"{prefix} references a sensitive host path in {field}: {entry_path!r}")
 
         if _as_list(svc.get("devices")):
@@ -282,7 +286,7 @@ def check_file(path):
                 device = options.get("device")
                 if not isinstance(device, str) or not os.path.isabs(device):
                     violations.append(f"{path}: volume '{volume_name}' bind device must be an absolute host path")
-                elif _is_sensitive_resolved_mount(device):
+                elif _is_sensitive_resolved_mount(device, base_dir=base_dir):
                     violations.append(f"{path}: volume '{volume_name}' bind-mounts a sensitive host path: {device!r}")
 
     # Top-level secrets/configs with `file:` bind-mount host files into containers.
@@ -292,7 +296,7 @@ def check_file(path):
             for item_name, item in items.items():
                 if isinstance(item, dict):
                     file_path = item.get("file")
-                    if file_path and _is_sensitive_resolved_mount(file_path):
+                    if file_path and _is_sensitive_resolved_mount(file_path, base_dir=base_dir):
                         violations.append(
                             f"{path}: {section[:-1]} '{item_name}' reads a sensitive host path: {file_path!r}"
                         )
@@ -319,10 +323,131 @@ def check_file(path):
     return violations, warnings
 
 
+COMPOSE_FILENAMES = (
+    "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml",
+    "compose.override.yaml", "compose.override.yml",
+    "docker-compose.override.yaml", "docker-compose.override.yml",
+)
+
+
+def _strip_yaml_quotes(value):
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        return text[1:-1]
+    return text
+
+
+def _scan_pre_config_text(content, path, base_dir):
+    """Best-effort stdlib scanner when PyYAML is absent on the destination host."""
+    violations = []
+    block_field = None
+    block_indent = -1
+    for raw_line in content.splitlines():
+        stripped = raw_line.split("#", 1)[0].rstrip()
+        if not stripped.strip():
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        text = stripped.strip()
+        if block_field is not None and indent <= block_indent and not text.startswith("- "):
+            block_field = None
+        if block_field is not None:
+            candidate = text[2:].strip() if text.startswith("- ") else ""
+            if candidate.startswith("path:"):
+                candidate = candidate[5:].strip()
+            elif text.startswith("path:"):
+                candidate = text[5:].strip()
+            candidate = _strip_yaml_quotes(candidate)
+            if candidate and _is_sensitive_resolved_mount(candidate, base_dir=base_dir):
+                violations.append(f"{path}: references a sensitive host path in {block_field}: {candidate!r}")
+                continue
+        for key in ("env_file", "label_file", "file"):
+            prefix = key + ":"
+            if text == prefix or text.startswith(prefix + " "):
+                val = text[len(prefix):].strip()
+                if not val:
+                    block_field = key
+                    block_indent = indent
+                elif val.startswith("[") and val.endswith("]"):
+                    for elem in val[1:-1].split(","):
+                        c = _strip_yaml_quotes(elem)
+                        if c and _is_sensitive_resolved_mount(c, base_dir=base_dir):
+                            violations.append(f"{path}: references a sensitive host path in {key}: {c!r}")
+                else:
+                    c = _strip_yaml_quotes(val)
+                    if c and _is_sensitive_resolved_mount(c, base_dir=base_dir):
+                        violations.append(f"{path}: references a sensitive host path in {key}: {c!r}")
+                break
+    return violations
+
+
+def check_pre_config_dir(stack_dir):
+    """Check raw compose files in stack_dir for sensitive env_file/label_file/secrets/configs
+    before `docker compose config` reads and inlines env_file contents from the host disk.
+    """
+    violations = []
+    base_dir = os.path.abspath(stack_dir)
+    for cf in COMPOSE_FILENAMES:
+        path = os.path.join(base_dir, cf)
+        if os.path.islink(path):
+            violations.append(f"{path}: compose file is a symbolic link")
+            continue
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as handle:
+                content = handle.read()
+        except OSError:
+            continue
+        try:
+            doc = json.loads(content)
+        except ValueError:
+            if yaml is None:
+                violations.extend(_scan_pre_config_text(content, path, base_dir))
+                continue
+            try:
+                doc = yaml.safe_load(content)
+            except Exception:
+                continue
+        if not isinstance(doc, dict):
+            continue
+        services = doc.get("services")
+        if isinstance(services, dict):
+            for name, svc in services.items():
+                if not isinstance(svc, dict):
+                    continue
+                prefix = f"{path} [service '{name}']"
+                for field in ("env_file", "label_file"):
+                    for entry in _file_entries(svc.get(field)):
+                        entry_path = entry.get("path") if isinstance(entry, dict) else entry
+                        if entry_path and _is_sensitive_resolved_mount(entry_path, base_dir=base_dir):
+                            violations.append(
+                                f"{prefix} references a sensitive host path in {field}: {entry_path!r}"
+                            )
+        for section in ("secrets", "configs"):
+            items = doc.get(section)
+            if isinstance(items, dict):
+                for item_name, item in items.items():
+                    if isinstance(item, dict):
+                        file_path = item.get("file")
+                        if file_path and _is_sensitive_resolved_mount(file_path, base_dir=base_dir):
+                            violations.append(
+                                f"{path}: {section[:-1]} '{item_name}' reads a sensitive host path: {file_path!r}"
+                            )
+    return violations
+
+
 def main(argv):
     if not argv:
         sys.stderr.write(__doc__)
         return 2
+    if len(argv) == 2 and argv[0] == "--pre-config":
+        violations = check_pre_config_dir(argv[1])
+        if violations:
+            sys.stderr.write("Stack policy-check FAILED:\n")
+            for item in violations:
+                sys.stderr.write(f"  - {item}\n")
+            return 1
+        return 0
     all_violations = []
     all_warnings = []
     for path in argv:

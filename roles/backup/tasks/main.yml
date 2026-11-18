@@ -68,8 +68,31 @@
   when: backup_enabled | bool
   tags: ['backup']
 
-- name: Check whether aws CLI is already installed
-  ansible.builtin.command: which aws
+- name: Check whether awscli is packaged in apt
+  ansible.builtin.command:
+    argv: [apt-cache, policy, awscli]
+  register: backup_awscli_policy
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: backup_enabled | bool
+  tags: ['backup']
+
+- name: Install or upgrade awscli via apt (when packaged by the distro)
+  ansible.builtin.apt:
+    name: awscli
+    state: latest
+    update_cache: true
+  when:
+    - backup_enabled | bool
+    - (backup_awscli_policy.rc | default(1)) == 0
+    - "'Candidate:' in (backup_awscli_policy.stdout | default(''))"
+    - "'Candidate: (none)' not in (backup_awscli_policy.stdout | default(''))"
+  tags: ['backup']
+
+- name: Check that an aws CLI executable is present on PATH
+  ansible.builtin.command:
+    argv: [which, aws]
   register: backup_aws_bin
   changed_when: false
   failed_when: false
@@ -77,14 +100,17 @@
   when: backup_enabled | bool
   tags: ['backup']
 
-- name: Install awscli via apt when not already installed
-  ansible.builtin.apt:
-    name: awscli
-    state: latest
-    update_cache: true
+- name: Require aws CLI executable on PATH
+  ansible.builtin.assert:
+    that: (backup_aws_bin.rc | default(1)) == 0
+    fail_msg: >-
+      backup_enabled is true, but no 'aws' executable was found on PATH (and this distribution
+      does not package 'awscli' in apt). Install AWS CLI v2 to /usr/local/bin/aws before
+      enabling roles/backup on this host.
+    quiet: true
   when:
     - backup_enabled | bool
-    - (backup_aws_bin.rc | default(1)) != 0
+    - not ansible_check_mode
   tags: ['backup']
 
 - name: Install age (only when encryption=age)
