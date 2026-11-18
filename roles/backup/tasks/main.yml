@@ -58,15 +58,33 @@
 # ---- Dependencies (self-contained) -------------------------------------------
 # awscli streams the upload (`aws s3 cp - s3://...`); jq parses the volume list;
 # tar is base. age is installed only when that encryption mode is used.
-- name: Install backup dependencies (awscli, jq, tar)
+- name: Install base backup dependencies (jq, tar)
   ansible.builtin.apt:
     name:
-      - awscli
       - jq
       - tar
     state: latest
     update_cache: true
   when: backup_enabled | bool
+  tags: ['backup']
+
+- name: Check whether aws CLI is already installed
+  ansible.builtin.command: which aws
+  register: backup_aws_bin
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: backup_enabled | bool
+  tags: ['backup']
+
+- name: Install awscli via apt when not already installed
+  ansible.builtin.apt:
+    name: awscli
+    state: latest
+    update_cache: true
+  when:
+    - backup_enabled | bool
+    - (backup_aws_bin.rc | default(1)) != 0
   tags: ['backup']
 
 - name: Install age (only when encryption=age)

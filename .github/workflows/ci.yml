@@ -6,11 +6,11 @@ on:
   pull_request:
 
 concurrency:
-  group: ansible-dev
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Least privilege: the job only checks out code and SSHes out to the dev server;
-# it never uses GITHUB_TOKEN to write back to the repo.
+# Least privilege: the job only checks out code and tests locally against an
+# ephemeral KVM guest; it never uses GITHUB_TOKEN to write back to the repo.
 permissions:
   contents: read
 
@@ -114,77 +114,263 @@ jobs:
       - name: Traefik upgrade regression tests
         run: python3 tests/traefik_upgrade_test.py
 
-      - name: Write SSH key
-        env:
-          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+      - name: Playbook syntax check
         run: |
-          test -n "$SSH_KNOWN_HOSTS" || { echo "Missing verified SSH_KNOWN_HOSTS" >&2; exit 1; }
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-      - name: Write inventory
-        run: |
-          cat <<EOF > inventory.ini
+          cat <<'EOF' > inventory.ini
           [bare_metal]
-          dev ansible_host=${{ secrets.DEV_SERVER_HOST }} ansible_user=${{ secrets.DEV_SERVER_USER }} ansible_ssh_private_key_file=~/.ssh/id_ed25519
+          dev ansible_host=192.168.100.2 ansible_user=root
+          EOF
+          ansible-playbook playbook.yml --syntax-check
+          rm -f inventory.ini
+
+      - name: Set up KVM TAP network and mock IMDS endpoint
+        run: |
+          [ -e /dev/kvm ] || { echo "FAIL: /dev/kvm is not available on this runner"; exit 1; }
+          sudo modprobe tun 2>/dev/null || true
+          sudo ip tuntap add dev tap0 mode tap
+          sudo ip addr add 192.168.100.1/24 dev tap0
+          sudo ip link set tap0 up
+          sudo sysctl -w net.ipv4.ip_forward=1
+          DEFAULT_IF="$(ip route show default | awk '/default/ {print $5; exit}')"
+          [ -n "$DEFAULT_IF" ] || { echo "FAIL: could not determine default route interface"; exit 1; }
+          # Runner Docker sets FORWARD policy to DROP; allow tap0 forwarding so the guest can reach apt/Docker Hub.
+          sudo iptables -I FORWARD 1 -i tap0 -j ACCEPT
+          sudo iptables -I FORWARD 1 -o tap0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+          sudo iptables -I DOCKER-USER 1 -i tap0 -j ACCEPT 2>/dev/null || true
+          sudo iptables -I DOCKER-USER 1 -o tap0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+          sudo iptables -t nat -I POSTROUTING 1 -s 192.168.100.0/24 -o "$DEFAULT_IF" -j MASQUERADE
+          # Redirect guest-forwarded 169.254.169.254:80 to 192.168.100.1:18169 without touching the runner's local routing table.
+          sudo iptables -t nat -I PREROUTING 1 -i tap0 -d 169.254.169.254 -p tcp --dport 80 -j DNAT --to-destination 192.168.100.1:18169
+          sudo iptables -I INPUT 1 -i tap0 -d 192.168.100.1 -p tcp --dport 18169 -j ACCEPT
+          mkdir -p /tmp/ci-kvm
+          nohup python3 -c '
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b"mock-imds-ok\n")
+              def log_message(self, *args):
+                  pass
+          HTTPServer(("192.168.100.1", 18169), Handler).serve_forever()
+          ' </dev/null >/tmp/ci-kvm/imds.log 2>&1 &
+          echo "$!" > /tmp/ci-kvm/imds.pid
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 1 http://192.168.100.1:18169/ >/dev/null 2>&1; then
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "FAIL: mock IMDS server did not start"
+              cat /tmp/ci-kvm/imds.log || true
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+      - name: Boot ephemeral Ubuntu 24.04 KVM guest
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-system-x86 qemu-utils cloud-image-utils rsync >/dev/null
+
+          mkdir -p ~/.ssh /tmp/ci-kvm
+          chmod 700 ~/.ssh
+          ssh-keygen -t ed25519 -N '' -C 'ci-ephemeral@ci.invalid' -f ~/.ssh/id_ed25519 >/dev/null
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keygen -t ed25519 -N '' -C 'host@ci.invalid' -f /tmp/ci-kvm/vm_host_ed25519_key >/dev/null
+          chmod 600 /tmp/ci-kvm/vm_host_ed25519_key
+          printf '192.168.100.2 %s\n' "$(cat /tmp/ci-kvm/vm_host_ed25519_key.pub)" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+          curl --retry 3 --retry-delay 5 -fsSL \
+            -o /tmp/ci-kvm/noble-base.img \
+            https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+          qemu-img create -f qcow2 -F qcow2 -b /tmp/ci-kvm/noble-base.img /tmp/ci-kvm/vm-disk.qcow2 20G
+
+          cat <<'EOF' > /tmp/ci-kvm/meta-data.yml
+          instance-id: ci-miuops-e2e
+          local-hostname: dev
           EOF
 
-      - name: Write host_vars
-        env:
-          GROUP_VARS: ${{ secrets.GROUP_VARS_ALL }}
-        run: |
-          mkdir -p host_vars
-          printf '%s\n' "$GROUP_VARS" > host_vars/dev.yml
-          # The runner makes many short SSH connections from one IP (converge + idempotency
-          # re-run + the external-probe verifications); ufw's SSH rate-limit (~6/30s) would
-          # throttle that and flake the job. Disable it on the CI/dev host only — real hosts
-          # keep the default (enabled).
-          printf '%s\n' "firewall_ssh_ratelimit_enabled: false" >> host_vars/dev.yml
-          python3 -c "
-          import yaml
-          with open('host_vars/dev.yml') as f:
-              data = yaml.safe_load(f)
-          for d in data.get('domains', []):
-              print(f'::add-mask::{d}')
-          for key in ('tunnel_id',):
-              if data.get(key):
-                  print(f'::add-mask::{data[key]}')
-          "
+          cat <<'EOF' > /tmp/ci-kvm/network-config.yml
+          version: 2
+          ethernets:
+            vm0:
+              match:
+                macaddress: "52:54:00:12:34:56"
+              set-name: eth0
+              addresses:
+                - 192.168.100.2/24
+              nameservers:
+                addresses:
+                  - 1.1.1.1
+                  - 8.8.8.8
+              routes:
+                - to: default
+                  via: 192.168.100.1
+                - to: 169.254.169.254/32
+                  via: 192.168.100.1
+          EOF
 
-      - name: Write tunnel credentials
-        env:
-          TUNNEL_CREDS: ${{ secrets.TUNNEL_CREDENTIALS_JSON }}
+          {
+            cat <<'EOF'
+          #cloud-config
+          disable_root: false
+          ssh_pwauth: false
+          ssh_authorized_keys:
+          EOF
+            printf '  - %s\n' "$(cat ~/.ssh/id_ed25519.pub)"
+            echo 'ssh_keys:'
+            echo '  ed25519_private: |'
+            sed 's/^/    /' /tmp/ci-kvm/vm_host_ed25519_key
+            printf '  ed25519_public: %s\n' "$(cat /tmp/ci-kvm/vm_host_ed25519_key.pub)"
+            cat <<'EOF'
+          bootcmd:
+            - systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service || true
+            - systemctl disable apt-daily.timer apt-daily-upgrade.timer || true
+          write_files:
+            - path: /etc/apt/apt.conf.d/99-ci-noninteractive.conf
+              permissions: '0644'
+              content: |
+                Dpkg::Options {
+                  "--force-confdef";
+                  "--force-confold";
+                };
+            - path: /etc/needrestart/conf.d/99-ci.conf
+              permissions: '0644'
+              content: |
+                $nrconf{restart} = 'l';
+            - path: /etc/systemd/system/cloudflared.service.d/ci-mock-edge.conf
+              permissions: '0644'
+              content: |
+                [Service]
+                ExecStart=
+                ExecStart=/usr/bin/cloudflared access tcp --hostname ci.invalid --url 127.0.0.1:12399
+            - path: /usr/local/bin/aws
+              permissions: '0755'
+              content: |
+                #!/bin/sh
+                echo "aws-cli/2.0.0-ci-mock"
+                exit 0
+          EOF
+          } > /tmp/ci-kvm/user-data.yml
+
+          python3 -c '
+          import yaml
+          yaml.safe_load(open("/tmp/ci-kvm/user-data.yml"))
+          yaml.safe_load(open("/tmp/ci-kvm/network-config.yml"))
+          '
+          cloud-localds -N /tmp/ci-kvm/network-config.yml /tmp/ci-kvm/seed.iso /tmp/ci-kvm/user-data.yml /tmp/ci-kvm/meta-data.yml
+
+          sudo qemu-system-x86_64 \
+            -enable-kvm \
+            -cpu host \
+            -smp 2 \
+            -m 4096 \
+            -display none \
+            -serial file:/tmp/ci-kvm/console.log \
+            -daemonize \
+            -pidfile /tmp/ci-kvm/qemu.pid \
+            -drive file=/tmp/ci-kvm/vm-disk.qcow2,if=virtio,format=qcow2 \
+            -cdrom /tmp/ci-kvm/seed.iso \
+            -netdev tap,id=net0,ifname=tap0,script=no,downscript=no \
+            -device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56
+
+          SSH_OPTS=(-i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o ConnectTimeout=3 -o BatchMode=yes)
+          for i in $(seq 1 90); do
+            if ssh "${SSH_OPTS[@]}" root@192.168.100.2 true 2>/dev/null; then
+              echo "VM SSH reachable after ${i} attempts"
+              break
+            fi
+            if [ "$i" -eq 90 ]; then
+              echo "FAIL: VM SSH did not become reachable"
+              sudo tail -n 100 /tmp/ci-kvm/console.log || true
+              exit 1
+            fi
+            sleep 2
+          done
+
+          rc=0
+          ssh "${SSH_OPTS[@]}" root@192.168.100.2 'cloud-init status --wait' || rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo "FAIL: cloud-init exited with status $rc"
+            ssh "${SSH_OPTS[@]}" root@192.168.100.2 'cat /var/log/cloud-init-output.log' || true
+            exit 1
+          fi
+          ssh "${SSH_OPTS[@]}" root@192.168.100.2 '
+            systemctl stop apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+            while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+              sleep 2
+            done
+          '
+
+      - name: Write ephemeral inventory, host_vars, and synthetic credentials
         run: |
-          mkdir -p files
-          printf '%s\n' "$TUNNEL_CREDS" > "files/${{ secrets.TUNNEL_ID }}.json"
+          cat <<'EOF' > inventory.ini
+          [bare_metal]
+          dev ansible_host=192.168.100.2 ansible_user=root ansible_ssh_private_key_file=~/.ssh/id_ed25519
+          EOF
+
+          cat <<'EOF' > /tmp/ci-kvm/stack.env
+          CI_TEST_ENV=ok
+          EOF
+
+          mkdir -p host_vars files
+          cat <<'EOF' > host_vars/dev.yml
+          domains:
+            - ci.invalid
+          tunnel_id: "00000000-0000-0000-0000-000000000000"
+          # Multiple rapid CI SSH checks hit the guest from 192.168.100.1.
+          firewall_ssh_ratelimit_enabled: false
+          stack_env_content_src: "/tmp/ci-kvm/stack.env"
+          backup_enabled: true
+          backup_s3_bucket: "ci-mock-bucket"
+          backup_aws_region: "us-west-2"
+          backup_aws_access_key_id: "ci-test-key"
+          backup_aws_secret_access_key: "ci-test-secret"
+          EOF
+
+          cat <<'EOF' > files/00000000-0000-0000-0000-000000000000.json
+          {
+            "AccountTag": "00000000000000000000000000000000",
+            "TunnelSecret": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            "TunnelID": "00000000-0000-0000-0000-000000000000"
+          }
+          EOF
 
       - name: Run playbook (apply)
         run: ansible-playbook playbook.yml
 
-      - name: Run playbook (idempotency check)
+      - name: Run playbook (strict idempotency check)
         run: |
           output=$(ansible-playbook playbook.yml 2>&1)
           echo "$output"
-          changed=$(echo "$output" | grep -oP 'changed=\K[0-9]+' | tail -1)
-          if [ "$changed" != "0" ]; then
-            echo "::warning::Idempotency check: $changed task(s) reported changed on second run"
+          recap=$(echo "$output" | grep -E 'changed=[0-9]+' | tail -1 || true)
+          changed=$(echo "$recap" | sed -n 's/.*changed=\([0-9][0-9]*\).*/\1/p')
+          failed=$(echo "$recap" | sed -n 's/.*failed=\([0-9][0-9]*\).*/\1/p')
+          if [ -z "$changed" ] || [ "$changed" != "0" ] || [ "${failed:-1}" != "0" ]; then
+            echo "::error::Idempotency gate failed (changed=${changed:-unknown}, failed=${failed:-unknown})"
+            exit 1
           fi
 
-      - name: Verify core services are active (Docker, cloudflared)
-        # Reuse one multiplexed SSH connection (shared ControlPath with the firewall checks
-        # below) so the whole job stays well under ufw's SSH rate-limit (6 new conns / 30s).
+      - name: Verify core services, configs, and sandboxes
         run: |
-          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-          $SSH 'systemctl is-active docker'
-          $SSH 'systemctl is-active cloudflared'
+          SSH="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i $HOME/.ssh/id_ed25519 root@192.168.100.2"
+          $SSH '
+            set -e
+            for svc in docker docker-socket-proxy traefik cloudflared miuops-metadata-block miuops-backup.timer apt-daily-upgrade.timer; do
+              systemctl is-active "$svc" >/dev/null || { echo "FAIL: $svc is not active"; systemctl status "$svc" --no-pager || true; exit 1; }
+            done
+            cloudflared tunnel --config /opt/cloudflared/config.yml ingress validate
+            docker info --format "{{.SecurityOptions}}" | grep -q "userns" || { echo "FAIL: docker userns-remap not active"; exit 1; }
+            [ "$(stat -c "%a %U:%G" /etc/miuops-backup/backup.env)" = "600 root:root" ] || { echo "FAIL: bad backup.env mode/owner"; exit 1; }
+            [ "$(stat -c "%a %U:%G" /opt/stacks/.env)" = "600 root:root" ] || { echo "FAIL: bad /opt/stacks/.env mode/owner"; exit 1; }
+            grep -qxF "CI_TEST_ENV=ok" /opt/stacks/.env || { echo "FAIL: /opt/stacks/.env content missing"; exit 1; }
+            echo "All core services, cloudflared ingress, userns-remap, and secret permissions verified"
+          '
 
       - name: Verify host firewall (ufw default-deny inbound)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          SSH="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i $HOME/.ssh/id_ed25519 root@192.168.100.2"
           $SSH '
             set -e
             ufw status verbose | grep -q "Status: active"            || { echo "FAIL: ufw not active"; exit 1; }
@@ -196,57 +382,119 @@ jobs:
 
       - name: Verify a host inbound port is blocked by ufw (IPv4)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-          HOST="${{ secrets.DEV_SERVER_HOST }}"; PORT=54321
-          cleanup() { $SSH "pkill -f '[h]ttp.server ${PORT}'" >/dev/null 2>&1 || true; }  # [h] so pkill matches the listener, not its own SSH command line
+          SSH="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i $HOME/.ssh/id_ed25519 root@192.168.100.2"
+          HOST="192.168.100.2"; PORT=54321
+          cleanup() { $SSH "pkill -f '[h]ttp.server ${PORT}'" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          echo "::group::Start a host listener on 0.0.0.0:${PORT}"
-          $SSH "nohup python3 -m http.server ${PORT} --bind 0.0.0.0 >/dev/null 2>&1 & sleep 2; ss -tln | grep -q ':${PORT} ' && echo 'listener up'"
-          echo "::endgroup::"
-          echo "::group::Positive control — reachable on host loopback"
+          $SSH "nohup python3 -m http.server ${PORT} --bind 0.0.0.0 >/dev/null 2>&1 & sleep 2; ss -tln | grep -q ':${PORT} '"
           code="$($SSH "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${PORT}/")"
           { [ -n "$code" ] && [ "$code" != "000" ]; } || { echo "FAIL: host listener not actually up"; exit 1; }
-          echo "::endgroup::"
-          echo "::group::External IPv4 probe from the runner — MUST be blocked by ufw"
-          if curl -4 -s -o /dev/null --connect-timeout 8 --max-time 12 "http://${HOST}:${PORT}/"; then
+          if curl -4 -s -o /dev/null --connect-timeout 5 --max-time 8 "http://${HOST}:${PORT}/"; then
             echo "FAIL: host port ${PORT} reachable from outside — ufw INPUT not denying"; exit 1
           fi
           echo "host inbound port correctly blocked by ufw"
-          echo "::endgroup::"
 
-      # In the new model a published port is kept off the public interface by binding it to
-      # loopback (the stacks policy), not by a runtime DROP. Prove a 127.0.0.1-bound publish
-      # is reachable locally but not from outside.
       - name: Verify a loopback-bound Docker port is not externally reachable (IPv4)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
-          HOST="${{ secrets.DEV_SERVER_HOST }}"; PORT=54322
-          cleanup() { $SSH "docker rm -f fw-loopback-test" >/dev/null 2>&1 || true; }  # best-effort; never fail the step on a cleanup SSH hiccup
+          SSH="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i $HOME/.ssh/id_ed25519 root@192.168.100.2"
+          HOST="192.168.100.2"; PORT=54322
+          cleanup() { $SSH "docker rm -f fw-loopback-test" >/dev/null 2>&1 || true; }
           trap cleanup EXIT
-          echo "::group::Publish a container bound to 127.0.0.1:${PORT}"
-          $SSH "docker rm -f fw-loopback-test >/dev/null 2>&1; docker run -d --name fw-loopback-test -p 127.0.0.1:${PORT}:${PORT} busybox httpd -f -p ${PORT} -h /tmp >/dev/null && sleep 2 && docker ps --filter name=fw-loopback-test --format 'status: {{.Status}}'"
-          echo "::endgroup::"
-          echo "::group::Positive control — reachable on loopback"
+          $SSH "docker rm -f fw-loopback-test >/dev/null 2>&1; docker run -d --name fw-loopback-test --cap-drop ALL -p 127.0.0.1:${PORT}:${PORT} busybox:1.37 httpd -f -p ${PORT} -h /tmp >/dev/null && sleep 2"
           code="$($SSH "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:${PORT}/")"
           { [ -n "$code" ] && [ "$code" != "000" ]; } || { echo "FAIL: test container not listening"; exit 1; }
-          echo "::endgroup::"
-          echo "::group::External IPv4 probe — MUST be blocked (bound to loopback)"
-          if curl -4 -s -o /dev/null --connect-timeout 8 --max-time 12 "http://${HOST}:${PORT}/"; then
+          if curl -4 -s -o /dev/null --connect-timeout 5 --max-time 8 "http://${HOST}:${PORT}/"; then
             echo "FAIL: loopback-bound port ${PORT} reachable externally"; exit 1
           fi
           echo "loopback-bound container correctly not externally reachable"
-          echo "::endgroup::"
 
-      # ufw's before6.rules ship the ICMPv6/NDP allows, so default-deny does not break IPv6.
-      # GitHub runners have no IPv6 egress, so assert from the host (v6 egress needs NDP).
+      - name: Verify container metadata block (169.254.169.254) with positive control
+        run: |
+          SSH="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i $HOME/.ssh/id_ed25519 root@192.168.100.2"
+          $SSH bash -s <<'EOF'
+            set -e
+            body="$(curl -fsS --max-time 5 http://169.254.169.254/)"
+            [ "$body" = "mock-imds-ok" ] || { echo "FAIL: positive control failed (got $body)"; exit 1; }
+            before="$(iptables -vxnL DOCKER-USER | awk '$0 ~ /169\.254\.0\.0\/16/ {print $1; exit}')"
+            if docker run --rm --cap-drop ALL busybox:1.37 wget -T 3 -qO- http://169.254.169.254/; then
+              echo "FAIL: container reached 169.254.169.254!"
+              exit 1
+            fi
+            after="$(iptables -vxnL DOCKER-USER | awk '$0 ~ /169\.254\.0\.0\/16/ {print $1; exit}')"
+            echo "DOCKER-USER 169.254.0.0/16 DROP packets: ${before} -> ${after}"
+            [ "${after:-0}" -gt "${before:-0}" ] || { echo "FAIL: DOCKER-USER DROP counter did not increment"; exit 1; }
+          EOF
+
+      - name: Verify stack deployment (deploy-server.sh) and Traefik routing
+        run: |
+          mkdir -p fleet/stacks/dev/whoami
+          cat <<'EOF' > fleet/stacks/dev/whoami/docker-compose.yml
+          services:
+            whoami:
+              image: busybox:1.37
+              command: ["sh", "-c", "mkdir -p /tmp/www && echo ok > /tmp/www/index.html && exec httpd -f -p 8080 -h /tmp/www"]
+              cap_drop:
+                - ALL
+              security_opt:
+                - no-new-privileges:true
+              ports:
+                - "127.0.0.1:18080:8080"
+              labels:
+                - "traefik.enable=true"
+                - "traefik.http.routers.whoami.rule=Host(`whoami.ci.invalid`)"
+                - "traefik.http.routers.whoami.entrypoints=websecure"
+                - "traefik.http.services.whoami.loadbalancer.server.port=8080"
+          EOF
+
+          SERVER=dev \
+          SSH_HOST=192.168.100.2 \
+          SSH_USER=root \
+          SSH_PRIVATE_KEY="$(cat ~/.ssh/id_ed25519)" \
+          SSH_KNOWN_HOSTS="$(cat ~/.ssh/known_hosts)" \
+          bash .github/scripts/deploy-server.sh
+
+          SSH="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i $HOME/.ssh/id_ed25519 root@192.168.100.2"
+          $SSH '
+            set -e
+            grep -qxF "CI_TEST_ENV=ok" /opt/stacks/.env || { echo "FAIL: deploy-server rsync overwrote or deleted /opt/stacks/.env"; exit 1; }
+            for i in $(seq 1 20); do
+              resp="$(curl -sk --max-time 3 -H "Host: whoami.ci.invalid" https://127.0.0.1:8443/ || true)"
+              if [ "$resp" = "ok" ]; then
+                echo "Traefik routed Host: whoami.ci.invalid -> HTTP 200 ok (attempt $i)"
+                break
+              fi
+              if [ "$i" -eq 20 ]; then
+                echo "FAIL: Traefik routing to whoami.ci.invalid did not return ok"
+                docker ps -a
+                journalctl -u traefik -n 50 --no-pager || true
+                journalctl -u docker-socket-proxy -n 50 --no-pager || true
+                exit 1
+              fi
+              sleep 1
+            done
+          '
+
       - name: Verify IPv6 egress works under ufw (NDP)
         run: |
-          SSH="ssh -o StrictHostKeyChecking=yes -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i ~/.ssh/id_ed25519 ${{ secrets.DEV_SERVER_USER }}@${{ secrets.DEV_SERVER_HOST }}"
+          SSH="ssh -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ControlMaster=auto -o ControlPath=/tmp/ssh-cm-%C -o ControlPersist=120s -i $HOME/.ssh/id_ed25519 root@192.168.100.2"
           if [ -z "$($SSH 'ip -6 -o addr show scope global 2>/dev/null | head -1')" ]; then
-            echo "::notice::dev server has no global IPv6 address — skipping v6 egress test"
+            echo "::notice::KVM guest has no global IPv6 address — skipping v6 egress test"
           elif $SSH "curl -6 -sS -o /dev/null --max-time 12 https://www.google.com"; then
             echo "IPv6 egress works — gateway NDP resolves under ufw"
           else
             echo "---- diagnostics ----"; $SSH "ip -6 route show default; ip -6 neigh show; ufw status verbose" || true
             echo "FAIL: global IPv6 present but no v6 egress under ufw"; exit 1
           fi
+
+      - name: KVM diagnostics and cleanup
+        if: always()
+        run: |
+          if [ "${{ job.status }}" != "success" ] && [ -f /tmp/ci-kvm/console.log ]; then
+            echo "::group::KVM serial console log (tail)"
+            sudo tail -n 150 /tmp/ci-kvm/console.log || true
+            echo "::endgroup::"
+          fi
+          [ -f /tmp/ci-kvm/qemu.pid ] && sudo kill "$(sudo cat /tmp/ci-kvm/qemu.pid)" 2>/dev/null || true
+          [ -f /tmp/ci-kvm/imds.pid ] && kill "$(cat /tmp/ci-kvm/imds.pid)" 2>/dev/null || true
+          sudo rm -rf /tmp/ci-kvm
+          rm -rf inventory.ini host_vars/dev.yml files/00000000-0000-0000-0000-000000000000.json fleet
