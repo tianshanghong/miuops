@@ -9,6 +9,7 @@
       - curl
       - gnupg
       - python3-debian  # required by the deb822_repository module
+      - python3-yaml    # required by stack_policy_check.py --pre-config raw YAML parser
     state: latest
     update_cache: yes
   tags: ['docker']

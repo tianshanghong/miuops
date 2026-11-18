@@ -71,6 +71,8 @@
 - name: Check whether awscli is packaged in apt
   ansible.builtin.command:
     argv: [apt-cache, policy, awscli]
+  environment:
+    LC_ALL: C
   register: backup_awscli_policy
   changed_when: false
   failed_when: false

@@ -67,6 +67,18 @@ mkremote() {
     ln -s /etc/miuops-backup/backup.env "$d/web/app.env"
     printf 'services:\n  x:\n    image: busybox\n    env_file:\n      - ./app.env\n' > "$d/web/docker-compose.yml"
   fi
+  if [ "${INTERP_ENVFILE:-false}" = true ]; then
+    printf 'services:\n  x:\n    image: busybox\n    env_file:\n      - /${UNSET:-etc}/miuops-backup/backup.env\n' > "$d/web/docker-compose.yml"
+  fi
+  if [ "${INCLUDE_COMPOSE:-false}" = true ]; then
+    printf 'include:\n  - extra.yml\nservices:\n  x:\n    image: busybox\n' > "$d/web/docker-compose.yml"
+  fi
+  if [ "${YAML12_ENVFILE:-false}" = true ]; then
+    printf '%%YAML 1.2\n---\nservices:\n  x:\n    image: busybox\n    env_file:\n      - /etc/miuops-backup/backup.env\n' > "$d/web/docker-compose.yml"
+  fi
+  if [ "${BAD_DIRECTIVE_YAML:-false}" = true ]; then
+    printf '%%YAML 9.9\n---\nservices:\n  x:\n    image: busybox\n' > "$d/web/docker-compose.yml"
+  fi
   if [ "${LEFTOVER_ENV_DIR:-false}" = true ]; then
     mkdir -p "$d/oldstack"
     printf 'FOO=bar\n' > "$d/oldstack/.env"
@@ -161,4 +173,20 @@ printf '%s' "$OUT" | grep -q 'sensitive host path' || fail "expected pre-config 
 LEFTOVER_ENV_DIR=true run_body false ''
 [ "$RC" -eq 0 ] || fail "teardown with leftover .env dir must succeed: $OUT"
 grep -q '^DOWN -p oldstack down --remove-orphans$' "$LOG" || fail "removed stack with leftover .env dir must be torn down, log: $(cat "$LOG")"
+INTERP_ENVFILE=true run_body false ''
+[ "$RC" -ne 0 ] || fail "interpolated env_file must be refused pre-config"
+grep -q '^UP ' "$LOG" && fail "interpolated env_file must block all starts"
+printf '%s' "$OUT" | grep -q 'variable interpolation' || fail "expected variable interpolation rejection: $OUT"
+INCLUDE_COMPOSE=true run_body false ''
+[ "$RC" -ne 0 ] || fail "top-level include directive must be refused pre-config"
+grep -q '^UP ' "$LOG" && fail "top-level include must block all starts"
+printf '%s' "$OUT" | grep -q 'include' || fail "expected include rejection: $OUT"
+YAML12_ENVFILE=true run_body false ''
+[ "$RC" -ne 0 ] || fail "%YAML 1.2 directive with sensitive env_file must be refused in pre-config"
+grep -q '^UP ' "$LOG" && fail "%YAML 1.2 sensitive env_file must block all starts"
+printf '%s' "$OUT" | grep -qE 'cannot parse compose YAML|YAML directives are not allowed|sensitive host path' || fail "expected %YAML 1.2 rejection: $OUT"
+BAD_DIRECTIVE_YAML=true run_body false ''
+[ "$RC" -ne 0 ] || fail "unparseable YAML directive must fail closed in pre-config"
+grep -q '^UP ' "$LOG" && fail "unparseable YAML directive must block all starts"
+printf '%s' "$OUT" | grep -qE 'cannot parse compose YAML|YAML directives are not allowed' || fail "expected fail-closed YAML rejection: $OUT"
 echo "ALL REMOTE-LOOP CHECKS PASSED"

@@ -180,11 +180,11 @@ for stack in */; do
      [ ! -f "$stack/docker-compose.yaml" ] && [ ! -f "$stack/docker-compose.yml" ]; then
     continue
   fi
-  python3 "$policy_dir/check.py" --pre-config "$stack"
   if ! ( cd "$stack" && docker compose ${compose_env[@]+"${compose_env[@]}"} config -q ); then
     echo "::error::stack '${stack}' is not a valid compose project"
     exit 1
   fi
+  python3 "$policy_dir/check.py" --pre-config "$stack"
   config="$(mktemp "$REMOTE_DIR/$stack/.miuops-config.XXXXXX")"
   configs+=("$config")
   ( cd "$stack" && docker compose ${compose_env[@]+"${compose_env[@]}"} config --format json ) > "$config"
