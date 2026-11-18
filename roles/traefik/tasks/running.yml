@@ -1,0 +1,28 @@
+---
+# Binary notifications can be lost if an apply fails before flushing handlers.
+# Compare executable inodes on every apply so a retry repairs a stale process.
+- name: Read Traefik's running process ID
+  ansible.builtin.command:
+    argv: [systemctl, show, traefik, --property=MainPID, --value]
+  register: traefik_pid
+  changed_when: false
+
+- name: Inspect the installed Traefik executable
+  ansible.builtin.stat:
+    path: "{{ traefik_bin }}"
+    follow: true
+    get_checksum: false
+    get_mime: false
+  register: traefik_installed
+
+- name: Schedule a restart if Traefik is still running an old executable
+  ansible.builtin.stat:
+    path: "/proc/{{ traefik_pid.stdout | int }}/exe"
+    follow: true
+    get_checksum: false
+    get_mime: false
+  register: traefik_running
+  changed_when: >-
+    traefik_running.stat.get('inode', 0) != traefik_installed.stat.inode or
+    traefik_running.stat.get('dev', 0) != traefik_installed.stat.dev
+  notify: Restart traefik

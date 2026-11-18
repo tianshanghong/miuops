@@ -88,7 +88,11 @@ jobs:
           bash tests/backup_verify_test.sh
 
       - name: Install Ansible
-        run: pip install -r requirements-control.txt
+        run: |
+          py="$(command -v python3.14 || ls /opt/hostedtoolcache/Python/3.14.*/x64/bin/python3 | tail -1)"
+          "$py" -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          .venv/bin/pip install -r requirements-control.txt
 
       - name: Template render assertions (observability/backup config + secrets)
         # jinja2 ships with Ansible (installed above). Stateless render of the
@@ -106,6 +110,9 @@ jobs:
 
       - name: Cloudflared upgrade regression tests
         run: python3 tests/cloudflared_upgrade_test.py
+
+      - name: Traefik upgrade regression tests
+        run: python3 tests/traefik_upgrade_test.py
 
       - name: Write SSH key
         env:

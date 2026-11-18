@@ -3,7 +3,7 @@
 # loopback; it discovers stacks through a read-only docker-socket-proxy and routes to their
 # container IPs directly (the host is the gateway for every per-stack bridge).
 
-traefik_version: "3.7.16"
+traefik_version: "3.7.19"
 # Arch derived from the host so the role is portable across amd64 + arm64 VPS/bare-metal.
 traefik_arch_map:
   x86_64: amd64
@@ -12,8 +12,8 @@ traefik_arch: "{{ traefik_arch_map[ansible_architecture] | default('amd64') }}"
 # SHA-256 per arch (from the release's *_checksums.txt) — the binary is verified on download
 # (supply-chain). Update both when bumping traefik_version.
 traefik_sha256:
-  amd64: "759a7bc0d66b74c588255ed9e41c7f9d4aba60bdb7bce9dde551b1268a55eb07"
-  arm64: "8f9463a7dd3a618569aaa46e19500331d7374a2e6f6ee300a50df5bb49132e1a"
+  amd64: "97534a68335a087137d0f2adecefe37c8216ac10114dc7e5b510f2a8a12f89be"
+  arm64: "6d796c41b8d3c8c31bb2faf1bfff1b5fcf603676ad9a773b29ffa7efa678881a"
 
 traefik_user: "traefik"
 traefik_group: "traefik"
@@ -27,5 +27,5 @@ traefik_bind_address: "127.0.0.1:8443"
 
 # Read-only docker-socket-proxy: the single docker.sock holder, gives the non-root traefik
 # read-only Docker discovery. Pinned by digest so the image is immutable.
-traefik_proxy_image: "tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459"
+traefik_proxy_image: "tecnativa/docker-socket-proxy@sha256:be1ac64f33bd82043beb504822a17ba6b71668ea1ad7cf51a9a01d27bb7ab047"
 traefik_proxy_bind: "127.0.0.1:2375"

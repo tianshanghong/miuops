@@ -1,6 +1,8 @@
 ---
-# eMudhra intermediate CA distrust shipped in 2026.10.2. Check the exact binary
-# used by systemd, even if the apt repository has not published the fixed package.
+# 2026.10.2 distrusted compromised eMudhra intermediate CAs; 2026.11.0 fixed
+# VULN-170057 (matrix-parameter path-normalization bypass on Access/ingress rules);
+# 2026.11.1 fixed VULN-187395 / CVE-2026-128085 (OpenTelemetry). Check the exact
+# binary used by systemd, even if the apt repository lags.
 - name: Read the installed cloudflared version
   ansible.builtin.command:
     argv: ["{{ cloudflared_bin }}", "--version"]
@@ -9,15 +11,15 @@
   check_mode: false
   tags: ['cloudflared']
 
-- name: Require cloudflared 2026.10.2 or newer
+- name: Require cloudflared 2026.11.1 or newer
   ansible.builtin.assert:
     that:
       - cloudflared_versions | length == 1
-      - (cloudflared_versions | first | default('0')) is version('2026.10.2', '>=')
+      - (cloudflared_versions | first | default('0')) is version('2026.11.1', '>=')
     fail_msg: >-
-      cloudflared 2026.10.2 or newer is required to distrust the compromised
-      eMudhra intermediate CAs. Update the Cloudflare apt repository and retry.
-      {{ cloudflared_bin }} reported: {{ cloudflared_version.stdout }}
+      cloudflared 2026.11.1 or newer is required (fixes eMudhra CA distrust,
+      VULN-170057 Access bypass, and CVE-2026-128085). Update the Cloudflare apt
+      repository and retry. {{ cloudflared_bin }} reported: {{ cloudflared_version.stdout }}
     quiet: true
   vars:
     cloudflared_versions: "{{ cloudflared_version.stdout | regex_findall('^cloudflared version ([0-9]{4}\\.[0-9]+\\.[0-9]+)(?:\\s|$)') }}"

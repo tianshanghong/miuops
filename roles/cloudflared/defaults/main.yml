@@ -11,15 +11,15 @@ cloudflared_bin: "/usr/bin/cloudflared"
 cloudflared_credentials_src: ""
 cloudflared_gpg_key_url: "https://pkg.cloudflare.com/cloudflare-main.gpg"
 # Codenames Cloudflare publishes cloudflared packages for. New releases lag here
-# (e.g. Ubuntu 26.04 "resolute", Debian 13 "trixie"), so cloudflared_apt_release uses
-# the host's native codename when published and otherwise falls back to the newest
-# published LTS of the matching distro. cloudflared is a static Go binary, so an
-# older-codename package runs fine on newer releases. Override with
+# (e.g. Ubuntu 26.04 "resolute", Debian 13 "trixie") and Cloudflare stopped updating
+# dists/bullseye at 2025.7.0 (EOL), so cloudflared_apt_release uses the host's native
+# codename when current and otherwise falls back to the newest published LTS of the
+# matching distro (Debian 11 falls back to bookworm). cloudflared is a static Go binary,
+# so an older- or newer-codename package runs fine. Override with
 # -e cloudflared_apt_release=<codename>.
 cloudflared_supported_releases:
   - focal      # Ubuntu 20.04; target Python 3.9+ must be installed separately
   - jammy      # Ubuntu 22.04
   - noble      # Ubuntu 24.04
-  - bullseye   # Debian 11
-  - bookworm   # Debian 12
+  - bookworm   # Debian 12 (also used as fallback for Debian 11 / 13)
 cloudflared_apt_release: "{{ ansible_facts['distribution_release'] if ansible_facts['distribution_release'] in cloudflared_supported_releases else ('bookworm' if ansible_facts['distribution'] == 'Debian' else 'noble') }}"
