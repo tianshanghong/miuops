@@ -135,6 +135,7 @@
     name: cloudflared
     enabled: yes
     state: started
+    daemon_reload: yes
   tags: ['cloudflared']
 
 - name: Detect an interrupted cloudflared upgrade

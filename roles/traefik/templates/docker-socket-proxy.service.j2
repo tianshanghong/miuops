@@ -12,7 +12,9 @@ Requires=docker.service
 # --userns=host opts this one container out of userns-remap so it can read the root-owned
 # docker.sock (a remapped container's root is host UID 100000 and cannot read it). User stacks
 # may NOT do this — the policy-check rejects `userns_mode: host`.
+TimeoutStartSec=180
 ExecStartPre=-/usr/bin/docker rm -f docker-socket-proxy
+ExecStartPre=/usr/bin/docker pull -q {{ traefik_proxy_image }}
 ExecStart=/usr/bin/docker run --rm --name docker-socket-proxy \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -p {{ traefik_proxy_bind }}:2375 \
@@ -20,7 +22,7 @@ ExecStart=/usr/bin/docker run --rm --name docker-socket-proxy \
   --security-opt no-new-privileges \
   --userns=host \
   {{ traefik_proxy_image }}
-ExecStop=/usr/bin/docker stop docker-socket-proxy
+ExecStop=-/usr/bin/docker stop docker-socket-proxy
 Restart=on-failure
 RestartSec=5
 
