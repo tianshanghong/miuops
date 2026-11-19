@@ -1,0 +1,7 @@
+services:
+  agent:
+    image: example/agent:1.0
+    cap_drop: [ALL]
+    volumes:
+      - ../.env:/mnt/env:ro
+      - .:/mnt/dir:ro

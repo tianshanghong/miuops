@@ -120,21 +120,77 @@ def _is_sensitive_mount(source):
     return any(path == pre or path.startswith(pre + "/") for pre in SENSITIVE_MOUNT_PREFIXES)
 
 
+def _volume_bind_source(vol):
+    """Return the host source path if a service volume entry is a bind mount, else None."""
+    if isinstance(vol, dict):
+        vol_type = str(vol.get("type") or "").strip().lower()
+        source = vol.get("source")
+        if not source:
+            return None
+        if vol_type == "bind":
+            return str(source)
+        if vol_type != "":
+            return None  # type: volume / tmpfs / npipe / cluster / image
+        text = str(source)
+        return text if (text.startswith(("/", "~", ".")) or "/" in text) else None
+    spec = str(vol)
+    if ":" not in spec:
+        return None  # anonymous container-only volume
+    source = spec.split(":", 1)[0]
+    if not source:
+        return None
+    return source if (source.startswith(("/", "~", ".")) or "/" in source) else None
+
+
+def _is_valid_stack_base_dir(real_base):
+    """True if `real_base` can legitimately be a stack directory containing stack-local files.
+
+    Stacks live in `/opt/stacks/<stack>` on servers or under `/home/<user>/...` (Linux),
+    `/Users/...` (macOS), or temp directories in CI/tests — never directly at `/opt/stacks`
+    or `/home`, and never inside host system directories (`/etc`, `/proc`, `/var/run`, ...).
+    """
+    path = real_base
+    if sys.platform == "darwin" and path.startswith(("/private/etc", "/private/var")):
+        path = path[len("/private"):]
+    if path.startswith("/opt/stacks/") and path != "/opt/stacks/":
+        return True
+    if path.startswith("/home/") and "/" in path[len("/home/"):].strip("/"):
+        return True
+    return not _is_sensitive_mount(path)
+
+
 def _is_sensitive_resolved_mount(source, base_dir=None):
     # Deployment runs this on the destination host, after Compose has expanded
     # relative bind sources. Docker follows symlinks that Compose leaves intact.
-    if _is_sensitive_mount(source):
+    text = str(source)
+    if "docker.sock" in text:
         return True
-    candidate = str(source)
-    if base_dir and not os.path.isabs(candidate):
-        candidate = os.path.join(base_dir, candidate)
+    if text.startswith("~"):
+        return True
+    is_rel = not os.path.isabs(text)
+    candidate = os.path.join(os.path.abspath(base_dir), text) if (base_dir and is_rel) else text
     if os.path.isabs(candidate):
         resolved = os.path.realpath(candidate)
-        if _is_sensitive_mount(resolved):
+        if "docker.sock" in resolved:
+            return True
+        if base_dir:
+            abs_base = posixpath.normpath(os.path.abspath(base_dir))
+            real_base = os.path.realpath(base_dir)
+            norm_cand = posixpath.normpath(candidate)
+            in_stack_dir = (
+                _is_valid_stack_base_dir(real_base)
+                and (norm_cand.startswith(abs_base + "/") or norm_cand.startswith(real_base + "/"))
+                and resolved.startswith(real_base + "/")
+            )
+            if in_stack_dir:
+                return False
+            if is_rel:
+                return True  # relative path escaped stack dir (via .. or symlink) or mounted '.'
+        if _is_sensitive_mount(candidate) or _is_sensitive_mount(resolved):
             return True
         if sys.platform == "darwin" and resolved.startswith(("/private/etc", "/private/var")):
             return _is_sensitive_mount(resolved[len("/private"):])
-    return False
+    return _is_sensitive_mount(text)
 
 
 def _published_host_ip(port):
@@ -259,7 +315,7 @@ def check_file(path):
             violations.append(f"{prefix} uses volumes_from (mounts another container's volumes)")
 
         for vol in _as_list(svc.get("volumes")):
-            source = vol.get("source") if isinstance(vol, dict) else str(vol).split(":", 1)[0]
+            source = _volume_bind_source(vol)
             if source and _is_sensitive_resolved_mount(source, base_dir=base_dir):
                 violations.append(f"{prefix} bind-mounts a sensitive host path: {source!r}")
 

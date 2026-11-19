@@ -84,6 +84,33 @@ expect_fail bad-volumes-from.yml
 expect_fail bad-pid-service.yml
 expect_fail bad-netmode-service.yml
 expect_fail bad-envfile-sensitive.yml
+expect_pass good-volumes-and-local-bind.yml
+expect_fail bad-mount-parent-escape.yml
+
+if PYTHONPATH="$DIR" "$PY" - <<'PY'; then
+import stack_policy_check as spc
+
+assert spc._volume_bind_source("andon_data:/data") is None
+assert spc._volume_bind_source({"type": "volume", "source": "andon_data", "target": "/data"}) is None
+assert spc._volume_bind_source("./nginx.conf:/etc/nginx/conf.d/default.conf:ro") == "./nginx.conf"
+
+opt_base = "/opt/stacks/well-known"
+assert not spc._is_sensitive_resolved_mount("/opt/stacks/well-known/nginx.conf", base_dir=opt_base)
+assert spc._is_sensitive_resolved_mount("/opt/stacks/.env", base_dir=opt_base)
+assert spc._is_sensitive_resolved_mount("/opt/stacks/other/nginx.conf", base_dir=opt_base)
+assert spc._is_sensitive_resolved_mount("../.env", base_dir=opt_base)
+assert spc._is_sensitive_resolved_mount(".", base_dir=opt_base)
+
+ci_base = "/home/runner/work/fleet/stacks/s/well-known"
+assert not spc._is_sensitive_resolved_mount("/home/runner/work/fleet/stacks/s/well-known/nginx.conf", base_dir=ci_base)
+assert not spc._is_sensitive_resolved_mount("./nginx.conf", base_dir=ci_base)
+assert spc._is_sensitive_resolved_mount("/home/runner/.ssh/id_rsa", base_dir=ci_base)
+assert spc._is_sensitive_resolved_mount("../.env", base_dir=ci_base)
+PY
+  echo "ok   (pass):   _is_sensitive_resolved_mount Linux/host base_dir cases"
+else
+  echo "FAIL (pass):   _is_sensitive_resolved_mount Linux/host base_dir cases"; fail=1
+fi
 
 # Image pin: an un-pinned image warns (but still passes); a digest-pinned image is silent.
 expect_warn warn-unpinned-image.yml "digest"

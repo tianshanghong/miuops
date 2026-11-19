@@ -52,7 +52,8 @@ mkremote() {
   printf 'services:\n  x:\n    image: busybox\n' > "$d/app/docker-compose.yml"
   printf 'services:\n  x:\n    image: busybox\n' > "$d/web/docker-compose.yml"
   for stack in app web; do
-    printf '%s\n' '{"name":"test","services":{"web":{"image":"nginx:1","cap_drop":["ALL"],"ports":[{"target":80,"published":"8080","host_ip":"127.0.0.1"}]}}}' > "$d/$stack/resolved.json"
+    : > "$d/$stack/nginx.conf"
+    printf '{"name":"test","services":{"web":{"image":"nginx:1","cap_drop":["ALL"],"volumes":[{"type":"volume","source":"app_data","target":"/data"},{"type":"bind","source":"%s/%s/nginx.conf","target":"/etc/nginx/nginx.conf"}],"ports":[{"target":80,"published":"8080","host_ip":"127.0.0.1"}]}}}\n' "$d" "$stack" > "$d/$stack/resolved.json"
   done
   if [ "${UNSAFE:-false}" = true ]; then sed 's/127.0.0.1/0.0.0.0/' "$d/web/resolved.json" > "$d/web/new"; mv "$d/web/new" "$d/web/resolved.json"; fi
   if [ "${BINDLINK:-false}" = true ]; then
