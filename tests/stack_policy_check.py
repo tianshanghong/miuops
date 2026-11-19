@@ -125,21 +125,28 @@ def _volume_bind_source(vol):
     if isinstance(vol, dict):
         vol_type = str(vol.get("type") or "").strip().lower()
         source = vol.get("source")
-        if not source:
-            return None
         if vol_type == "bind":
-            return str(source)
-        if vol_type != "":
+            return str(source) if source else "<missing-bind-source>"
+        if not source or vol_type != "":
             return None  # type: volume / tmpfs / npipe / cluster / image
         text = str(source)
-        return text if (text.startswith(("/", "~", ".")) or "/" in text) else None
+        return text if (text.startswith(("/", "~", ".")) or "/" in text or "$" in text) else None
     spec = str(vol)
+    if "$" in spec:
+        return spec
     if ":" not in spec:
         return None  # anonymous container-only volume
     source = spec.split(":", 1)[0]
     if not source:
         return None
     return source if (source.startswith(("/", "~", ".")) or "/" in source) else None
+
+
+COMPOSE_FILENAMES = (
+    "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml",
+    "compose.override.yaml", "compose.override.yml",
+    "docker-compose.override.yaml", "docker-compose.override.yml",
+)
 
 
 def _is_valid_stack_base_dir(real_base):
@@ -159,33 +166,102 @@ def _is_valid_stack_base_dir(real_base):
     return not _is_sensitive_mount(path)
 
 
-def _is_sensitive_resolved_mount(source, base_dir=None):
+def _is_volume_read_only(vol):
+    """True if a service volume entry explicitly mounts read-only (`:ro` or `read_only: true`)."""
+    if isinstance(vol, dict):
+        return _is_truthy(vol.get("read_only"))
+    parts = str(vol).split(":")
+    if len(parts) != 3:
+        return False
+    modes = {m.strip().lower() for m in parts[2].split(",") if m.strip()}
+    return "ro" in modes and "rw" not in modes
+
+
+def _resolve_stack_local(source, base_dir):
+    """Return (candidate, resolved, abs_base, real_base) if `source` stays strictly inside valid `base_dir`."""
+    if not base_dir:
+        return None
+    text = str(source)
+    if "docker.sock" in text or text.startswith("~") or "$" in text:
+        return None
+    is_rel = not os.path.isabs(text)
+    candidate = os.path.join(os.path.abspath(base_dir), text) if is_rel else text
+    if not os.path.isabs(candidate):
+        return None
+    resolved = os.path.realpath(candidate)
+    if "docker.sock" in resolved:
+        return None
+    abs_base = posixpath.normpath(os.path.abspath(base_dir))
+    real_base = os.path.realpath(base_dir)
+    norm_cand = posixpath.normpath(candidate)
+    if (
+        _is_valid_stack_base_dir(real_base)
+        and (norm_cand.startswith(abs_base + "/") or norm_cand.startswith(real_base + "/"))
+        and resolved.startswith(real_base + "/")
+    ):
+        return norm_cand, resolved, abs_base, real_base
+    return None
+
+
+def _is_stack_local_mount(source, base_dir=None):
+    """True if `source` resolves strictly inside a valid stack `base_dir`."""
+    return _resolve_stack_local(source, base_dir) is not None
+
+
+def _is_forbidden_name(name, allow_env_ext=False):
+    low = name.lower()
+    lower_compose = {c.lower() for c in COMPOSE_FILENAMES}
+    if low in lower_compose or low in {".env", ".git"} or low.startswith(".miuops-config"):
+        return True
+    if not allow_env_ext and (low.endswith(".env") or low.startswith(".env.")):
+        return True
+    return False
+
+
+def _is_forbidden_stack_local_file(candidate, resolved, abs_base, real_base, allow_env_ext=False):
+    """True if a stack-local path targets compose definitions, .env files, .git, or temp configs,
+    or is a directory containing any forbidden file or symlink escaping `real_base`.
+    """
+    cand_root = real_base if candidate.startswith(real_base + "/") else abs_base
+    for p, root in ((candidate, cand_root), (resolved, real_base)):
+        if _is_forbidden_name(os.path.basename(p), allow_env_ext=allow_env_ext):
+            return True
+        try:
+            rel_parts = posixpath.relpath(p, root).split("/")
+        except ValueError:
+            return True
+        if any(_is_forbidden_name(part, allow_env_ext=allow_env_ext) for part in rel_parts):
+            return True
+    if os.path.isdir(resolved):
+        for walk_root, dirnames, filenames in os.walk(resolved, followlinks=False):
+            for entry in list(dirnames) + list(filenames):
+                if _is_forbidden_name(entry, allow_env_ext=allow_env_ext):
+                    return True
+                full_entry = os.path.join(walk_root, entry)
+                real_entry = os.path.realpath(full_entry)
+                if "docker.sock" in real_entry or not real_entry.startswith(real_base + "/"):
+                    return True
+    return False
+
+
+def _is_sensitive_resolved_mount(source, base_dir=None, allow_env_ext=False):
     # Deployment runs this on the destination host, after Compose has expanded
     # relative bind sources. Docker follows symlinks that Compose leaves intact.
     text = str(source)
-    if "docker.sock" in text:
+    if "docker.sock" in text or text.startswith("~") or "$" in text:
         return True
-    if text.startswith("~"):
-        return True
+    local = _resolve_stack_local(text, base_dir)
+    if local is not None:
+        candidate, resolved, abs_base, real_base = local
+        return _is_forbidden_stack_local_file(
+            candidate, resolved, abs_base, real_base, allow_env_ext=allow_env_ext
+        )
     is_rel = not os.path.isabs(text)
+    if base_dir and is_rel:
+        return True  # relative path escaped stack dir (via .. or symlink) or mounted '.'
     candidate = os.path.join(os.path.abspath(base_dir), text) if (base_dir and is_rel) else text
     if os.path.isabs(candidate):
         resolved = os.path.realpath(candidate)
-        if "docker.sock" in resolved:
-            return True
-        if base_dir:
-            abs_base = posixpath.normpath(os.path.abspath(base_dir))
-            real_base = os.path.realpath(base_dir)
-            norm_cand = posixpath.normpath(candidate)
-            in_stack_dir = (
-                _is_valid_stack_base_dir(real_base)
-                and (norm_cand.startswith(abs_base + "/") or norm_cand.startswith(real_base + "/"))
-                and resolved.startswith(real_base + "/")
-            )
-            if in_stack_dir:
-                return False
-            if is_rel:
-                return True  # relative path escaped stack dir (via .. or symlink) or mounted '.'
         if _is_sensitive_mount(candidate) or _is_sensitive_mount(resolved):
             return True
         if sys.platform == "darwin" and resolved.startswith(("/private/etc", "/private/var")):
@@ -316,8 +392,15 @@ def check_file(path):
 
         for vol in _as_list(svc.get("volumes")):
             source = _volume_bind_source(vol)
-            if source and _is_sensitive_resolved_mount(source, base_dir=base_dir):
+            if not source:
+                continue
+            if _is_sensitive_resolved_mount(source, base_dir=base_dir):
                 violations.append(f"{prefix} bind-mounts a sensitive host path: {source!r}")
+            elif _is_stack_local_mount(source, base_dir=base_dir) and not _is_volume_read_only(vol):
+                violations.append(
+                    f"{prefix} bind-mounts stack-local path {source!r} without read-only (:ro / read_only: true); "
+                    "use a named volume for writable data"
+                )
 
         for field in ("env_file", "label_file"):
             for entry in _file_entries(svc.get(field)):
@@ -326,7 +409,9 @@ def check_file(path):
                     violations.append(f"{prefix} has non-string path in {field}")
                 elif entry_path and "$" in str(entry_path):
                     violations.append(f"{prefix} uses variable interpolation in {field}: {entry_path!r}")
-                elif entry_path and _is_sensitive_resolved_mount(entry_path, base_dir=base_dir):
+                elif entry_path and _is_sensitive_resolved_mount(
+                    entry_path, base_dir=base_dir, allow_env_ext=(field == "env_file")
+                ):
                     violations.append(f"{prefix} references a sensitive host path in {field}: {entry_path!r}")
 
         if _as_list(svc.get("devices")):
@@ -353,7 +438,7 @@ def check_file(path):
                 device = options.get("device")
                 if not isinstance(device, str) or not os.path.isabs(device):
                     violations.append(f"{path}: volume '{volume_name}' bind device must be an absolute host path")
-                elif _is_sensitive_resolved_mount(device, base_dir=base_dir):
+                elif _is_sensitive_resolved_mount(device, base_dir=base_dir) or _is_stack_local_mount(device, base_dir=base_dir):
                     violations.append(f"{path}: volume '{volume_name}' bind-mounts a sensitive host path: {device!r}")
 
     # Top-level secrets/configs with `file:` bind-mount host files into containers.
@@ -396,13 +481,6 @@ def check_file(path):
     return violations, warnings
 
 
-COMPOSE_FILENAMES = (
-    "compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml",
-    "compose.override.yaml", "compose.override.yml",
-    "docker-compose.override.yaml", "docker-compose.override.yml",
-)
-
-
 def _strip_yaml_quotes(value):
     text = value.strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
@@ -441,14 +519,18 @@ def _scan_pre_config_text(content, path, base_dir):
             if any(ch in text for ch in ("{", "}", "[", "]", "|", ">")):
                 violations.append(f"{path}: complex YAML syntax in {block_field} requires PyYAML")
                 continue
-            candidate = text[1:].strip() if text.startswith("-") else ""
-            m_path = re.match(r"""^['"]?path['"]?\s*:\s*(.*)$""", candidate or text)
-            if m_path:
-                candidate = m_path.group(1).strip()
+            candidate = text[1:].strip() if text.startswith("-") else text
+            m_kv = re.match(r"""^['"]?([A-Za-z0-9_.-]+)['"]?\s*:\s*(.*)$""", candidate)
+            if m_kv:
+                if m_kv.group(1) in ("required", "format"):
+                    continue
+                candidate = m_kv.group(2).strip() if m_kv.group(1) == "path" else candidate
             candidate = _strip_yaml_quotes(candidate)
             if "$" in candidate:
                 violations.append(f"{path}: uses variable interpolation in {block_field}: {candidate!r}")
-            elif candidate and _is_sensitive_resolved_mount(candidate, base_dir=base_dir):
+            elif candidate and _is_sensitive_resolved_mount(
+                candidate, base_dir=base_dir, allow_env_ext=(block_field == "env_file")
+            ):
                 violations.append(f"{path}: references a sensitive host path in {block_field}: {candidate!r}")
             continue
         m = _KEY_RE.match(text)
@@ -472,13 +554,17 @@ def _scan_pre_config_text(content, path, base_dir):
                         c = _strip_yaml_quotes(elem)
                         if "$" in c:
                             violations.append(f"{path}: uses variable interpolation in {key}: {c!r}")
-                        elif c and _is_sensitive_resolved_mount(c, base_dir=base_dir):
+                        elif c and _is_sensitive_resolved_mount(
+                            c, base_dir=base_dir, allow_env_ext=(key == "env_file")
+                        ):
                             violations.append(f"{path}: references a sensitive host path in {key}: {c!r}")
             else:
                 c = _strip_yaml_quotes(val)
                 if "$" in c:
                     violations.append(f"{path}: uses variable interpolation in {key}: {c!r}")
-                elif c and _is_sensitive_resolved_mount(c, base_dir=base_dir):
+                elif c and _is_sensitive_resolved_mount(
+                    c, base_dir=base_dir, allow_env_ext=(key == "env_file")
+                ):
                     violations.append(f"{path}: references a sensitive host path in {key}: {c!r}")
     return violations
 
@@ -535,7 +621,9 @@ def check_pre_config_dir(stack_dir):
                             violations.append(f"{prefix} has non-string path in {field}")
                         elif entry_path and "$" in str(entry_path):
                             violations.append(f"{prefix} uses variable interpolation in {field}: {entry_path!r}")
-                        elif entry_path and _is_sensitive_resolved_mount(entry_path, base_dir=base_dir):
+                        elif entry_path and _is_sensitive_resolved_mount(
+                            entry_path, base_dir=base_dir, allow_env_ext=(field == "env_file")
+                        ):
                             violations.append(
                                 f"{prefix} references a sensitive host path in {field}: {entry_path!r}"
                             )
